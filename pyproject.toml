@@ -6,7 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "pfcheeshmc"              
 version = "0.1.0"
 description = "Pathfinder-ChEES-HMC posterior sampler compatible with PyMC model using BlackJAX backend"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
+dependencies = [
+    "blackjax>=1.2.0",
+    "pymc>=5.0,<6.0"
+]
 
 [tool.setuptools]
 packages = ["pfcheeshmc"]             
