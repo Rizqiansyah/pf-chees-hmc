@@ -1,2 +1,2 @@
 # pf-chees-hmc
-A Pathfinder-ChESS-HMC sampler using BlackJAX backend, compatible with PyMC model
+A Pathfinder-ChEES-HMC sampler using BlackJAX backend, compatible with PyMC model
