@@ -47,4 +47,5 @@ sample_pf_chees_hmc(chees_kwargs={"draws": 10_000})
 ```
 
 
-
+# References
+[1] Matthew Hoffman, Alexey Radul, Pavel Sountsov "An Adaptive-MCMC Scheme for Setting Trajectory Lengths in Hamiltonian Monte Carlo", in Proceedings of The 24th International Conference on Artificial Intelligence and Statistics, PMLR 130:3907-3915, 2021. Available: https://proceedings.mlr.press/v130/hoffman21a.html
