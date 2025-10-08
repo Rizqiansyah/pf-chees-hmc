@@ -40,4 +40,11 @@ with pymc.Model() as model:
 
 For use with GPU sampling, see also the `examples/` folder.
 
+# Common Issues
+1. If the sampler is not converging, try increasing the number of ChEES draws using the argument
+```
+sample_pf_chees_hmc(chees_kwargs={"draws": 10_000})
+```
+
+
 
