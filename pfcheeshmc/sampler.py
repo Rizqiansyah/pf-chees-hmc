@@ -398,6 +398,7 @@ class PfCheesHMC:
         kwargs.setdefault("seed", self.seed)
         kwargs.setdefault("adam_lr", 0.05)
         kwargs.setdefault("target_accept", bj.adaptation.chees_adaptation.OPTIMAL_TARGET_ACCEPTANCE_RATE)
+        kwargs.setdefault("max_leapfrog_steps", 1000)
 
         optim = optax.adam(learning_rate=kwargs["adam_lr"])
         rng = jax.random.key(kwargs["seed"])
@@ -411,6 +412,7 @@ class PfCheesHMC:
             kwargs["draws"],
             inverse_mass_matrix,   # your PF-based diag/dense (flattened if diag)
             target_acceptance_rate=kwargs['target_accept'],
+            max_leapfrog_steps=kwargs['max_leapfrog_steps'],
         )
 
         return (
