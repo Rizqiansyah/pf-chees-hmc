@@ -22,6 +22,7 @@ def chees_warmup_with_progress(
     decay_rate=0.5,
     jitter_amount=1.0,
     max_sampling_steps=1000,
+    max_leapfrog_steps=1000,
     update_every=25,           # <-- throttle UI updates to keep overhead tiny
 ):
     # --- Halton jitter (same idea as BJ’s ChEES) ---
@@ -51,7 +52,7 @@ def chees_warmup_with_progress(
 
     # Low-level ChEES adapter (init, update)
     init_adapt, update_adapt = bj.adaptation.chees_adaptation.base(
-        jitter_gn, next_random_arg_fn, optim, target_acceptance_rate, decay_rate
+        jitter_gn, next_random_arg_fn, optim, target_acceptance_rate, decay_rate, max_leapfrog_steps
     )
 
     # Batch-initialize states for all chains
