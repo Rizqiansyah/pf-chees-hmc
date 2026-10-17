@@ -1,0 +1,42 @@
+[workspace]
+name = "pf-chees-hmc"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+# Shared box (MU00222458L): JAX preallocates ~90% of VRAM by default, which
+# starves other users. Off-switch so VRAM is requested as needed.
+[activation.env]
+XLA_PYTHON_CLIENT_PREALLOCATE = "false"
+CUDA_VISIBLE_DEVICES = "0"
+MPLBACKEND = "Agg"
+
+[dependencies]
+# 3.13 to match BlackJAX 1.7.x and the author's own notebook env
+python = "3.13.*"
+
+[pypi-dependencies]
+# numpy 2.5 removed np.row_stack; numba<=0.66 (pytensor's cap) overloads it at
+# import, so numba 0.67+ is required for numpy>=2.5 and pytensor forbids that.
+# Keeping numpy<2.5 is the only satisfiable combination today.
+numpy = ">=2.0,<2.5"
+# Force stable numba: 0.63.0b1 (pre-release, falsely numpy>=1.22) breaks on
+# numpy>=2.4 (np.trapz) and 0.67+ is outside pytensor's numba<=0.66 cap.
+numba = "==0.66.0"
+# the package itself, so `import pfcheeshmc` works from anywhere in the repo
+pfcheeshmc = { path = ".", editable = true }
+pymc = ">=5.0,<6.0"
+blackjax = ">=1.2.0"
+# Driver 580.178.04 + sm_86: CUDA 13 wheels (JAX default). CUDA 12 also works
+# but is on the deprecation path.
+jax = { version = ">=0.9.0", extras = ["cuda13"] }
+optax = ">=0.2.0"
+arviz = ">=0.17.0"
+pymc-extras = ">=0.0.1"
+matplotlib = ">=3.8.0"
+tqdm = ">=4.66.0"
+ipykernel = ">=6.29.0"
+nbconvert = ">=7.16.0"
+
+[tasks]
+gpu-check = "python -c \"import jax; print(jax.__version__); print(jax.devices())\""
+vram = "nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv"
