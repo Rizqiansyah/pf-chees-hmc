@@ -61,6 +61,15 @@ def chees_warmup_with_progress(
     init_states = batch_init(positions)
     adaptation_state = init_adapt(init_random_arg, initial_step_size)
 
+    # ChEES whitens its trajectory-length criterion by 1/sqrt(imm), so it needs
+    # the diagonal of the inverse mass matrix (variances). The HMC kernel itself
+    # still gets the full dense Pathfinder metric.
+    imm_diag = (
+        jnp.diag(inverse_mass_matrix)
+        if jnp.ndim(inverse_mass_matrix) == 2
+        else inverse_mass_matrix
+    )
+
     # --- one progress bar, like your dynamic-HMC bar ------------------------
     bar = tqdm(total=num_steps, desc="ChEES Adaptation", position=0, leave=True)
     _div_total = {"n": 0}  # host-side mutable counter
@@ -84,7 +93,9 @@ def chees_warmup_with_progress(
             logdensity_fn=ld_fn,
             step_size=astate.step_size,
             inverse_mass_matrix=inverse_mass_matrix,
-            trajectory_length_adjusted=astate.trajectory_length / astate.step_size,
+            # BlackJAX >=1.7: the trajectory-length adjustment is unpacked into
+            # integration_steps_fn at call time, not passed as a named kwarg.
+            integration_steps_params=(astate.trajectory_length / astate.step_size,),
         )
         new_states, info = jax.vmap(_step)(keys, states)
 
@@ -105,6 +116,7 @@ def chees_warmup_with_progress(
             states.position,
             acc_vals,              # accepts vector of acceptances
             info.is_divergent,
+            imm_diag,              # 1.7 requires the diagonal metric here
         )
 
         # JAX-safe throttling of host callback
