@@ -674,16 +674,14 @@ class PfCheesHMC:
         """
         Build ArviZ InferenceData with:
         • posterior in PROBLEM space (incl. Deterministic),
-        • sample_stats auto-populated from infos_hist (no hard-coded field list).
+        • sample_stats from the BlackJAX transition info + the sampled logdensity.
 
         Assumes states_hist leaves are shaped (draws, chains, ...) by default;
         override draw_axis/chain_axis if you stacked differently.
         """
-        import dataclasses
         import numpy as np
         import arviz as az
         import jax.numpy as jnp
-        from collections.abc import Mapping
 
         # ---- helper: move (draw_axis, chain_axis) -> (chain, draw)
         def _swap_cd(x):
@@ -716,72 +714,26 @@ class PfCheesHMC:
                     dim_names.append(dname)
                 dims[name] = dim_names
 
-        # ---- 2) Sample stats (auto-discovered)
-        def _extract_arrays(obj, prefix="", out=None):
-            """Recursively collect {name: array-like} from infos_hist."""
-            if out is None:
-                out = {}
-            # dict / Mapping
-            if isinstance(obj, Mapping):
-                for k, v in obj.items():
-                    _extract_arrays(v, f"{prefix}{k}.", out)
-                return out
-            # namedtuple / _asdict
-            if hasattr(obj, "_asdict"):
-                for k, v in obj._asdict().items():
-                    _extract_arrays(v, f"{prefix}{k}.", out)
-                return out
-            # dataclass
-            if dataclasses.is_dataclass(obj):
-                for f in dataclasses.fields(obj):
-                    _extract_arrays(getattr(obj, f.name), f"{prefix}{f.name}.", out)
-                return out
-            # tuple/list -> index
-            if isinstance(obj, (tuple, list)):
-                for i, v in enumerate(obj):
-                    _extract_arrays(v, f"{prefix}{i}.", out)
-                return out
-            # base case: arrays
-            if hasattr(obj, "shape"):
-                name = prefix[:-1] if prefix.endswith(".") else prefix
-                out[name or "value"] = obj
-            return out
-
+        # ---- 2) Sample stats: explicit BlackJAX fields.
+        # Do NOT flatten HMCInfo recursively: HMCInfo.momentum and HMCInfo.proposal
+        # (an IntegratorState: position, momentum, logdensity, logdensity_grad) all
+        # carry pytrees keyed by the model's own variable names, so flattened keys
+        # collided last-writer-wins and sample_stats ended up holding logdensity
+        # gradients under names like "mu".
+        # lp is the SAMPLED state's logdensity (from states_hist); using
+        # HMCInfo.proposal.logdensity instead would report the trajectory endpoint,
+        # which is wrong on every rejected transition. Same choice PyMC makes.
         sample_stats = None
         if infos_hist is not None:
-            raw = _extract_arrays(infos_hist)
-
-            # Reorder each to (chains, draws, ...) and cast dtypes/names
-            sample_stats = {}
-            # try to detect (chains, draws) from posterior to validate
-            # (use the first posterior variable)
-            _any_post = next(iter(posterior_np.values()))
-            n_chains, n_draws = _any_post.shape[0], _any_post.shape[1]
-
-            rename = {"logdensity": "lp", "is_divergent": "diverging"}
-
-            for key, arr in raw.items():
-                try:
-                    arr_cd = _swap_cd(arr)  # (chains, draws, ...)
-                except Exception:
-                    # if swap fails (e.g., scalar or 1D), just convert as-is
-                    arr_cd = np.asarray(arr)
-
-                # sanity: ensure first two dims look like (chains, draws) when possible
-                if arr_cd.ndim >= 2:
-                    ok = (arr_cd.shape[0] == n_chains and arr_cd.shape[1] == n_draws)
-                    # tolerate the opposite orientation and fix it
-                    if not ok and arr_cd.shape[:2] == (n_draws, n_chains):
-                        arr_cd = np.swapaxes(arr_cd, 0, 1)
-
-                out_key = rename.get(key, key.split(".")[-1])  # strip prefix if nested
-                if "diverg" in out_key and arr_cd.dtype != bool:
-                    arr_cd = arr_cd.astype(bool)
-                sample_stats[out_key] = arr_cd
-
-            # nice alias if only 'diverging' found
-            if "diverging" in sample_stats and "is_divergent" not in sample_stats:
-                sample_stats["is_divergent"] = sample_stats["diverging"]
+            lp_src = getattr(states_hist, "logdensity", states_hist[1])
+            sample_stats = {
+                "lp": _swap_cd(lp_src),
+                "diverging": _swap_cd(infos_hist.is_divergent).astype(bool),
+                "acceptance_rate": _swap_cd(infos_hist.acceptance_rate),
+                "is_accepted": _swap_cd(infos_hist.is_accepted),
+                "energy": _swap_cd(infos_hist.energy),
+                "num_integration_steps": _swap_cd(infos_hist.num_integration_steps),
+            }
 
         # ---- 3) Build InferenceData
         idata = az.from_dict(
@@ -826,11 +778,6 @@ class PfCheesHMC:
             chees_parameters,
             inverse_mass_matrix,
             **dynamic_hmc_kwargs,
-        )
-
-        posterior = self._transform_value_samples_to_problem_space(
-            states_hist,
-            keep_untransformed=False,            # like sample_blackjax_nuts default
         )
 
         idata = self._to_inference_data(
