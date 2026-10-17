@@ -6,7 +6,7 @@ The No-U-Turn sampler (NUTS) is a common and ubiquotous general purpose posterio
 It's a variant of the Hamiltonian Monte Carlo (HMC), with a main advantage that it avoids the need to tune the step size ($\epsilon$) and trajectory length ($L$) parameters in HMC, which is notoriously difficult and time consuming to do.
 However, NUTS require substantial overhead in its computation, and it is not suitable for GPU acceleration.
 
-ChEES-HMC, as proposed in [1] tune the HMC parameter automatically during the initial warm up phase.
+ChEES-HMC, proposed in [1], tunes the HMC step size ($\epsilon$) and trajectory length ($L$) automatically during the warm up phase. *ChEES* is the **Ch**ange in the **E**stimator of the **E**xpected **S**quare criterion that the method maximises (section 2.2 and Algorithm 1 of [1]). Note that ChEES adapts $\epsilon$ and $L$ only — it does not adapt the mass matrix, which is why this implementation takes that from Pathfinder.
 HMC itself is suitable for GPU acceleration, and has less computational overhead compared to NUTS.
 This allows posterior sampling efficiently using GPU(s).
 
