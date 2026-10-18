@@ -299,3 +299,11 @@ Per 32-chain gradient, microseconds:
    re-validated in float32 (draw-covariance condition numbers reach 8,837 on radon, so metric
    conditioning is the risk), and the existing "one fp64 rerun" gate becomes the comparison, not an
    afterthought.
+
+## After the batched start check (8 Schools, same config)
+
+finite-start repair **1.75 s -> 0.24 s** (15% -> 2% of a warm run). Total wall did not move:
+11.86 s -> 12.03 s, because the sampling stage went 3.11 s -> 4.52 s in the same pair of runs.
+Two seeds is not enough to separate that from noise, and the fix also stops jittering starts that
+were already usable, so realised trajectories change. Stage-level saving: measured. End-to-end
+win: not claimed until 5 seeds.
