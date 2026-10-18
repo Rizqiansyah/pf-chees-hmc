@@ -194,7 +194,7 @@ def model_specs():
 
 
 # --------------------------------------------------------------------------- metrics
-def score(idata, wall, backend, model, chains, cold):
+def score(idata, wall, backend, model, chains, cold, drop_vars=()):
     ess = az.ess(idata.posterior, method="bulk", relative=False)
     etail = az.ess(idata.posterior, method="tail", relative=False)
     rh = az.rhat(idata.posterior)
@@ -215,18 +215,20 @@ def score(idata, wall, backend, model, chains, cold):
     # Conditioning proxy for the mass matrix: the sampler's inverse mass matrix is built from
     # Pathfinder draws, so the posterior draw covariance's condition number says what the metric
     # has to cope with. Unit-dependent by construction -- compare it across models in the same
-    # units, never as an absolute.
+    # units, never as an absolute. Deterministics are excluded: they are affine copies of sampled
+    # variables here, and that exact collinearity shows up as a huge (fake) condition number.
     try:
         flat = np.concatenate(
-            [np.asarray(idata.posterior[v].values).reshape(-1, np.prod(
-                idata.posterior[v].values.shape[2:])) for v in idata.posterior.data_vars], axis=1)
+            [np.asarray(idata.posterior[v].values).reshape(-1, int(np.prod(
+                idata.posterior[v].values.shape[2:] or (1,))))
+             for v in idata.posterior.data_vars if v not in set(drop_vars)], axis=1)
         if len(flat) > 20_000:
             flat = flat[:: max(len(flat) // 20_000, 1)]   # strided, so the sample spans all chains
         if flat.shape[1] > 1 and np.all(np.isfinite(flat)):
             ev = np.linalg.eigvalsh(np.cov(flat, rowvar=False))
             row["cov_cond"] = round(float(ev[-1] / max(ev[0], 1e-300)), 1)
     except Exception as exc:                                    # never lose a timing row to a diagnostic
-        row["cov_cond_error"] = type(exc).__name__
+        row["cov_cond_error"] = f"{type(exc).__name__}: {exc}"[:160]
     if "num_integration_steps" in idata.sample_stats:
         steps = np.asarray(idata.sample_stats["num_integration_steps"].values, dtype=float)
         steps = steps.reshape(steps.shape[0], steps.shape[1], -1)[..., 0]   # (chain, draw)
@@ -242,7 +244,8 @@ def run_gpu(model_obj, label, chains, seed, cold):
         chees_kwargs={"draws": WARMUP},
     )
     wall = time.perf_counter() - t0
-    return score(idata, wall, "gpu", label, chains, cold)
+    return score(idata, wall, "gpu", label, chains, cold,
+                 drop_vars=tuple(d.name for d in model_obj.deterministics))
 
 
 def run_cpu(model_obj, label, chains, seed, cold):
@@ -251,7 +254,8 @@ def run_cpu(model_obj, label, chains, seed, cold):
         idata = REAL_PM_SAMPLE(draws=CPU_DRAWS, tune=CPU_DRAWS, chains=chains, cores=chains,
                                target_accept=0.8, random_seed=seed, progressbar=False)
     wall = time.perf_counter() - t0
-    return score(idata, wall, "cpu_nuts", label, chains, cold)
+    return score(idata, wall, "cpu_nuts", label, chains, cold,
+                 drop_vars=tuple(d.name for d in model_obj.deterministics))
 
 
 def main():
