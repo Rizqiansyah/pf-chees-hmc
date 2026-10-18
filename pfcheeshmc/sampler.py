@@ -382,6 +382,9 @@ class PfCheesHMC:
             D = jnp.diag(lr.sigma)
             inverse_mass_matrix = (D @ (jnp.eye(lr.sigma.shape[0], dtype=lr.sigma.dtype)
                                         + lr.U @ jnp.diag(lr.lam - 1.0) @ lr.U.T) @ D)
+            # Note: rescaling this metric to the empirical covariance's geometric mean was tried and
+            # is NOT implemented -- it made every measured model worse (8 Schools 50,626 -> 13,628
+            # ESS/s, radon centered R-hat 2.10 -> 5.69). See docs/ladder-results.md.
 
         # 7) Return dict-of-arrays keyed by variable (leading axis = chains)
         if isinstance(pf_inits_tree, (list, tuple)):
