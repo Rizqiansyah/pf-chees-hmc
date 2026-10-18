@@ -229,6 +229,10 @@ def score(idata, wall, backend, model, chains, cold, drop_vars=()):
             row["cov_cond"] = round(float(ev[-1] / max(ev[0], 1e-300)), 1)
     except Exception as exc:                                    # never lose a timing row to a diagnostic
         row["cov_cond_error"] = f"{type(exc).__name__}: {exc}"[:160]
+    if backend == "gpu":
+        row["imm"] = os.environ.get("IMM", "mc")
+        if row["imm"] != "mc":
+            row["rank"] = int(os.environ.get("MAXRANK", "10"))
     if "num_integration_steps" in idata.sample_stats:
         steps = np.asarray(idata.sample_stats["num_integration_steps"].values, dtype=float)
         steps = steps.reshape(steps.shape[0], steps.shape[1], -1)[..., 0]   # (chain, draw)
@@ -242,6 +246,10 @@ def run_gpu(model_obj, label, chains, seed, cold):
     idata = REAL_SAMPLE_PF(
         model_obj, draws=DRAWS, chains=chains, random_seed=seed,
         chees_kwargs={"draws": WARMUP},
+        pathfinder_kwargs={"imm_source": os.environ.get("IMM", "mc"),
+                           "max_rank": int(os.environ.get("MAXRANK", "10")),
+                           "fisher_gamma": float(os.environ.get("FISHER_GAMMA", "1e-5")),
+                           "fisher_cutoff": float(os.environ.get("FISHER_CUTOFF", "2.0"))},
     )
     wall = time.perf_counter() - t0
     return score(idata, wall, "gpu", label, chains, cold,
