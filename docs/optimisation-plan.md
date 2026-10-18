@@ -1,5 +1,9 @@
 # Optimisation and methodology plan — `pfcheeshmc`
 
+**SUPERSEDED for direction by `docs/gpu-upgrade-plan.md`** (2026-10-18). Keep this file for the
+measured stage cost model in §1 and the per-item detail. The kernel-family question, the
+ESS-per-second objective, and the reject list now live in the newer document.
+
 Status: proposal, nothing implemented. Date: 2026-10-17.
 Baseline commits: `4fb50e9` (BlackJAX 1.7 + pixi CUDA-13 env), `eb8c4c1` (`sample_stats` contract fix), `ba66ccc` (README).
 Environment: Python 3.13.7, blackjax 1.7.1, jax/jaxlib 0.11.2, pymc 5.28.5, pytensor 2.38.2, numpy 2.4.6, numba 0.66.0; 1× NVIDIA RTX A2000, driver 580.178.04 (`ref/README.md` lists the papers).
