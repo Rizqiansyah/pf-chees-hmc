@@ -542,6 +542,9 @@ class PfCheesHMC:
             target_acceptance_rate=kwargs['target_accept'],
             max_leapfrog_steps=kwargs['max_leapfrog_steps'],
             progressbar=bool(kwargs.get("progressbar", True)),
+            # Warmup stopping rule, e.g. {"block": 250, "window": 100, "rhat": 1.01}.
+            # Absent by default: warmup then runs exactly num_steps as before.
+            stop_rule=kwargs.get("warmup_stop", None),
         )
 
         return (
