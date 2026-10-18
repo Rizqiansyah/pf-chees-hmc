@@ -59,6 +59,26 @@ GPU_CHAINS = [int(c) for c in os.environ.get("GPU_CHAINS", "32,128").split(",")]
 CPU_CHAINS = [int(c) for c in os.environ.get("CPU_CHAINS", "4,16,32").split(",")]
 ARMS = os.environ.get("ARMS", "gpu,cpu").split(",")
 
+
+def _configs(spec):
+    """Parse 'chains:draws_per_chain,...' into [(chains, draws)]. Empty -> caller's defaults."""
+    out = []
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        chains, _, draws = item.partition(":")
+        out.append((int(chains), int(draws) if draws else DRAWS))
+    return out
+
+
+# Equal-total-draw budgets need (chains, draws) pairs, not two independent lists: 8x500 and
+# 32x125 are the same 4,000 samples. When these are unset the old chains-list behaviour stands.
+GPU_CONFIGS = _configs(os.environ.get("GPU_CONFIGS", ""))
+CPU_CONFIGS = _configs(os.environ.get("CPU_CONFIGS", ""))
+CPU_TUNE = int(os.environ.get("CPU_TUNE", "1000"))          # PyMC's default tune
+REPEAT = int(os.environ.get("REPEAT", "1"))                 # 2 = cold row then warm row
+
 SKIP_PREFIX = ("plt.", "az.plot", "sns.", "%", "display(", "pmat.", "arviz.plot", ".plot(")
 
 
@@ -194,14 +214,16 @@ def model_specs():
 
 
 # --------------------------------------------------------------------------- metrics
-def score(idata, wall, backend, model, chains, cold, drop_vars=()):
+def score(idata, wall, backend, model, chains, cold, drop_vars=(), draws=None, warmup=None):
+    draws = DRAWS if draws is None else draws
+    warmup = WARMUP if warmup is None else warmup
     ess = az.ess(idata.posterior, method="bulk", relative=False)
     etail = az.ess(idata.posterior, method="tail", relative=False)
     rh = az.rhat(idata.posterior)
     tot = float(sum(float(np.sum(v.values)) for v in ess.values()))
     row = {
         "backend": backend, "model": model, "chains": chains, "cold": cold,
-        "draws": DRAWS if backend == "gpu" else CPU_DRAWS, "warmup": WARMUP,
+        "draws": draws, "draws_total": draws * chains, "warmup": warmup,
         "wall_s": round(wall, 2), "ess_s_total": round(tot / wall, 0),
         "ess_s_worstvar": round(min(float(np.min(v.values)) for v in ess.values()) / wall, 0),
         "min_tail_ess": round(min(float(np.min(v.values)) for v in etail.values()), 0),
@@ -259,11 +281,13 @@ def score(idata, wall, backend, model, chains, cold, drop_vars=()):
     return row
 
 
-def run_gpu(model_obj, label, chains, seed, cold):
+def run_gpu(model_obj, label, chains, seed, cold, draws=None, warmup=None):
+    draws = DRAWS if draws is None else draws
+    warmup = WARMUP if warmup is None else warmup
     t0 = time.perf_counter()
     idata = REAL_SAMPLE_PF(
-        model_obj, draws=DRAWS, chains=chains, random_seed=seed,
-        chees_kwargs={"draws": WARMUP},
+        model_obj, draws=draws, chains=chains, random_seed=seed,
+        chees_kwargs={"draws": warmup},
         pathfinder_kwargs={"imm_source": os.environ.get("IMM", "mc"),
                            "max_rank": int(os.environ.get("MAXRANK", "10")),
                            "fisher_gamma": float(os.environ.get("FISHER_GAMMA", "1e-5")),
@@ -271,17 +295,21 @@ def run_gpu(model_obj, label, chains, seed, cold):
     )
     wall = time.perf_counter() - t0
     return score(idata, wall, "gpu", label, chains, cold,
-                 drop_vars=tuple(d.name for d in model_obj.deterministics))
+                 drop_vars=tuple(d.name for d in model_obj.deterministics),
+                 draws=draws, warmup=warmup)
 
 
-def run_cpu(model_obj, label, chains, seed, cold):
+def run_cpu(model_obj, label, chains, seed, cold, draws=None, tune=None):
+    draws = CPU_DRAWS if draws is None else draws
+    tune = CPU_TUNE if tune is None else tune
     t0 = time.perf_counter()
     with model_obj:
-        idata = REAL_PM_SAMPLE(draws=CPU_DRAWS, tune=CPU_DRAWS, chains=chains, cores=chains,
+        idata = REAL_PM_SAMPLE(draws=draws, tune=tune, chains=chains, cores=chains,
                                target_accept=0.8, random_seed=seed, progressbar=False)
     wall = time.perf_counter() - t0
     return score(idata, wall, "cpu_nuts", label, chains, cold,
-                 drop_vars=tuple(d.name for d in model_obj.deterministics))
+                 drop_vars=tuple(d.name for d in model_obj.deterministics),
+                 draws=draws, warmup=tune)
 
 
 def main():
@@ -297,19 +325,22 @@ def main():
         build = specs[label.strip()]
         for i, seed in enumerate(SEEDS):
             model_obj = build()
-            cold = i == 0
-            # A cell that dies must not end a 90-minute sweep: the device ceiling (d=175 at 128
-            # chains OOMs on 6 GB) is a result to record, not a crash to propagate.
-            for arm, chain_list, runner in (("gpu", GPU_CHAINS, run_gpu),
-                                            ("cpu", CPU_CHAINS, run_cpu)):
+            for arm, cfgs, runner in (("gpu", GPU_CONFIGS or [(c, DRAWS) for c in GPU_CHAINS], run_gpu),
+                                      ("cpu", CPU_CONFIGS or [(c, CPU_DRAWS) for c in CPU_CHAINS], run_cpu)):
                 if arm not in ARMS:
                     continue
-                for chains in chain_list:
-                    try:
-                        emit(runner(model_obj, label, chains, seed, cold))
-                    except Exception as exc:
-                        emit({"backend": arm, "model": label, "chains": chains, "seed": seed,
-                              "cold": cold, "error": f"{type(exc).__name__}: {exc}"[:200]})
+                for chains, draws in cfgs:
+                    for rep in range(max(REPEAT, 1)):
+                        # A cell that dies must not end a long sweep: the device ceiling (d=175 at
+                        # 128 chains OOMs on 6 GB) is a result to record, not a crash to propagate.
+                        try:
+                            # rep 0 of the first seed carries the compile; later reps are pure cost.
+                            emit(runner(model_obj, label, chains, seed, i == 0 and rep == 0,
+                                        draws=draws))
+                        except Exception as exc:
+                            emit({"backend": arm, "model": label, "chains": chains, "seed": seed,
+                                  "draws": draws, "cold": i == 0 and rep == 0,
+                                  "error": f"{type(exc).__name__}: {exc}"[:200]})
 
 
 if __name__ == "__main__":
