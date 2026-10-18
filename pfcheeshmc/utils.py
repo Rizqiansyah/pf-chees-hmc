@@ -37,6 +37,7 @@ def chees_warmup_with_progress(
     max_leapfrog_steps=1000,
     update_every=25,           # <-- throttle UI updates to keep overhead tiny
     progressbar=True,          # False removes jax.debug.callback from the compiled scan
+    stop_rule=None,            # None = fixed num_steps, identical to the previous behaviour
 ):
     # --- Halton jitter (same idea as BJ’s ChEES) ---
     def halton_u(i):
@@ -151,19 +152,73 @@ def chees_warmup_with_progress(
 
             lax.cond(should_cb, do_cb, dont_cb, operand=None)
 
-        return (new_states, new_astate), info  # (carry, y)
+        return (new_states, new_astate), (new_states.position, info)   # carry, (positions, info)
 
     one_step_jit = jax.jit(one_step)
 
-    # keys for each warmup step
-    keys = jax.random.split(rng_key, num_steps)
+    def _scan_block(carry, start, n):
+        """Run n warmup steps whose *global* step indices start at `start`.
 
-    # Run the scan (no BlackJAX progress wrapper; our bar is the only one)
-    (last_states, last_adapt_state), warm_info = jax.lax.scan(
-        one_step_jit,
-        (init_states, adaptation_state),
-        (jnp.arange(num_steps), keys),
-    )
+        The Halton trajectory jitter and the progress bar are functions of the step index, so a
+        resumed block has to be told where it sits in the run. Restarting the index at 0 would make
+        every block replay the same jitter sequence.
+        """
+        ks = jax.random.split(jax.random.fold_in(rng_key, start), n)
+        return jax.lax.scan(one_step_jit, carry, (jnp.arange(start, start + n), ks))
+
+    def _stop_met(pos_win, info_win, astate):
+        """Rank-normalised split-R-hat over a window, plus adapter quietness.
+
+        R-hat is the load-bearing part. Adapter stability on its own would have declared the radon
+        centered funnel converged while its trajectory was frozen at 4.4 leapfrog steps -- the
+        adapter was perfectly happy and the sampler was not exploring.
+        """
+        rhat_limit = float(stop_rule.get("rhat", 1.01))
+        eps_limit = float(stop_rule.get("eps_stability", 0.5))
+        lo, hi = stop_rule.get("accept_band", (0.601, 0.701))
+
+        vals = []
+        for leaf in jax.tree_util.tree_leaves(pos_win):
+            a = jnp.swapaxes(jnp.asarray(leaf), 0, 1)          # (window, chains, ...) -> (C, W, ...)
+            a = a.reshape(a.shape[0], a.shape[1], -1)
+            vals.extend(float(bj.diagnostics.rhat(a[:, :, j])) for j in range(a.shape[2]))
+        rhat = max(vals) if vals else float("inf")
+
+        acc = jnp.asarray(info_win.acceptance_rate)[-window:]
+        div = jnp.asarray(info_win.is_divergent)[-window:]
+        hm = float(chees_harmonic_acceptance(acc, div))
+        eps_gap = float(jnp.abs(astate.log_step_size_moving_average - jnp.log(astate.step_size)))
+        met = (rhat < rhat_limit) and (lo <= hm <= hi) and (eps_gap < eps_limit)
+        if stop_rule.get("debug"):
+            print(f"    stop_check step={done}: rhat={rhat:.4f} (limit {rhat_limit}) "
+                  f"accept_hm={hm:.4f} (band {lo}-{hi}) eps_gap={eps_gap:.4f} (limit {eps_limit}) "
+                  f"-> {'STOP' if met else 'continue'}", flush=True)
+        return met, {"rhat": rhat, "accept": hm, "eps_gap": eps_gap}
+
+    if stop_rule:
+        block = int(stop_rule.get("block", 250))
+        window = int(stop_rule.get("window", min(block, 100)))
+        carry = (init_states, adaptation_state)
+        done = 0
+        stopped_at = None
+        while done < num_steps:
+            n = min(block, num_steps - done)
+            carry, (pos_blk, info_blk) = _scan_block(carry, done, n)
+            done += n
+            if bar is not None:
+                bar.n = done
+                bar.refresh()
+            if done < num_steps and _stop_met(
+                    jax.tree_util.tree_map(lambda p: p[-window:], pos_blk), info_blk, carry[1])[0]:
+                stopped_at = done
+                break
+        (last_states, last_adapt_state), (pos_hist, warm_info) = carry, (pos_blk, info_blk)
+    else:
+        # Default path: one scan, same key stream as before the stop rule existed.
+        keys = jax.random.split(rng_key, num_steps)
+        (last_states, last_adapt_state), (pos_hist, warm_info) = jax.lax.scan(
+            one_step_jit, (init_states, adaptation_state), (jnp.arange(num_steps), keys))
+        stopped_at = None
 
     if bar is not None:
         bar.close()
@@ -178,5 +233,8 @@ def chees_warmup_with_progress(
         "inverse_mass_matrix": inverse_mass_matrix,
         "next_random_arg_fn": next_random_arg_fn,
         "integration_steps_fn": lambda arg: integration_steps_fn(arg, traj_len_adj),
+        # Number of warmup steps actually executed: equals num_steps unless a stop rule fired.
+        # Read by key elsewhere, never splatted into a kernel call.
+        "warmup_steps_used": int(stopped_at) if stopped_at else int(num_steps),
     }
     return (last_states, parameters), warm_info
