@@ -75,6 +75,8 @@ Pass `random_seed`: if it is omitted the seed defaults to the current date, so t
 
 **First run in a process is slower than later runs.** On the 8 Schools example at 32 chains: 48.3 s cold, 39.8 s cold with a persistent compile cache, 22 s warm in the same process. Setting `JAX_COMPILATION_CACHE_DIR` to a writable directory recovered 8.5 s of the 26 s compile cost at no cost to results (2.5 MB cache); the rest is JAX tracing, which that cache does not cover. Quote cold or warm, not both interchangeably.
 
+**Optional metric upgrade:** `pathfinder_kwargs={"imm_source": "fisher_lowrank"}` builds the metric from Pathfinder draws and their gradients (BlackJAX's Fisher score, low-rank) instead of the draw covariance. It is not a default, because it is not uniformly better — measured at 32 GPU chains, 2,000 draws: **1.22×** on 8 Schools, **1.96×** on logistic 1000x25, and **0.19×** on radon non-centered, with R-hat unchanged on the healthy models. The tell is `num_integration_steps` in `sample_stats`: if the realised trajectory length jumps from tens of steps to hundreds, the metric is wrong for the model and you are paying for it. `lbfgs_lowrank` reuses the L-BFGS factors Pathfinder already fitted at no extra cost.
+
 **Turn the progress bars off in scripts:** `sample_pf_chees_hmc(..., progressbar=False)` removes the host callbacks from the compiled warmup and sampling scans. It is quieter and skips a per-step host round trip; it does **not** change compile cost — measured, a warm compile cache saves 6-7 s with the bars on or off, at ~640 XLA compiles either way.
 
 **Warmup length: 2,000 is enough for these models; 10,000 was not.** Measured on both examples (2000 draws, 32 chains, warm median of 5 seeds, RTX A2000):
