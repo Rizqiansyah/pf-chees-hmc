@@ -97,6 +97,17 @@ the lanes from the rows. Rules:
 - `pixi run python -c "import pkg"` resolves against the repo cwd, which shadows `PYTHONPATH`.
 - `sample_pf_chees_hmc` defaults are in the public signature, not the internal stage
   `setdefault`s. Test the public default; the internal ones may be unreachable.
+- This repo's path contains a space (`Python packages`). PyTensor puts the environment prefix into
+  `blas__ldflags` as an unquoted `-Wl,-rpath,/home/.../Python packages/.../lib`, and its linker then
+  dies with `invalid token "packages/pf-chees-hmc/.pixi/envs/default/lib"` for any model that
+  compiles a `Dot`. Workaround: `PYTENSOR_FLAGS="blas__ldflags=-llapack -lblas -lcblas -lm"`.
+- Model graphs that broadcast a per-observation matrix solve (e.g. `MvNormal` with a dense `cov`
+  over thousands of observations) explode in memory under 32–128 vmapped chains: a d=50, n=2000
+  case tried to allocate 4.63 GiB. Pass a precomputed Cholesky or use a real benchmark model
+  instead of a hand-rolled ill-conditioned Gaussian.
+- A benchmark cell where the *reference* implementation also fails is not evidence about the
+  sampler. Always run the CPU arm on a new model first; if CPU NUTS gives R-hat 1.33 the model is
+  wrong, not the GPU.
 
 ## 7. Commit rules
 
