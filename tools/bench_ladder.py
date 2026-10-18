@@ -13,10 +13,15 @@ Environment:
 Reported per cell: wall (cold and warm flagged), bulk ESS/s total and worst-variable,
 min tail-ESS, max R-hat, divergences per 1000 draws, mean leapfrog steps, the padding ratio
 (mean over draws of max/mean across chains of num_integration_steps — warp-divergence cost),
+the draw-covariance condition number (mass-matrix difficulty proxy, unit-dependent),
 and whether sample_stats.energy contains non-finite values.
 
 CPU wall time includes tuning. GPU wall time includes Pathfinder, ChEES warmup and any
 compilation, so cold and warm must never be mixed in a comparison.
+
+Capacity is part of the result, not an accident: at d=175 (radon) 128 chains does not fit the 6 GB
+RTX A2000 — JAX fails allocating 699 MiB in a dot_general — while 32 chains runs comfortably. So a
+chain-count sweep has to report where the device stops, not extrapolate past it.
 """
 import json
 import os
@@ -101,26 +106,62 @@ def load_notebook_model(nb_path: str):
     return model
 
 
-def build_gaussian(d, cond, n_obs=2000, seed=7):
-    """Unknown mean of an ill-conditioned multivariate normal, estimated from n_obs draws.
+# A synthetic ill-conditioned MvNormal family was here and is deleted on purpose: with a dense
+# `cov` over many observations the jaxed logp allocated 4.63 GiB under 32 vmapped chains at d=50,
+# and the cheap n_obs=1 variant was unusable as a comparison because CPU NUTS failed it too
+# (R-hat 1.33). Stiffness comes from real models instead.
 
-    Conditioning of the posterior is inherited from Sigma, so this is a stiffness test with a
-    well-posed answer. It needs many observations: with one observation the posterior is so tiny
-    and so anisotropic that even CPU NUTS fails, which makes the cell useless as a comparison.
+PDB_RAW = "https://raw.githubusercontent.com/stan-dev/posteriordb/master/posterior_database"
+PDB_CACHE = Path.home() / ".cache" / "pf-ladder"
+
+
+def pdb_data(name: str):
+    """Fetch one PosteriorDB dataset (json.zip) and cache it under $HOME."""
+    import io
+    import urllib.request
+    import zipfile
+
+    PDB_CACHE.mkdir(parents=True, exist_ok=True)
+    out = PDB_CACHE / f"{name}.json"
+    if not out.exists():
+        raw = urllib.request.urlopen(f"{PDB_RAW}/data/data/{name}.json.zip", timeout=120).read()
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            out.write_bytes(z.read(f"{name}.json"))
+    return json.loads(out.read_text())
+
+
+def build_radon(noncentered: bool):
+    """Radon hierarchical slope/intercept model, posterior_database radon_mn pair (d=175, N=919).
+
+    The two parameterisations differ only in how the county effects are drawn, which makes this the
+    conditioning A/B: `centered` is the funnel where the group size is not identified, and
+    Seyboldt et al. excluded every centered variant of it for non-convergence. Ported directly from
+    the database's Stan source: half-normal(0,1) on the three sigmas, normal(0,10) on the two means,
+    county intercepts and slopes normal(mu, sigma), y ~ normal(alpha[c] + floor*beta[c], sigma_y).
     """
     import pymc as pm
 
-    rng = np.random.default_rng(seed)
-    scales = np.exp(np.linspace(0.0, np.log(cond), d))
-    q, _ = np.linalg.qr(rng.normal(size=(d, d)))
-    sigma = (q * scales) @ q.T
-    sigma = sigma @ sigma.T
-    sigma = sigma / np.max(np.diag(sigma))          # unit-ish marginal variances, cond preserved
-    y = rng.multivariate_normal(np.zeros(d), sigma, size=n_obs)
+    d = pdb_data("radon_mn")
+    idx = np.asarray(d["county_idx"]) - 1          # Stan is 1-based
+    floor = np.asarray(d["floor_measure"], dtype=float)
+    y = np.asarray(d["log_radon"], dtype=float)
+    J = int(d["J"])
 
     with pm.Model() as model:
-        mu = pm.Normal("mu", shape=(d,))
-        pm.MvNormal("y", mu=mu, cov=sigma, observed=y, shape=(n_obs, d))
+        sigma_y = pm.HalfNormal("sigma_y", 1.0)
+        sigma_alpha = pm.HalfNormal("sigma_alpha", 1.0)
+        sigma_beta = pm.HalfNormal("sigma_beta", 1.0)
+        mu_alpha = pm.Normal("mu_alpha", 0.0, 10.0)
+        mu_beta = pm.Normal("mu_beta", 0.0, 10.0)
+        if noncentered:
+            alpha_raw = pm.Normal("alpha_raw", shape=(J,))
+            beta_raw = pm.Normal("beta_raw", shape=(J,))
+            alpha = pm.Deterministic("alpha", mu_alpha + sigma_alpha * alpha_raw)
+            beta = pm.Deterministic("beta", mu_beta + sigma_beta * beta_raw)
+        else:
+            alpha = pm.Normal("alpha", mu=mu_alpha, sigma=sigma_alpha, shape=(J,))
+            beta = pm.Normal("beta", mu=mu_beta, sigma=sigma_beta, shape=(J,))
+        pm.Normal("obs", mu=alpha[idx] + floor * beta[idx], sigma=sigma_y, observed=y)
     return model
 
 
@@ -145,10 +186,10 @@ def model_specs():
     return {
         "8schools": lambda: load_notebook_model(REPO / "examples" / "8 Schools example.ipynb"),
         "gev": lambda: load_notebook_model(REPO / "examples" / "GEV Port Pirie example.ipynb"),
-        "gauss_d50": lambda: build_gaussian(50, 1e4),
-        "gauss_d500": lambda: build_gaussian(500, 1e4),
         "logit_1000x25": lambda: build_logistic(1000, 25),
         "logit_10000x50": lambda: build_logistic(10000, 50),
+        "radon_centered": lambda: build_radon(False),
+        "radon_noncentered": lambda: build_radon(True),
     }
 
 
@@ -171,6 +212,21 @@ def score(idata, wall, backend, model, chains, cold):
                                                           dtype=float))))
         if "energy" in idata.sample_stats else None,
     }
+    # Conditioning proxy for the mass matrix: the sampler's inverse mass matrix is built from
+    # Pathfinder draws, so the posterior draw covariance's condition number says what the metric
+    # has to cope with. Unit-dependent by construction -- compare it across models in the same
+    # units, never as an absolute.
+    try:
+        flat = np.concatenate(
+            [np.asarray(idata.posterior[v].values).reshape(-1, np.prod(
+                idata.posterior[v].values.shape[2:])) for v in idata.posterior.data_vars], axis=1)
+        if len(flat) > 20_000:
+            flat = flat[:: max(len(flat) // 20_000, 1)]   # strided, so the sample spans all chains
+        if flat.shape[1] > 1 and np.all(np.isfinite(flat)):
+            ev = np.linalg.eigvalsh(np.cov(flat, rowvar=False))
+            row["cov_cond"] = round(float(ev[-1] / max(ev[0], 1e-300)), 1)
+    except Exception as exc:                                    # never lose a timing row to a diagnostic
+        row["cov_cond_error"] = type(exc).__name__
     if "num_integration_steps" in idata.sample_stats:
         steps = np.asarray(idata.sample_stats["num_integration_steps"].values, dtype=float)
         steps = steps.reshape(steps.shape[0], steps.shape[1], -1)[..., 0]   # (chain, draw)
