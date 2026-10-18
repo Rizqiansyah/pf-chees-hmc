@@ -78,6 +78,35 @@ Cold start remains 48.3 s → 39.8 s with `JAX_COMPILATION_CACHE_DIR` on the 8 S
 the CPU reference is still a one-shot 4-lane single-threaded run — the equal-budget, all-core CPU
 comparison in §7 is unrun, so the honest scope is *these two models, this box, warm*.
 
+### 2b. CPU frontier measured (W0 answered) — the honest ratio is 3.6x / 2.6x
+`pm.sample` on this 32-core box, 1000 tune + 1000 draws, target_accept 0.8, wall including tuning,
+3 seeds (2 at the higher chain counts), bulk ESS summed over variables:
+
+| model | 4 ch | 8 ch | 16 ch | 32 ch (1 thread each) |
+|---|---|---|---|---|
+| 8 Schools | 17,860 | 31,806 | 37,987 | **37,494** |
+| GEV | 2,754 | 4,703 | 6,088 | **6,733** |
+
+Thread-per-chain scaling saturates at 4 (18,409 at 4 threads versus 18,034 at 32); the way to use a
+big CPU is more **chains**, and that saturates around 16. Best CPU versus best GPU:
+
+| model | best CPU | GPU 32 ch | GPU 128 ch |
+|---|---|---|---|
+| 8 Schools | 37,494 ESS/s @ 9.45 s | 45,614 (1.21x) | **134,898 (3.6x)** |
+| GEV | 6,733 ESS/s @ 11.57 s | 7,856 (1.17x) | **17,464 (2.6x)** |
+
+Therefore the 7.4x and 5.9x figures earlier in this document are **withdrawn** — they compared a
+128-chain GPU run against a 4-chain single-threaded CPU reference. The defensible statement is:
+*on these two models on this box, warm, the GPU reaches about 3.6x (8 Schools) and 2.6x (GEV) the
+best CPU throughput we could produce, and needs 128 chains to do it.* At 32 chains the advantage is
+only ~1.2x. On absolute wall time at small budgets CPU still wins (9.45 s versus 15.0 s for 8
+Schools) — the GPU's edge is samples per second, not seconds-to-a-usable-answer for a small job,
+and the GPU's cold start is ~40 s against roughly 2 s of PyTensor compilation.
+
+Two differences a skeptic will raise and both are in the GPU's favour here: divergences (CPU 44 on
+8 Schools and 373 on GEV at 32 chains versus GPU 0 and ~9), and cores consumed (32 CPU cores versus
+one A2000 plus its host threads).
+
 ---
 
 ## 3. Stage cost model (unchanged, still the basis for W-items)
@@ -265,7 +294,7 @@ kernel survives W6.
 
 | # | Item | Evidence | Gate |
 |---|---|---|---|
-| W0 | **Partially answered.** GPU now exceeds CPU NUTS on both example models at 32 and 128 chains (§2 table above). Still unrun: the ladder over model size — ill-conditioned Gaussian d=50/500, logistic 1000×25, and the CPU arm on all cores with its own core-count curve | chain sweep + warmup sweep measured here; no published ESS/s-vs-chain-count curve exists | report where the crossover lies as models get larger, or that GPU's advantage is confined to small cheap-gradient models |
+| W0 | **Answered (§2b).** Against the best CPU configuration we can build (32 chains on 32 cores), the GPU is 1.2× at 32 chains and 3.6× / 2.6× at 128 chains on 8 Schools / GEV; CPU wins on absolute wall time for small one-shot jobs. Still unrun: larger and stiffer models (ill-conditioned Gaussian d=50/500, logistic 1000×25), which is where the GPU advantage should grow | CPU curve measured here | does the crossover move in the GPU's favour as cost-per-gradient rises |
 | W1 | Delete per-chain ε tuner; replace with a documented initialiser (Pathfinder-derived, MEADS-style closed form, or 1.0) | 49% of runtime; H&G Alg 4 is an initializer that "works for any ε₁"; NumPyro ships it off | ESS/s gain ≥ 30% with r̂, tail-ESS, BFMI and divergence gates held |
 | W1b (done) | ~~Read LAPS end to end and audit `adaptation/laps.py`~~ — done, verdict in D7: not adopted | LAPS metric is gradient calls, not ESS or seconds [F-verified] | closed |
 | W6a | **LAPS preconditioner arm, public API only.** Gate first: wall-clock per gradient call for `dynamic_hmc` vs `adjusted_mclmc` at our d and 32 chains (~2 min). Then arms (a) current ChEES+dhmc, (b) dhmc with metric = ensemble `Var[x]` and step size from ~200 unadjusted `blackjax.mclmc` steps (`L=2·sqrt(ΣVar)`, `C=0.025`, switch on `delta[x_i^2] < 0.01`), (c) `adjusted_mclmc` driven by (b) | D7 ablation says the kernel, not the metric, carries LAPS's win; if MAMS's per-call cost is worse on an A2000 the paper's derived advantage cannot transfer and (b)/(c) are decided before they run | ~2 GPU-min/arm; budget-matched ESS/s at 90 s, scored over the whole run and post-t=30 s |
