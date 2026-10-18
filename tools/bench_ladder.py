@@ -261,23 +261,29 @@ def run_cpu(model_obj, label, chains, seed, cold):
 def main():
     OUT.parent.mkdir(exist_ok=True, parents=True)
     specs = model_specs()
+
+    def emit(row):
+        print(json.dumps(row), flush=True)
+        with open(OUT, "a") as fh:
+            fh.write(json.dumps(row) + "\n")
+
     for label in os.environ.get("MODELS", "8schools,gev").split(","):
         build = specs[label.strip()]
         for i, seed in enumerate(SEEDS):
             model_obj = build()
             cold = i == 0
-            if "gpu" in ARMS:
-                for chains in GPU_CHAINS:
-                    row = run_gpu(model_obj, label, chains, seed, cold)
-                    print(json.dumps(row), flush=True)
-                    with open(OUT, "a") as fh:
-                        fh.write(json.dumps(row) + "\n")
-            if "cpu" in ARMS:
-                for chains in CPU_CHAINS:
-                    row = run_cpu(model_obj, label, chains, seed, cold)
-                    print(json.dumps(row), flush=True)
-                    with open(OUT, "a") as fh:
-                        fh.write(json.dumps(row) + "\n")
+            # A cell that dies must not end a 90-minute sweep: the device ceiling (d=175 at 128
+            # chains OOMs on 6 GB) is a result to record, not a crash to propagate.
+            for arm, chain_list, runner in (("gpu", GPU_CHAINS, run_gpu),
+                                            ("cpu", CPU_CHAINS, run_cpu)):
+                if arm not in ARMS:
+                    continue
+                for chains in chain_list:
+                    try:
+                        emit(runner(model_obj, label, chains, seed, cold))
+                    except Exception as exc:
+                        emit({"backend": arm, "model": label, "chains": chains, "seed": seed,
+                              "cold": cold, "error": f"{type(exc).__name__}: {exc}"[:200]})
 
 
 if __name__ == "__main__":
