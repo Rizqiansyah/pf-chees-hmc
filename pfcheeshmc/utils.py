@@ -71,7 +71,10 @@ def chees_warmup_with_progress(
     max_leapfrog_steps=1000,
     update_every=25,           # <-- throttle UI updates to keep overhead tiny
     progressbar=True,          # False removes jax.debug.callback from the compiled scan
-    stop_rule=None,            # None = fixed num_steps, identical to the previous behaviour
+    stop_rule=None,            # None = fixed num_steps, identical to the previous behaviour.
+                             #     Measured net negative on all four ladder models (block
+                             #     boundaries cost 6.7-9.0 s, more than any warmup saving);
+                             #     kept opt-in for instrumentation, see docs/ladder-results.md
 ):
     # --- Halton jitter (same idea as BJ’s ChEES) ---
     def halton_u(i):

@@ -361,3 +361,44 @@ across variables.
    a stop rule's whole purpose is to make warmup short. So the stop rule must be validated *with*
    stratified starts in place, not after. Deciding them separately would produce a stop rule measured
    in a regime that no longer exists.
+
+## Warmup stop rule: costs more than it saves (E5)
+
+Fresh process per cell, seed 43, 32 chains, 1,250 draws, warmup cap 2,000, blocks of 250,
+gate = split-R-hat < 1.01 over the block plus step-size quietness. `wall_s` is the whole run.
+
+| model | base wall | rule wall | delta | warmup used | max R-hat (base / rule) | min bulk ESS (base / rule) |
+|---|---|---|---|---|---|---|
+| 8 Schools | 39.21 s | 45.93 s | **+6.7 s** | 500 | 1.0018 / 1.0018 | 21,827 / 19,360 |
+| GEV | 53.72 s | 60.13 s | +6.4 s | 2,000 | 1.0074 / 1.0378 | 5,189 / 926 |
+| radon non-centered | 87.92 s | 95.51 s | +7.6 s | 2,000 | 1.0061 / 1.0053 | 4,257 / 4,098 |
+| radon centered | 70.23 s | 79.23 s | +9.0 s | 2,000 | 4.2197 / 4.6323 | 34 / 34 |
+
+Read the table as three separate facts:
+
+1. **Quality is not the problem.** Where the rule fired (8 Schools, 500 of 2,000 steps) posterior means
+   moved 0.0100 sd against the same-seed 2,000-step reference; two legitimate 2,000-step runs at
+   different seeds move 0.0108 sd. Stopping early was statistically free.
+2. **The criterion is conservative, not weak.** It fired on one model of four. On GEV and on both
+   radons the warmup window R-hat never dropped below 1.01, so they ran the full 2,000 steps -- which
+   is also the correct behaviour on radon centered, the funnel this rule was required to refuse.
+3. **The blocked path costs 6.7-9.0 s that the scan does not contain.** 1,500 fewer warmup steps on
+   8 Schools is worth about 3.0 s at the measured 2.05 ms per step, so the rule loses on every model,
+   including the three it never stopped on.
+
+Cost history, because the first number was misleading: calling `blackjax.diagnostics.rhat` per
+parameter compiled per shape and cost ~8 s per block (warmup read 19.17 s for 500 steps against
+4.85 s for 2,000 steps). Concatenating all chains, draws and dimensions into one call removed that.
+The residual ~7-9 s is block-boundary machinery -- a second scan artifact per block shape plus a host
+synchronisation at every boundary -- and was not worth chasing further, because the fix is to move the
+loop inside the trace (`blackjax.eca.while_with_info` with the diagnostic as the condition), which is a
+rewrite rather than a tuning of this design.
+
+Verdict: **not a default, and not worth the rewrite at this budget.** The `stop_rule` kwarg stays for
+anyone who wants the block-level instrumentation; with `stop_rule=None` the warmup is the single scan
+it always was, with the same key stream.
+
+What the finding does keep: the *fixed* cost of warmup is not the number of steps. Warmup is 43-48% of
+a radon run, and cutting its steps in half is worth ~10 s while the machinery around a stepped-down
+warmup costs about the same. The lever that survives is warmup that does less work per step, not fewer
+steps -- which is what the MEADS/GHMC one-leapfrog-per-step probe is for.
