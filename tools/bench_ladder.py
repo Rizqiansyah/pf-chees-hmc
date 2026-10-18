@@ -233,6 +233,24 @@ def score(idata, wall, backend, model, chains, cold, drop_vars=()):
         row["imm"] = os.environ.get("IMM", "mc")
         if row["imm"] != "mc":
             row["rank"] = int(os.environ.get("MAXRANK", "10"))
+            row["cutoff"] = float(os.environ.get("FISHER_CUTOFF", "2.0"))
+    if "energy" in idata.sample_stats:
+        # E-BFMI (Betanin et al. / Vehtari et al.), threshold 0.3. BlackJAX stores the *proposal*
+        # state's energy (blackjax/mcmc/hmc.py:171), so a divergent transition writes +inf and the
+        # plain arviz call returns NaN -- which is why GEV had no BFMI at all. Non-finite entries
+        # are dropped before differencing; that creates one artificial adjacency per dropped draw,
+        # which biases E-BFMI upward (looks healthier), so divergence counts are reported too.
+        e = np.asarray(idata.sample_stats["energy"].values, dtype=float)
+        e = e.reshape(e.shape[0], e.shape[1], -1)[..., 0]      # (chain, draw)
+        row["energy_nonfinite"] = int((~np.isfinite(e)).sum())
+        bfmi = []
+        for c in range(e.shape[0]):
+            ec = e[c][np.isfinite(e[c])]
+            if ec.size > 10:
+                var_e = float(np.var(ec))
+                if var_e > 0:
+                    bfmi.append(float(np.var(np.diff(ec)) / var_e))
+        row["ebfmi"] = round(min(bfmi), 4) if bfmi else None
     if "num_integration_steps" in idata.sample_stats:
         steps = np.asarray(idata.sample_stats["num_integration_steps"].values, dtype=float)
         steps = steps.reshape(steps.shape[0], steps.shape[1], -1)[..., 0]   # (chain, draw)
