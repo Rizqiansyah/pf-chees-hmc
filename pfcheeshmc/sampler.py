@@ -564,10 +564,11 @@ class PfCheesHMC:
             if get_acc is not None:
                 acc_leaf = get_acc(info)
                 if acc_leaf.ndim > 1:
-                    acc_mean = jnp.mean(acc_leaf, axis=tuple(range(1, acc_leaf.ndim)))
-                    acc_mean = jnp.mean(acc_mean)
-                else:
-                    acc_mean = jnp.mean(acc_leaf)
+                    acc_leaf = jnp.mean(acc_leaf, axis=tuple(range(1, acc_leaf.ndim)))
+                # Show the acceptance ChEES targeted, not the arithmetic mean of trajectories
+                # (see utils.chees_harmonic_acceptance). Same number in both bars now.
+                div_mask = div_vec if get_div is not None else jnp.zeros(acc_leaf.shape, dtype=bool)
+                acc_mean = chees_harmonic_acceptance(acc_leaf, div_mask)
             else:
                 acc_mean = jnp.asarray(jnp.nan, dtype=jnp.float32)
 

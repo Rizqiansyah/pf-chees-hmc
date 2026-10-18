@@ -7,7 +7,19 @@ from jax import lax
 from tqdm.auto import tqdm
 import blackjax.mcmc.dynamic_hmc as dynamic_hmc
 
-__all__ = ["chees_warmup_with_progress"]
+__all__ = ["chees_warmup_with_progress", "chees_harmonic_acceptance"]
+
+
+def chees_harmonic_acceptance(acc_vals, is_divergent):
+    """The acceptance ChEES actually adapts on: harmonic mean over the non-divergent chains.
+
+    Mirrors `blackjax.adaptation.chees_adaptation` (harmonic_mean, :358-363), including the
+    non-finite -> 0 guard. The arithmetic mean of per-trajectory acceptances is systematically
+    higher than this (Jensen), so displaying it hides exactly the heterogeneity the step-size
+    adaptation reacts to -- it already caused a wrong diagnosis in this project.
+    """
+    hm = 1.0 / jnp.mean(1.0 / acc_vals, where=~is_divergent)
+    return jnp.where(jnp.isfinite(hm), hm, 0.0)
 
 def chees_warmup_with_progress(
     ld_fn,                      # logdensity function
@@ -106,7 +118,7 @@ def chees_warmup_with_progress(
 
         # diagnostics for this iteration (across chains)
         div_step  = jnp.sum(info.is_divergent)
-        acc_mean  = jnp.mean(acc_vals)
+        acc_mean  = chees_harmonic_acceptance(acc_vals, info.is_divergent)
 
         # Update adaptation state
         new_astate = update_adapt(
