@@ -117,3 +117,70 @@ symptom), which no per-draw diagnostic shows until it is too late. The centered 
 metric problem either: rank 10/40, warmup 2,000/10,000, cutoff 2/10 and scaling all leave R-hat
 between 2.10 and 5.69, while non-centering the same model reaches 1.005. That is a parameterisation
 fix in the user's model, not a sampler fix.
+
+## Equal-draw-budget comparison (time to the same number of samples)
+
+ESS per second rewards running more chains for longer. The operationally fair question is: same
+total post-warmup draws, varied chains, **who finishes first** — and are those draws worth
+anything. Configuration: chains x draws-per-chain pairs holding the total at 4,000 (a first look at
+a model) and 40,000 (a publication run). GPU at its shipped 2,000-step ChEES warmup; CPU NUTS with
+PyMC's default `tune=1000`, `target_accept=0.8`, one BLAS thread per chain, `cores = chains`.
+**One seed per cell** — this is a scoping measurement, not a shipped claim. `ESS1` is the bulk ESS of
+the single worst variable. Reproduce with `tools/bench_ladder.py` + `tools/budget_summary.py`.
+
+### 8 Schools (d=10)
+
+| total draws | chains | GPU cold s | GPU warm s | CPU s | GPU/CPU | R-hat G | R-hat C | ESS1 G | ESS1 C |
+|---|---|---|---|---|---|---|---|---|---|
+| 4,000 | 4x1,000 | 17.6 | 8.8 | **2.4** | 3.61x | 1.0061 | 1.0022 | 1,718 | 2,652 |
+| 4,000 | 8x500 | 18.1 | 8.7 | **2.6** | 3.34x | 1.0055 | 1.0030 | 1,938 | 2,383 |
+| 4,000 | 16x250 | 18.8 | 9.2 | **4.6** | 2.03x | 1.0117 | 1.0073 | 2,160 | 2,248 |
+| 4,000 | 32x125 | 37.0 | 10.3 | **8.5** | 1.21x | 1.0169 | 1.0143 | 2,308 | 2,549 |
+| 40,000 | 4x10,000 | 18.8 | 17.6 | **8.6** | 2.05x | 1.0004 | 1.0002 | 16,043 | 21,232 |
+| 40,000 | 8x5,000 | 14.9 | 13.8 | **6.2** | 2.25x | 1.0008 | 1.0004 | 19,888 | 21,174 |
+| 40,000 | 16x2,500 | 13.4 | 12.2 | **8.7** | 1.41x | 1.0008 | 1.0008 | 22,094 | 22,793 |
+| 40,000 | 32x1,250 | 13.1 | 12.4 | 12.6 | **0.98x** | 1.0013 | 1.0016 | 22,717 | 23,726 |
+
+### Radon non-centered (d=175)
+
+| total draws | chains | GPU cold s | GPU warm s | CPU s | GPU/CPU | R-hat G | R-hat C | ESS1 G | ESS1 C |
+|---|---|---|---|---|---|---|---|---|---|
+| 4,000 | 4x1,000 | 39.6 | 21.5 | **10.5** | 2.05x | 1.0250 | 1.0081 | 172 | 587 |
+| 4,000 | 8x500 | 34.6 | 19.0 | **8.6** | 2.20x | 1.0331 | 1.0119 | 228 | 656 |
+| 4,000 | 16x250 | 44.2 | 24.7 | **11.2** | 2.20x | 1.0430 | 1.0144 | 296 | 594 |
+| 4,000 | 32x125 | 78.5 | 30.3 | **16.2** | 1.87x | 1.0834 | 1.0606 | 333 | 390 |
+| 40,000 | 4x10,000 | 70.4 | 75.2 | **35.8** | 2.10x | 1.0015 | 1.0006 | 2,029 | 6,487 |
+| 40,000 | 8x5,000 | 43.7 | 37.6 | **24.3** | 1.55x | 1.0165 | 1.0008 | 564 | 6,094 |
+| 40,000 | 16x2,500 | 45.6 | 43.7 | **24.1** | 1.81x | 1.0067 | 1.0020 | 3,889 | 6,119 |
+| 40,000 | 32x1,250 | 43.6 | 43.1 | **26.7** | 1.62x | 1.0058 | 1.0030 | 4,009 | 6,209 |
+
+GPU at 128 chains does not fit radon on 6 GB (allocation failure at 699 MiB); 8 Schools at 128 chains
+takes 17.3 s for 4,096 draws versus 8.5 s for the CPU at 32x125.
+
+### What this says
+
+1. **At equal sample counts the CPU wins this box today.** 15 of 16 cells. The one tie is 8 Schools
+   at 40,000 draws with 32 chains (12.4 s vs 12.6 s). The earlier GPU wins in ESS/s were real but are
+   a throughput statement about long runs with many chains; they do not survive fixing the sample
+   count, because the GPU pays two costs the CPU does not: a 2,000-step lockstep warmup and a fresh
+   JAX trace for every new chain count (~15-19 s).
+2. **The gap is fixed cost, not sampling speed.** GPU warm time at 8 Schools 40,000 draws (12.2-13.8 s)
+   is within 1.5-2.3x of CPU even though the sampling itself is faster; subtract ~6 s of setup and
+   ~11 s of warmup and the remaining sampling time is below the CPU's. At 4,000 draws the fixed cost
+   is 75-90% of the run, which is why the ratio is worst there.
+3. **Short chains cost quality on both arms, and the GPU more.** At 4,000 draws GPU max R-hat rises
+   monotonically with chains (1.006 -> 1.017 on 8 Schools, 1.025 -> 1.083 on radon); CPU rises less.
+   Worst-variable ESS at 4,000 draws is below the 400 target on radon in every GPU cell (172-333).
+   A 4,000-draw budget is simply not enough for d=175, sliced any way.
+4. **Warmup 1,000 instead of 2,000 is a real lever only on long chains.** Radon at 40,000 draws:
+   33.2-41.1 s with R-hat 1.004-1.009 at 16 and 32 chains. At 4,000 draws it is a disaster:
+   R-hat 2.16 at 4 chains. (Different seed from the 2,000-step rows, so read the direction, not the
+   decimal.) This is the strongest argument for a stopping criterion rather than a shorter constant.
+5. **CPU divergences are the counterweight.** CPU NUTS shows 1.3-2.3 divergences per 1,000 on
+   8 Schools and ~1 on radon, against 0-0.05 for the GPU. On wall time today the CPU wins at these
+   budgets; the GPU's case is divergence-free output plus throughput once the run is long enough for
+   the fixed cost to amortise.
+
+Next work item this points at, in order: kill the warmup fixed cost (criterion-based stop, then a
+tuned-hyperparameter cache for the second run of the same model), and stop re-tracing per chain
+count. Both are generic across models; neither touches the kernel.
