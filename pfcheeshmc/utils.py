@@ -1,5 +1,8 @@
 from functools import partial
 import jax, jax.numpy as jnp
+import time
+from typing import Any, Callable, Dict
+
 import numpy as np
 import arviz as az
 import blackjax as bj
@@ -7,7 +10,7 @@ from jax import lax
 from tqdm.auto import tqdm
 import blackjax.mcmc.dynamic_hmc as dynamic_hmc
 
-__all__ = ["chees_warmup_with_progress", "chees_harmonic_acceptance"]
+__all__ = ["chees_warmup_with_progress", "chees_harmonic_acceptance", "block_max_rhat"]
 
 
 def chees_harmonic_acceptance(acc_vals, is_divergent):
@@ -20,6 +23,37 @@ def chees_harmonic_acceptance(acc_vals, is_divergent):
     """
     hm = 1.0 / jnp.mean(1.0 / acc_vals, where=~is_divergent)
     return jnp.where(jnp.isfinite(hm), hm, 0.0)
+
+
+def block_max_rhat(pos_window):
+    """Max rank-normalised split-R-hat over a warmup window.
+
+    `pos_window` is a pytree of (window, chains, ...) arrays -- what the warmup scan emits. All
+    chains, draws and parameters go through ONE call to blackjax.diagnostics.rhat, which accepts the
+    full (chains, draws, dim) array with chain_axis/sample_axis named and agrees with arviz to
+    float32 noise (pinned in tests/test_warmup_stop.py).
+
+    Calling it per parameter cost ~8 s of XLA compiles per warmup block: a stopped 8 Schools run
+    spent 19.17 s in warmup for 500 steps, against 4.85 s for 2,000 steps unblocked.
+
+    Reimplementing it was tried and is wrong. A hand-written "rank, normal-score, pool-standardise,
+    split" read 1.000 where arviz read 1.059-1.086 on chains of differing width, because the library
+    standardises ranks per chain rather than pooled -- so do not replace this with 15 lines of jnp.
+    """
+    arrs = []
+    for leaf in jax.tree_util.tree_leaves(pos_window):
+        a = jnp.asarray(leaf)
+        if a.ndim < 2:
+            raise ValueError("warmup window leaves must be (window, chains, ...)")
+        a = jnp.swapaxes(a, 0, 1)                       # -> (chains, window, ...)
+        arrs.append(a if a.ndim == 3 else a.reshape(a.shape[0], a.shape[1], -1))
+    ref = arrs[0].shape[:2]
+    for a in arrs:
+        if a.shape[:2] != ref:
+            raise ValueError(f"warmup window shape mismatch: {a.shape[:2]} vs {ref}")
+    stacked = arrs[0] if len(arrs) == 1 else jnp.concatenate(arrs, axis=-1)
+    return float(jnp.max(bj.diagnostics.rhat(stacked, chain_axis=0, sample_axis=1)))
+
 
 def chees_warmup_with_progress(
     ld_fn,                      # logdensity function
@@ -183,16 +217,11 @@ def chees_warmup_with_progress(
         that same trivial target; at 250 draws it reads 1.0031-1.0099. Short-window R-hat is a
         property of the estimator, not of the sampler.
         """
-        rhat_limit = float(stop_rule.get("rhat", 1.01))
+        rhat_limit = float(stop_rule.get("rhat", 1.01))   # the project's G-A convergence bar
         eps_limit = float(stop_rule.get("eps_stability", 0.5))
         band = stop_rule.get("accept_band")   # opt-in only; see the note below
 
-        vals = []
-        for leaf in jax.tree_util.tree_leaves(pos_win):
-            a = jnp.swapaxes(jnp.asarray(leaf), 0, 1)          # (window, chains, ...) -> (C, W, ...)
-            a = a.reshape(a.shape[0], a.shape[1], -1)
-            vals.extend(float(bj.diagnostics.rhat(a[:, :, j])) for j in range(a.shape[2]))
-        rhat = max(vals) if vals else float("inf")
+        rhat = block_max_rhat(pos_win)
 
         acc = jnp.asarray(info_win.acceptance_rate)[-window:]
         div = jnp.asarray(info_win.is_divergent)[-window:]
@@ -203,7 +232,7 @@ def chees_warmup_with_progress(
             met = met and (band[0] <= hm <= band[1])
         if stop_rule.get("debug"):
             print(f"    stop_check step={done}: rhat={rhat:.4f} (limit {rhat_limit}) "
-                  f"accept_hm={hm:.4f} (band {lo}-{hi}) eps_gap={eps_gap:.4f} (limit {eps_limit}) "
+                  f"accept_hm={hm:.4f} eps_gap={eps_gap:.4f} (limit {eps_limit}) "
                   f"-> {'STOP' if met else 'continue'}", flush=True)
         return met, {"rhat": rhat, "accept": hm, "eps_gap": eps_gap}
 
@@ -217,7 +246,9 @@ def chees_warmup_with_progress(
         stopped_at = None
         while done < num_steps:
             n = min(block, num_steps - done)
+            _t = time.perf_counter()
             carry, (pos_blk, info_blk) = _scan_block(carry, done, n)
+            _t_scan = time.perf_counter() - _t
             done += n
             if bar is not None:
                 bar.n = done
@@ -225,6 +256,9 @@ def chees_warmup_with_progress(
             if done < num_steps and _stop_met(
                     jax.tree_util.tree_map(lambda p: p[-window:], pos_blk), info_blk, carry[1])[0]:
                 stopped_at = done
+            if stop_rule.get("debug"):
+                print(f"    block {done:5d}: scan {_t_scan:6.2f} s", flush=True)
+            if stopped_at is not None:
                 break
         (last_states, last_adapt_state), (pos_hist, warm_info) = carry, (pos_blk, info_blk)
     else:
