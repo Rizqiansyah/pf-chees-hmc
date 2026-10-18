@@ -64,9 +64,13 @@ reproducible on our box — and it becomes E4's acceptance target.
 
 ## E2 — Correctness guards
 
-1. **NaN gradient at a feasible start.** GEV at `model.initial_point()` has log-density −7.749 and
-   all three partial derivatives NaN. `_ensure_finite_inits` tests log-density only, so it cannot
-   see this; the pipeline escapes only because its seed differs by luck. Guard on gradient finiteness.
+1. **NaN gradient at a feasible start — done in `07db02c`.** GEV at `model.initial_point()` has
+   log-density −7.749 and all three partial derivatives NaN. `_ensure_finite_inits` tested
+   log-density only, so it could not see this; the pipeline escaped only because its seed differed
+   by luck. Starts now require a finite gradient, verified end-to-end on GEV and 8 Schools with no
+   diagnostic or throughput change. Root cause is deeper than a JAX quirk: `GenExtreme.logp`
+   differentiates the unselected `xi != 0` branch, and the density is not C¹ at ξ = 0 — PyTensor's
+   own autodiff returns NaN there too.
 2. **Key collision — confirmed.** `key_warm` (`sampler.py:426-427`: `rng = jax.random.key(seed)`,
    `_, key_warm = jax.random.split(rng)`) and `key_sample` (`sampler.py:452` and `:587`, same parent
    key, same child index) are the **same key**, so sampling draws from the prefix of the warmup key
@@ -81,16 +85,24 @@ reproducible on our box — and it becomes E4's acceptance target.
    (`utils.py:109`, printed at `:81`) and sampling also shows the arithmetic mean
    (`sampler.py:565`), while ChEES adapts on the harmonic mean excluding divergences
    (`chees_adaptation.py:358-363`). This already caused one wrong diagnosis in this project.
-4. **Undefined BFMI on GEV.** `sample_stats.energy` contains non-finite values; find why and either
-   fix the export or document it as undefined rather than emitting a number.
+4. **Undefined BFMI on GEV — done in `5f5b0d3`.** Cause: `blackjax/mcmc/hmc.py:171` stores the
+   *proposal* state's energy, so a divergence writes +inf and arviz's BFMI is NaN. The harness now
+   reports E-BFMI over finite entries plus `energy_nonfinite`; measured 1.154 (GEV), 0.979
+   (8 Schools), 0.990 (logistic), 0.597 (radon noncentered), 0.397 (radon centered). Every cell
+   clears the 0.3 gate, so E-BFMI is not a funnel detector — R-hat and trajectory length are.
 
-## E3 — Test wiring
+## E3 — Test wiring — done (`95b7134`, now 16 tests)
 
 `pixi add --pypi pytest` (or a dev feature), a CPU `test` task, a GPU `test-gpu` task that runs the
 two example models at reduced budgets. Both current test files already run standalone via
 `__main__`, so this is packaging, not rewriting.
 
-## E4 — Metric upgrade, **opened by measurement**
+## E4 — Metric upgrade: **measured, shipped as an option, not a default**
+
+Full A/B with eigen-spectra and the rejected scale-match repair: see `docs/ladder-results.md`,
+"Metric A/B (E4)". Summary — `fisher_lowrank` is 1.22x on 8 Schools and 1.96x on logistic with
+R-hat unchanged, 0.19x on radon noncentered, and the centered funnel stays at R-hat 2.10-5.69 under
+every metric configuration. The discriminator is realised trajectory length.
 
 G1 is satisfied: ladder condition numbers are 426 (logistic), 6,660 (radon centered) and 25,116
 (radon noncentered) against the 50 threshold, and the centered funnel already fails quality gates.
