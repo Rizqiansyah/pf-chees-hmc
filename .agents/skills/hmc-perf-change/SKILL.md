@@ -95,6 +95,12 @@ the lanes from the rows. Rules:
 - JAX: `jax.random.split(key, n)` returns keys shaped `(n,)`, not `(n,2)`; `jax.random.split`
   inside a `vmap` raises. Pre-generate keys as `(ntrans, nchains)`.
 - `pixi run python -c "import pkg"` resolves against the repo cwd, which shadows `PYTHONPATH`.
+- **`CUDA_VISIBLE_DEVICES=''` does NOT put this project on the CPU.** `pixi.toml` sets
+  `CUDA_VISIBLE_DEVICES = "0"` under `[activation.env]`, and activation overrides the caller's
+  environment, so `CUDA_VISIBLE_DEVICES='' pixi run python ...` still gets the A2000. The working
+  form is a post-activation override: `pixi run env CUDA_VISIBLE_DEVICES= python ...` (verified:
+  `jax.devices()` -> `['cpu']`). Any measurement or "CPU-only" instruction that used the old form
+  was really running on the GPU, and its timings must be re-labelled.
 - `sample_pf_chees_hmc` defaults are in the public signature, not the internal stage
   `setdefault`s. Test the public default; the internal ones may be unreachable.
 - This repo's path contains a space (`Python packages`). PyTensor puts the environment prefix into

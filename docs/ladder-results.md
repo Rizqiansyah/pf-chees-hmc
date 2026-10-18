@@ -185,6 +185,17 @@ Next work item this points at, in order: kill the warmup fixed cost (criterion-b
 tuned-hyperparameter cache for the second run of the same model), and stop re-tracing per chain
 count. Both are generic across models; neither touches the kernel.
 
+## Measurement-integrity note
+
+Two probe bugs were caught during this work and both are worth knowing before trusting any timing
+here. (1) A scan carry of the form `x - 0.0 * g` is dead-code-eliminated by XLA, so a probe that
+"consumes" a gradient that way times an empty loop -- this voided the first two versions of the
+per-gradient probe. Any such probe needs a carry that changes the returned value, plus a
+gradient-ignoring floor control row. (2) `CUDA_VISIBLE_DEVICES=''` does not make a `pixi run`
+execute on the CPU, because `pixi.toml` exports `CUDA_VISIBLE_DEVICES = "0"` in `[activation.env]`
+and activation wins. The correct form is `pixi run env CUDA_VISIBLE_DEVICES= python ...`. Numbers
+labelled CPU in the parallel lane notes at `/home/akbar/pf-research/` may therefore be GPU numbers.
+
 ## Per-gradient cost of the real graphs, chains varied
 
 Valid version: the scan carry consumes the gradient (accumulated as a sum of squares) and every row
