@@ -36,7 +36,9 @@ matplotlib = ">=3.8.0"
 tqdm = ">=4.66.0"
 ipykernel = ">=6.29.0"
 nbconvert = ">=7.16.0"
+pytest = ">=9.1.1, <10"
 
 [tasks]
 gpu-check = "python -c \"import jax; print(jax.__version__); print(jax.devices())\""
 vram = "nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv"
+test = "python -m pytest tests -q"
