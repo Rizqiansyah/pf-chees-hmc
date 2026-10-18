@@ -402,3 +402,50 @@ What the finding does keep: the *fixed* cost of warmup is not the number of step
 a radon run, and cutting its steps in half is worth ~10 s while the machinery around a stepped-down
 warmup costs about the same. The lever that survives is warmup that does less work per step, not fewer
 steps -- which is what the MEADS/GHMC one-leapfrog-per-step probe is for.
+
+## MEADS warmup + GHMC sampling: cheaper per gradient, fails on quality (E5)
+
+32 chains, 1,250 draws, same Pathfinder starts and the same log-density in every arm. `grad_per_ess`
+is total gradient evaluations divided by the bulk ESS of the *worst* variable, the E5 acceptance
+measure. `wall_s` is NOT comparable across arms: the ChEES row times the whole `sample_pf_chees_hmc`
+call including Pathfinder, the MEADS rows time warmup + sampling only. The verdict does not depend on
+wall time -- it is decided by R-hat and ESS.
+
+| model | arm | max R-hat | min bulk ESS | gradients | grad / ESS | mean shift vs ChEES |
+|---|---|---|---|---|---|---|
+| 8 Schools | ChEES + dynamic HMC | 1.0020 | 22,652 | 68,754 | 3.0 | -- |
+| 8 Schools | MEADS 500 + GHMC | **1.0331** | 2,775 | 1,750 | 0.6 | 0.224 sd |
+| 8 Schools | MEADS 2,000 + GHMC | **1.0308** | 3,390 | 3,250 | 1.0 | 0.176 sd |
+| radon non-centered | ChEES + dynamic HMC | 1.0075 | 4,102 | 123,752 | 30.2 | -- |
+| radon non-centered | MEADS 500 + GHMC | **343.9** | 32 | 1,750 | 54.7 | 31.9 sd, eps = 0.0 |
+| radon non-centered | MEADS 2,000 + GHMC | **4.4e7** | 32 | 3,250 | 101.6 | 31.9 sd, eps = NaN |
+
+Verdict: **not shippable.**
+
+- On 8 Schools the gradient economy is real -- 4.8x fewer gradients per effective sample -- and it is
+  bought with an unconverged fit: R-hat 1.031-1.033 against the 1.01 gate, 8x less ESS at equal draws,
+  and posterior means 0.18-0.22 sd away from the ChEES reference (the noise floor between two
+  legitimate ChEES runs is 0.011 sd, so that gap is 20x noise). More warmup does not fix it: 2,000
+  MEADS steps is no better than 500.
+- On radon d=175 the adaptation degenerates: step size 0.0 at 500 steps and NaN at 2,000, with R-hat
+  reported as 4.4e7. One leapfrog per step is cheap only when the step is finite.
+
+Why the 20-86x warmup-gradient saving from the source audit did not survive contact: it counted
+gradient *evaluations*, and GHMC spends one per step while ChEES spends L = 21-38. But ChEES's long
+trajectory is what buys decorrelation per draw -- 22,652 ESS from 40,000 draws versus 2,775 -- so the
+per-evaluation saving is repaid in evaluations spent fighting autocorrelation, and on these two models
+the trade is negative.
+
+Two things worth keeping from the probe:
+
+1. The seam works. MEADS warmup -> `blackjax.mcmc.ghmc.as_top_level_api` -> vmapped `step` in a scan
+   reproduces a target with variances [4.0, 0.25] as [4.38, 0.27] at max R-hat 1.006 (CPU, 32 chains).
+   `momentum_inverse_scale` goes in unchanged -- do not transform it. Note the argument-order trap:
+   `init(position, key)` but `step(key, state)`; the docstring at ghmc.py:264 shows both backwards.
+2. MEADS needs `num_chains % num_folds == 0` (ValueError otherwise) and `num_chains // num_folds >= 2`,
+   which silently excludes 32-chain defaults with 4 folds only at small chain counts, and a guard is
+   mandatory because the n_per_fold == 1 case returns NaN without raising.
+
+E5 status: the warmup-gradient lever is closed negative, along with the stopping rule. What remains
+measured and open is the metric refresh during warmup (the lane showed it is a value change, not a
+state rebuild) and the 5-seed end-to-end confirmation of the batched finite-start check.
