@@ -17,7 +17,8 @@ matrix → two review lanes → one commit. Never benchmark before the protocol 
    per gradient?).
 4. Implement the smallest change that works. One stage at a time.
 5. Add a test for each failure mode discovered while implementing, not only for the happy path.
-6. Run the matrix in §2. Then spawn the two review lanes in §4. Commit only after both clear.
+6. Run the matrix in §2. Then scope per §4 and spawn the two review lanes in §5. Commit only after
+   both clear.
 7. Record results in `/home/akbar/pf-research/FINDINGS.md` and retain the outcome to project memory.
 
 ## 2. Measurement protocol (fixed, do not improvise per run)
@@ -52,7 +53,27 @@ matrix → two review lanes → one commit. Never benchmark before the protocol 
   distribution, not only ESS.
 - Rejected designs get written down with the measurement that killed them, so they stay dead.
 
-## 4. Review lanes
+## 4. Scope before spawning
+
+Write a question map before any lane starts. Each row: numbered question, who answers it (me or a
+named lane), the evidence that would settle it, which decision it gates, and its cost. Then derive
+the lanes from the rows. Rules:
+
+1. **Gate test for a lane:** at least two questions whose answers could change the design. A lane
+   that only adds confidence is a lookup I do myself.
+2. **No overlap.** Two lanes must not be assigned the same question. Check the map, not memory.
+3. **Cheap answers are mine.** Anything answerable by one `read`, one `ls`, or a 2-minute probe goes
+   on my list, not a lane's.
+4. **Decision-gating claims get verified by me, in the source, before implementation starts** — not
+   by the lane that produced them. This is the step that catches a confident but wrong blocker.
+5. **Absence claims need a stated method.** "Not present" is only accepted from enumeration (`ls` +
+   `read`), never from a directory grep under `.pixi` (see §6).
+6. **Cap check before spawning:** 2 × kv520-flash and 3 × kv520 running at once; `kv520` for bounded
+   lookups and enumerations, `kv520-flash` for literature and multi-source reasoning.
+7. Every lane brief ends with the deliverable shape (table, verdict list) so results are mergeable
+   without a follow-up pass.
+
+## 5. Review lanes
 
 - Concurrency caps, hard: **2 × kv520-flash** and **3 × kv520**. Budget is unlimited; do not ask
   lanes to truncate or deliver partial work, but do demand a verdict when the work is done.
@@ -64,7 +85,7 @@ matrix → two review lanes → one commit. Never benchmark before the protocol 
   them explicitly to invite rebuttal of the framing.
 - Lanes have **no web or MCP tools**: retrieval is `curl` from bash. Say so in the brief.
 
-## 5. Box traps (each one already cost time once)
+## 6. Box traps (each one already cost time once)
 
 - Python only through `pixi run python`. Bare `python`/`python3` lack the project packages. The
   pixi env has no `pip`, and this pixi version rejects `--with`, so run tests through their
@@ -77,7 +98,7 @@ matrix → two review lanes → one commit. Never benchmark before the protocol 
 - `sample_pf_chees_hmc` defaults are in the public signature, not the internal stage
   `setdefault`s. Test the public default; the internal ones may be unreachable.
 
-## 6. Commit rules
+## 7. Commit rules
 
 - One commit per item, message states what changed, the rule that did *not* change, measured
   numbers with cold/warm status, diagnostics, and what is still unverified.
