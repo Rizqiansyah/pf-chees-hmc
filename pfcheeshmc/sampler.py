@@ -68,16 +68,32 @@ class PfCheesHMC:
         restart_radius: float = 0.05,
     ):
         """
-        Make a bad (possibly -inf) start finite without changing the model:
-        1) tiny relative jitter (fix exact singularities like xi=0),
+        Make a bad start usable without changing the model. A start must have a finite
+        log-density AND a finite gradient. Order of repair:
+        1) tiny relative jitter (fixes exact singularities like xi=0),
         2) backtrack toward `center` (default zeros in unconstrained space),
         3) random restarts around center with growing radius.
-        Returns a pytree with finite logp or raises RuntimeError.
+        Returns a pytree, or raises RuntimeError if nothing usable is found.
         """
         from jax.flatten_util import ravel_pytree
 
-        def _isfinite_logp(pos):
-            return jnp.isfinite(self.ld_fn(pos))
+        def _is_usable(pos):
+            """Finite log-density and finite gradient.
+
+            The gradient test is not decoration. GEV Port Pirie at `model.initial_point()`
+            (xi_interval__ = 0) has a finite log-density of -7.749 and a NaN gradient in all
+            three variables: `GenExtreme.logp` evaluates both branches of
+            `switch(isclose(xi, 0), gumbel, xi_branch)`, and the unselected xi-branch contains
+            (xi+1)/xi -> inf multiplied by log1p(xi*z) -> 0, which is NaN. The forward value is
+            fine; only the vjp poisons the shared leaves. The log-density is also genuinely not
+            C^1 at xi = 0 -- PyTensor's own autodiff returns NaN for the xi derivative on the
+            same graph -- so this is not a JAX-backend quirk to work around, and Pathfinder's
+            L-BFGS fit must not start from a NaN gradient.
+            """
+            if not bool(jnp.isfinite(self.ld_fn(pos))):
+                return False
+            grads = jax.grad(self.ld_fn)(pos)
+            return bool(jnp.all(jnp.isfinite(ravel_pytree(grads)[0])))
 
         def _interp(a, b, t):
             return jax.tree_util.tree_map(lambda ai, bi: bi + t * (ai - bi), a, b)
@@ -89,7 +105,7 @@ class PfCheesHMC:
         rel = 1.0 + jnp.abs(flat0)
         jitter = jax.random.normal(k0, flat0.shape) * (jitter_eps * rel)
         x = unrav(flat0 + jitter)
-        if bool(_isfinite_logp(x)):
+        if _is_usable(x):
             return x
 
         # (2) backtrack toward safe center (default zeros)
@@ -97,7 +113,7 @@ class PfCheesHMC:
             center = unrav(jnp.zeros_like(flat0))
         for _ in range(max_backtracks):
             x_try = _interp(x, center, 0.5)
-            if bool(_isfinite_logp(x_try)):
+            if _is_usable(x_try):
                 return x_try
             x = x_try
 
@@ -107,11 +123,12 @@ class PfCheesHMC:
             key, k = jax.random.split(key)
             noise = jax.random.normal(k, flat0.shape) * radius
             x_try = unrav(ravel_pytree(center)[0] + noise)
-            if bool(_isfinite_logp(x_try)):
+            if _is_usable(x_try):
                 return x_try
             radius *= 1.5
 
-        raise RuntimeError("Failed to locate a finite-logp start for Pathfinder.")
+        raise RuntimeError("Failed to locate a start with finite log-density and finite gradient "
+                           "for Pathfinder.")
 
     @contextlib.contextmanager
     def _silence_pymc_init(self):
@@ -194,9 +211,9 @@ class PfCheesHMC:
         restart_radius=0.05,
     ):
         """
-        For a dict{name: (chains, ...)} ensure every chain's point is finite.
-        Applies _find_finite_start per-chain if needed.
-        Returns a dict{name: (chains, ...)} with all finite logp.
+        For a dict{name: (chains, ...)} ensure every chain's point has a finite log-density and a
+        finite gradient. Applies _find_finite_start per-chain if needed.
+        Returns a dict{name: (chains, ...)} ready for Pathfinder.
         """
         chains = next(iter(init_stack.values())).shape[0]
         keys = jax.random.split(key, chains)
