@@ -193,10 +193,10 @@ change the design.
 |---|---|---|---|---|---|
 | G1 | Does momentum persistence (GHMC) reduce gradients per ESS versus momentum-refreshing HMC at equal trajectory length, at d < 50? | lane: ghmc-evidence | primary papers, numbers with tiers | kernel fork D6 | ~20 min |
 | G2 | Does persistence interact with a **fixed lockstep** trajectory length, and does it move the optimal target acceptance away from 0.651? | lane: ghmc-evidence | primary papers + BlackJAX defaults | whether ChEES's tuning rule still applies | ~20 min |
-| G3 | What does installed BlackJAX 1.7.1 GHMC actually require — init/step signature, state fields, info field names — and can our ChEES `update_adapt` call drive it unchanged? | lane: blackjax-source | file:line | implementation route | ~15 min |
-| G4 | Can a stop rule live inside the warmup loop: what do `blackjax.eca` / `ns/` expose, are they jit/scan compatible, and do they carry the `shard_map` "chains" mesh constraint that killed LAPS? | lane: blackjax-source | file:line + a 3-dim CPU check | stop-rule granularity | ~15 min |
-| G5 | What does Pathfinder expose for stratified init (`info` fields, PSIS weights, log-ratios), and is PS-IR reachable through public API? | lane: blackjax-source | file:line | init change | ~10 min |
-| G6 | On the graphs we ship, does per-chain cost fall with chain count (reads shared) or stay flat (re-read per chain)? | **me — answered: shared, closed** | `~/pf-batchprobe.py`, us per 32-chain gradient inside a `lax.scan`: radon 133.5 (1.93/chain at 128), logistic 121.1 (3.10/chain), 8 Schools 22.5 (0.16/chain). f32 is 1.06-1.07x, not 3x. | batched-likelihood work item: **cancelled** | done |
+| G3 | What does installed BlackJAX 1.7.1 GHMC actually require — init/step signature, state fields, info field names — and can our ChEES `update_adapt` call drive it unchanged? **answered** (`/home/akbar/pf-research/e5-blackjax.md`) | file:line | implementation route | done |
+| G4 | Can a stop rule live inside the warmup loop: what do `blackjax.eca` / `ns/` expose, are they jit/scan compatible, and do they carry the `shard_map` "chains" mesh constraint that killed LAPS? **answered — stop rule is easier than expected, no mesh needed** | file:line + CPU run | stop-rule granularity | done |
+| G5 | What does Pathfinder expose for stratified init (`info` fields, PSIS weights, log-ratios), and is PS-IR reachable through public API? **answered — PSIS weights are in `info.path.elbo`, stratified sampling reachable from public fields** | file:line | init change | done |
+| G6 | On the graphs we ship, does per-chain cost fall with chain count (reads shared) or stay flat (re-read per chain)? | **me — v1 VOID, re-running** (`be62562a8`, gradient-forced carry + floor control); direction of answer supported by G7's independent CPU measurement | `~/pf-batchprobe.py`, us per 32-chain gradient inside a `lax.scan`: radon 133.5 (1.93/chain at 128), logistic 121.1 (3.10/chain), 8 Schools 22.5 (0.16/chain). f32 is 1.06-1.07x, not 3x. | batched-likelihood work item: **cancelled** | done |
 | L1 | GHMC: does the kernel change and what does it invalidate? | **lane e5-blackjax — answered** | `GHMCInfo` is a plain `HMCInfo` so `update_adapt` reads unchanged; but momentum+slice move into the carry and `num_integration_steps` is hard-wired to 1, so `steps_mean`/`padding_ratio` become meaningless. Two routes: ChEES+GHMC (trivial swap, but the trajectory-length half of ChEES goes inert and the 0.651 target is unvalidated for 1-step dynamics) or MEADS+GHMC (public `bj.meads_adaptation`, natively multi-chain lockstep, emits `{step_size, momentum_inverse_scale, alpha, delta}`, `momentum_inverse_scale` accepts `LowRankInverseMassMatrix`) -- but MEADS+GHMC is the D6 fork, not a drop-in. | kernel fork D6 | done |
 | L2 | Stop rule: is an in-graph early stop reachable without the LAPS `shard_map` constraint? | **lane e5-blackjax — answered, yes** | `blackjax.eca.while_with_info` is a pure `jax.lax.while_loop` primitive (no `shard_map`, no mesh) and `blackjax.diagnostics.{rhat,effective_sample_size,ess_bulk,ess_tail,pareto_khat,psis_weights}` are all public pure `jnp`, `jit`-compatible. Verified on CPU: a `while_loop` with `rhat` as the cond stopped dynamically at i=19. Granularity: per-block in-graph (chunk the 2000-step warmup into 250-step scans, R-hat over a window as the outer cond). JAX 0.11 gotcha: `while_loop`'s body returns just the carry, not `(carry, ys)`. Note `arviz_stats.rhat_nested` is NOT installed. | stop-rule granularity | done |
 | L3 | Stratified init: what is reachable from public API and what is our current init? | **lane e5-blackjax — answered** | `info.path.elbo` (shape `(path_size,)`) is the per-path PSIS log-weights (Algorithm 5); `pathfinder.sample` is i.i.d.-only, but the stratified/low-discrepancy transform is an affine map on public `PathfinderState` fields, replicable with a Halton `u` and no private call. `multi_approximate` + `psis_weights` is fully public. Our current init (single best-ELBO path + one random draw per chain) is the weakest available option; the strictly-better public upgrade is a PSIS mixture over `info.path`. | init change | done |
@@ -206,7 +206,7 @@ change the design.
 | O1 | Where does the wall time live, by stage? | **me — answered, warm 32x1250** | `~/pf-o1-stages.py`, stage timers blocking on the GPU: 8 Schools (11.8 s) pymc_init 0.37 (3%), pathfinder 3.44 (29%, of which finite_init 1.73 nested), step_size_tune 1.03 (9%), chees_warmup 4.07 (**35%**), dynamic_hmc 3.10 (26%). Radon (42.2 s): pymc_init 0.72, pathfinder 7.06 (17%, finite_init 4.07 nested), tune 1.58, **chees_warmup 17.92 (42%)**, dynamic_hmc 15.07 (36%). Model evaluation itself is ~1% of wall (23 us/step x 1250 steps = 0.03 s of the 3.1 s scan). | the two levers are warmup (42% of radon wall) and the finite-start regression | done |
 | O2 | Why does finite_init take 1.73 s (8 Schools) / 4.07 s (radon) — a regression introduced by the E2.1 finite-gradient guard? | **me — measured** | `~/pf-o2-finiteinit.py`: 32 per-chain eager `jax.grad(ld)` calls = 1.61 s / 3.73 s at **50 / 117 ms per chain**, which is PyTensor per-call Python overhead, not GPU work. One `vmap(value_and_grad)` = 33 / 77 ms steady (first call 2.0 / 2.4 s compile, and that vmapped-grad trace is the same one the sampling scan already builds). So batching the finiteness check across chains and only falling back to per-chain repair for the failing ones saves ~1.6 s / ~3.6 s per run at negligible cost. | start-stage cost, a **fixable regression from my own E2.1 commit** | done |
 | O3 | What is inside the 2.0 ms per warmup step at 8 Schools (versus 0.25 ms for a sampling scan at the same L)? | **me** | arm-by-arm: bare scan, +HMCInfo carry, +ChEES update_adapt, +Halton, +host callback | warmup-machinery fix | ~10 min |
-| G7 | Is there a supported way to make a PyMC model evaluate all chains in one wide op instead of `vmap`, and what breaks (transforms' jacobian, deterministics, coords)? | lane: pytensor-batching | source + 3-dim CPU experiment | implementation route for (2) | ~25 min |
+| G7 | Is there a supported way to make a PyMC model evaluate all chains in one wide op instead of `vmap`, and what breaks (transforms' jacobian, deterministics, coords)? | **answered: no supported route, work item closed** (`/home/akbar/pf-research/e5-batching.md`) | source + CPU experiment, verified to 1.2e-12 | item (2) cancelled | done |
 | G8 | Is there published evidence that PS-IR / stratified init beats one random draw from the same approximation, measured in warmup length or convergence diagnostics — and that start dispersion matters for *ensemble* adaptation specifically? | lane: init-reuse | primary papers, tiers | whether (4) is worth code | ~20 min |
 | G9 | Is persisting tuned HMC hyperparameters across runs standard practice, what are the documented failure modes, and do samplers re-verify after a warm start? | lane: init-reuse | Stan/PyMC docs + papers | cache design, verification block | ~15 min |
 | C1 | How early in warmup are the frozen parameters (step size, trajectory-length statistics) within 10% of their 2,000-step values? | **me** | instrumented run, 250-step blocks | stop rule thresholds | ~10 min |
@@ -239,6 +239,37 @@ exactly 1.0 with no error.
 **The prize moved, and it is now very large.** With the model priced at its true cost, 8 Schools
 spends ~0.05 s of model evaluation in a 12.4 s run and radon ~0.3 s in a 43 s run. Nearly all of the
 wall time is our own loop machinery and warmup -- O1 attributes it to specific components.
+
+## Lane answers that change the plan
+
+- **In-graph warmup stopping is available today, with no mesh.** `blackjax/diagnostics.py` exports
+  rank-normalised split-`rhat`, `effective_sample_size`, `ess_bulk/tail`, `pareto_khat`, all pure
+  `jnp`; `blackjax.eca.while_with_info` (`eca.py:102`) is a plain `jax.lax.while_loop`. A lane verified
+  on CPU that `jit(rhat)` works and that a `while_loop` using it stops dynamically (i=19, R̂ 0.975).
+  Only `run_eca`/`ensemble_execute_fn` need `PartitionSpec("chains")`. `blackjax/ns/` is nested
+  sampling, not convergence monitoring. JAX 0.11 gotcha: `while_loop` `body_fun` returns carry only.
+- **GHMC needs no adaptation surgery.** The kernel returns a plain `HMCInfo` (`ghmc.py:91`), so our
+  `update_adapt` reads `info.proposal.position/.momentum/.acceptance_rate/.is_divergent` unchanged.
+  It is hard-wired to one velocity-Verlet step per transition (`ghmc.py:249-252`), which is maximal
+  lockstep equality of work -- but it makes ChEES's trajectory-length half inert and our
+  `steps_mean`/`padding_ratio` diagnostics meaningless, and 0.651 is unvalidated for 1-step dynamics.
+- **MEADS + GHMC is native in the wheel**: `bj.meads_adaptation` steps `ghmc_kernel` during warmup
+  (`meads_adaptation.py:659`) and emits `{step_size, momentum_inverse_scale, alpha, delta}`
+  (`:778-782`), is multi-chain lockstep by construction, and `momentum_inverse_scale` accepts a
+  `LowRankInverseMassMatrix` directly (`:650`) -- which joins the D6 kernel fork to the E4 metric work
+  in one move. Depends on one private helper (`_metric_from_momentum_inverse_scale`), so pin 1.7.1.
+- **Our Pathfinder initialisation is the weakest available option**: best-ELBO single path plus one
+  i.i.d. draw per chain via `randint`. `info.path.elbo` is the per-path ELBO vector, i.e. ready-made
+  PSIS log-weights, and `multipathfinder` exposes `psis_weights` publicly.
+- **Chain batching is closed** (G7): `pt.vectorize_graph` replaces RVs with constants and fails on
+  matmul and advanced-indexing likelihoods; `Matmul` has no vectorize dispatch. The measured gain
+  (1.4-1.9x at C<=32, 0.86-0.89x at C=128) comes from deleting PyTensor's 14 jit subgraphs, not from
+  data movement. And the trap is quantified: dropping the transform jacobian shifts the target by
+  exactly `sum log|det|` (2.42 measured) and transformed gradients by exactly 1.0, silently.
+- **Measurement trap, recorded so no probe repeats it**: a scan carry of the form `x - 0.0 * g` is
+  dead-code-eliminated by XLA, so the gradient is never computed and the timing measures an empty
+  loop. This voided my first G6 probe. Any probe whose carry consumes a value must include a
+  gradient-ignoring floor row as a control.
 
 ## Gates carried over
 
