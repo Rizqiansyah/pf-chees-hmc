@@ -313,3 +313,18 @@ noise and host-round-trip fix — and the README's 8.5 s figure from `6aebe30` s
 What still stands from the lane: chains is a compile key (the 15-19 s per-new-chain-count penalty is
 reproducible and unexplained by draws), and ~640 individually compiled subgraphs is the real shape of
 the problem, which is a PyTensor-lowering property, not a sampler bug.
+
+## MEADS + GHMC seam: dual-device verification and the caveat it added
+
+The seam was re-measured on both devices with the device printed in the output (CPU 2,000-step
+warmup 0.049 s; MEADS-LRD 500-step 0.134 s). Structural results are device-identical: state fields,
+the five-of-six contract keys, the 1-D `momentum_inverse_scale` squaring trap (0.353 relative
+momentum error on both), silent NaN at `n_per_fold=1`, rank clamps. Differences are float64
+reduction-order noise (1 ulp on the metric check, `step_size` 0.000236 vs 0.000231).
+
+**The finding that constrains the pilot:** eager MEADS warmup is *slower on GPU than CPU* at the
+seam's size (C=4, d=5): 0.111 s vs 0.049 s. `meads.run` cannot be jitted (it builds
+`jnp.arange(num_steps)` internally, `meads_adaptation.py:737`), so at small size the cost is per-call
+Python and host round trips, not kernels. Any GPU warmup-cost estimate for MEADS is therefore only
+valid at production scale (C=32-128, d>=10) and must be measured there, not extrapolated from a
+5-dimensional seam proof.

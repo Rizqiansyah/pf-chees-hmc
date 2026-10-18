@@ -88,8 +88,9 @@ the lanes from the rows. Rules:
 ## 6. Box traps (each one already cost time once)
 
 - Python only through `pixi run python`. Bare `python`/`python3` lack the project packages. The
-  pixi env has no `pip`, and this pixi version rejects `--with`, so run tests through their
-  `__main__` blocks: `CUDA_VISIBLE_DEVICES="" pixi run python tests/test_x.py`.
+  pixi env has no `pip`, and this pixi version rejects `--with`. Tests run through the pixi task
+  (`pixi run test`) or directly: `pixi run env CUDA_VISIBLE_DEVICES= pytest tests/ -q`. Note the
+  `env` form is required for CPU — see the next bullet.
 - The `grep` tool respects `.gitignore`, and `.pixi/` is ignored: a directory grep under
   site-packages silently searches nothing and yields false absences. Use `ls` + `read` there.
 - JAX: `jax.random.split(key, n)` returns keys shaped `(n,)`, not `(n,2)`; `jax.random.split`
