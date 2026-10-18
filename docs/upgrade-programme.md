@@ -35,11 +35,17 @@ tail-ESS, max R̂, divergences per 1,000 draws, mean leapfrog steps, and the pad
 1. **NaN gradient at a feasible start.** GEV at `model.initial_point()` has log-density −7.749 and
    all three partial derivatives NaN. `_ensure_finite_inits` tests log-density only, so it cannot
    see this; the pipeline escapes only because its seed differs by luck. Guard on gradient finiteness.
-2. **Key collision.** `key_warm` (`sampler.py:399-400`) and `key_sample` (`sampler.py:560`) are the
-   same key, so sampling draws from the prefix of the warmup key stream.
-3. **Misleading display.** Both progress bars report arithmetic-mean acceptance
-   (`utils.py:109`, `sampler.py:538-541`) while ChEES adapts on the harmonic mean excluding
-   divergences (`chees_adaptation.py:358-363`). This already caused one wrong diagnosis here.
+2. **Key collision — confirmed.** `key_warm` (`sampler.py:426-427`: `rng = jax.random.key(seed)`,
+   `_, key_warm = jax.random.split(rng)`) and `key_sample` (`sampler.py:452` and `:587`, same parent
+   key, same child index) are the **same key**, so sampling draws from the prefix of the warmup key
+   stream. The ε0 probes (`sampler.py:407`) take children of that same parent directly. Fix: derive
+   each stage with `jax.random.fold_in(rng, stage)` for stage 0/1/2 (tuner, warmup, sampling) instead
+   of positional children. This changes realisations, so it needs the 5-seed matrix re-run as a
+   non-regression check even though it is not a default change.
+3. **Misleading display — confirmed at both sites.** Warmup shows the arithmetic mean
+   (`utils.py:109`, printed at `:81`) and sampling also shows the arithmetic mean
+   (`sampler.py:565`), while ChEES adapts on the harmonic mean excluding divergences
+   (`chees_adaptation.py:358-363`). This already caused one wrong diagnosis in this project.
 4. **Undefined BFMI on GEV.** `sample_stats.energy` contains non-finite values; find why and either
    fix the export or document it as undefined rather than emitting a number.
 
@@ -80,8 +86,8 @@ with library code and feeding it into our existing dense-metric path.
 | Q4 | How do nutpie/nuts-rs clamp and regularise the metric (eigenvalue floor, gamma, rank)? | lane: literature | source, file:line | E4 implementation | ~20 min |
 | Q5 | In BlackJAX 1.7.1, can `window_adaptation_low_rank` / `diagonal_estimator="fisher"` be used to *produce* a metric usable by `dynamic_hmc`, and with what chain-count constraints? | lane: source audit | file:line | E4 route (library vs hand-rolled) | ~20 min |
 | Q6 | Which PyTensor/JAX op makes GEV's gradient NaN at a finite log-density point, and is it upstream? | lane: source audit | minimal repro (3-dim, CPU only) + graph read | E2.1 fix shape | ~20 min |
-| Q7 | Confirm the key-collision line numbers and that a `fold_in` split changes no benchmark | me | read + one A/B run | E2.2 | ~15 min |
-| Q8 | Confirm harmonic vs arithmetic at both display sites | me | read | E2.3 | ~5 min |
+| Q7 | Confirm the key-collision line numbers and that a `fold_in` split changes no benchmark | me — **done**: collision confirmed at `sampler.py:426-427` vs `:452`/`:587`; fix is `fold_in` per stage, then re-run the 5-seed matrix | E2.2 | ~15 min |
+| Q8 | Confirm harmonic vs arithmetic at both display sites | me — **done**: arithmetic at `utils.py:109` and `sampler.py:565` | E2.3 | ~5 min |
 | Q9 | Is non-finite `energy` a divergent-transition artefact or a real overflow? | me | inspect one GEV run's sample_stats | E2.4 | ~10 min |
 | Q10 | Build the ladder harness and run the two existing models through it as a smoke test | me | harness + one row per model | E1 start | ~30 min |
 
