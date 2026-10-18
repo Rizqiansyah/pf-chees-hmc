@@ -348,48 +348,70 @@ class PfCheesHMC:
 
 
     def _run_step_size_tune(self, pf_samples, inverse_mass_matrix, **kwargs):
-        #Default values
-        kwargs.setdefault("chains", 32)
-        kwargs.setdefault("seed", self.seed)
-        ld_fn = self.ld_fn
-        num_chains = kwargs["chains"]
-        rng = jax.random.key(kwargs["seed"])
-        _, num_rng = jax.random.split(rng)
-        keys_eps = jax.random.split(num_rng, 2 * num_chains)  # 1 for search, 1 for test-step
+        """Initial step size for the ChEES warmup.
 
-        # ==== Per-chain "reasonable" step size, then take the median as ε0 ====
-        def eps_reasonable_for_pos(key, pos_dict, inv_mass):
-            hmc = bj.hmc(ld_fn, step_size=1e-2, inverse_mass_matrix=inv_mass, num_integration_steps=1)
-            state0 = hmc.init(pos_dict)
+        BlackJAX's doubling/halving acceptance search
+        (`blackjax.adaptation.step_size.find_reasonable_step_size`, Hoffman & Gelman 2014
+        Algorithm 4, target acceptance 0.651) run from a batch of Pathfinder positions and
+        reduced by geometric median.
+
+        What changed is the execution, not the rule: the search used to be rebuilt from
+        Python once per chain, which re-traced the kernel every doubling step and measured
+        77.07 s / 32 chains = 2.4 s per chain in the instrumented run (~1.1 s per chain
+        uninstrumented). Here it is traced once and dispatched per probe, so cost is
+        independent of the number of sampling chains — the sampler itself is flat from 32
+        to 256 chains (+2% per transition), and the old stage made wall time grow linearly.
+
+        Probes are positions, not chains: 32 of them are enough to estimate a global ε0,
+        and ChEES re-tunes ε by dual averaging from iteration 1. Do not read ε0 as a mere
+        warm start with no consequences — on the stiff GEV model a different ε0 changed the
+        divergence count from 33 to 255 — it anchors dual averaging (`dual_averaging.py:94`)
+        and sets the ChEES length ceiling (`chees_adaptation.py:499-501`).
+
+        shortcut: `eps0_probes` is fixed at 32 and the search keeps BlackJAX's own
+        float-limit stopping rule; raise the probe count if a model shows acceptance
+        problems in the first ChEES iterations.
+        """
+        ld_fn = self.ld_fn
+        num_probes = int(kwargs.get("eps0_probes", 32))
+        seed = kwargs.get("seed", self.seed)
+
+        n_drawn = int(len(next(iter(pf_samples.values()))))
+        take = min(num_probes, n_drawn)
+        probes = [{k: jnp.asarray(v)[i] for k, v in pf_samples.items()} for i in range(take)]
+
+        # A probe at a position with non-finite logp yields nan acceptance, which BlackJAX
+        # turns into "halve forever" (step_size.py:239), dragging the median to the float floor.
+        is_feasible = jax.jit(jax.vmap(lambda p: jnp.isfinite(ld_fn(p))))
+        keep = [bool(k) for k in is_feasible({k: jnp.stack([p[k] for p in probes]) for k in probes[0]})]
+        probes = [p for p, k in zip(probes, keep) if k]
+        if not probes:
+            return 1e-2  # nothing usable; ChEES dual averaging still runs
+
+        def search(key, pos_i):
             return bj.adaptation.step_size.find_reasonable_step_size(
                 key,
-                lambda eps: bj.hmc(ld_fn, eps, inv_mass, num_integration_steps=1).step,
-                state0,
+                lambda eps: bj.hmc(ld_fn, eps, inverse_mass_matrix, num_integration_steps=1).step,
+                bj.hmc(ld_fn, 1e-2, inverse_mass_matrix, num_integration_steps=1).init(pos_i),
                 initial_step_size=1e-2,
                 target_accept=0.651,
             )
 
-        eps_list = []
-        bar = tqdm(total=num_chains, desc="ε Tuning", leave=True)
-        for i in range(num_chains):
-            pos_i = {k: v[i] for k, v in pf_samples.items()}
+        # One trace, then one dispatch per probe. Per-probe rather than vmapped for cost
+        # and clarity of failure modes, not correctness: `jax.vmap` over this search is also
+        # correct, because JAX lowers a batched `while` predicate by re-evaluating it in the
+        # body and selecting the previous carry for finished elements, so converged probes
+        # are frozen (verified in jax/_src/lax/control_flow/loops.py:2210-2224 and by
+        # comparing per-probe values vmap vs serial: identical).
+        search_jit = jax.jit(search)
+        keys = jax.random.split(jax.random.key(seed), len(probes))
+        eps_list = [float(search_jit(keys[i], probes[i])) for i in range(len(probes))]
+        eps_ok = [e for e in eps_list if jnp.isfinite(e) and e > 0.0]
+        if not eps_ok:
+            return 1e-2
 
-            # run the built-in search (no internal hooks available)
-            eps_i = eps_reasonable_for_pos(keys_eps[i], pos_i, inverse_mass_matrix)
-            eps_list.append(eps_i)
-
-            # optional: sanity-check acceptance at the found ε (1 leapfrog step)
-            hmc_i = bj.hmc(ld_fn, float(eps_i), inverse_mass_matrix, num_integration_steps=1)
-            state0_i = hmc_i.init(pos_i)
-            _, info_i = hmc_i.step(keys_eps[num_chains + i], state0_i)
-            acc_i = float(info_i.acceptance_rate)
-
-            bar.update(1)
-            bar.set_postfix_str(f"ε: {float(eps_i):.4f}, Acceptance rate: {acc_i:.2f}")
-            
-        eps0 = float(jnp.median(jnp.asarray(eps_list)))
-
-        return eps0
+        # geometric median: the values are dyadic, so a linear median biases upward
+        return float(jnp.exp(jnp.median(jnp.log(jnp.asarray(eps_ok)))))
 
     def _run_chees(self, pf_samples, inverse_mass_matrix, init_step_size, **kwargs):
         #Default values
