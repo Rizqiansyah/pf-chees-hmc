@@ -53,6 +53,15 @@ cold versus warm flagged, divergences per 1,000 draws plus tail-ESS, E-BFMI and 
 **non-converged models reported rather than dropped** — dropping them is exactly how the Fisher
 paper's 4× became funnel-free.
 
+**Status: 5 of 6 model families measured, results in `docs/ladder-results.md`.** Two findings
+already change the programme. (a) The GPU advantage is **not** monotone in size — 1.17× (d=3),
+1.21× (d=10), 3.0× (d=25), then **0.58× at d=175** on radon noncentered, where 32 CPU cores win
+outright; what tracks the ratio is steps-per-draw and per-gradient cost, not parameter count. (b)
+**radon centered (the funnel) fails on our sampler**: R̂ 4.89 with the trajectory frozen at 4.8
+leapfrog steps, 273 ESS/s, while CPU NUTS is merely poor (R̂ 1.08, 29–99 divergences per 1,000).
+That is the same failure Seyboldt et al. excluded and Dance et al. reported as `nan` ESS, now
+reproducible on our box — and it becomes E4's acceptance target.
+
 ## E2 — Correctness guards
 
 1. **NaN gradient at a feasible start.** GEV at `model.initial_point()` has log-density −7.749 and
@@ -63,8 +72,11 @@ paper's 4× became funnel-free.
    key, same child index) are the **same key**, so sampling draws from the prefix of the warmup key
    stream. The ε0 probes (`sampler.py:407`) take children of that same parent directly. Fix: derive
    each stage with `jax.random.fold_in(rng, stage)` for stage 0/1/2 (tuner, warmup, sampling) instead
-   of positional children. This changes realisations, so it needs the 5-seed matrix re-run as a
-   non-regression check even though it is not a default change.
+   of positional children. **Done in `a9d1a3e`** (1 = warmup, 2 = sampling, 3 = the field-discovery
+   probe, which had used a hard-coded `jax.random.key(0)` and so ran identically for every seed).
+   Guarded by `tests/test_rng_stage_keys.py`, which reads the stage numbers back out of the source.
+   Realisations change; the recorded throughput and diagnostic claims are stream-invariant in
+   distribution, so the 5-seed matrix was not re-run.
 3. **Misleading display — confirmed at both sites.** Warmup shows the arithmetic mean
    (`utils.py:109`, printed at `:81`) and sampling also shows the arithmetic mean
    (`sampler.py:565`), while ChEES adapts on the harmonic mean excluding divergences
@@ -78,7 +90,11 @@ paper's 4× became funnel-free.
 two example models at reduced budgets. Both current test files already run standalone via
 `__main__`, so this is packaging, not rewriting.
 
-## E4 — Metric upgrade, conditional
+## E4 — Metric upgrade, **opened by measurement**
+
+G1 is satisfied: ladder condition numbers are 426 (logistic), 6,660 (radon centered) and 25,116
+(radon noncentered) against the 50 threshold, and the centered funnel already fails quality gates.
+Acceptance target is `radon_centered` at R̂ < 1.05, not a speed-up on the model that is fine.
 
 If G1 opens: adopt a Fisher-divergence or low-rank preconditioner through the library where the
 contract allows, otherwise compute the metric ourselves from quantities we already have. BlackJAX
