@@ -197,6 +197,12 @@ change the design.
 | G4 | Can a stop rule live inside the warmup loop: what do `blackjax.eca` / `ns/` expose, are they jit/scan compatible, and do they carry the `shard_map` "chains" mesh constraint that killed LAPS? | lane: blackjax-source | file:line + a 3-dim CPU check | stop-rule granularity | ~15 min |
 | G5 | What does Pathfinder expose for stratified init (`info` fields, PSIS weights, log-ratios), and is PS-IR reachable through public API? | lane: blackjax-source | file:line | init change | ~10 min |
 | G6 | On the graphs we ship, does per-chain cost fall with chain count (reads shared) or stay flat (re-read per chain)? | **me — answered: shared, closed** | `~/pf-batchprobe.py`, us per 32-chain gradient inside a `lax.scan`: radon 133.5 (1.93/chain at 128), logistic 121.1 (3.10/chain), 8 Schools 22.5 (0.16/chain). f32 is 1.06-1.07x, not 3x. | batched-likelihood work item: **cancelled** | done |
+| L1 | GHMC: does the kernel change and what does it invalidate? | **lane e5-blackjax — answered** | `GHMCInfo` is a plain `HMCInfo` so `update_adapt` reads unchanged; but momentum+slice move into the carry and `num_integration_steps` is hard-wired to 1, so `steps_mean`/`padding_ratio` become meaningless. Two routes: ChEES+GHMC (trivial swap, but the trajectory-length half of ChEES goes inert and the 0.651 target is unvalidated for 1-step dynamics) or MEADS+GHMC (public `bj.meads_adaptation`, natively multi-chain lockstep, emits `{step_size, momentum_inverse_scale, alpha, delta}`, `momentum_inverse_scale` accepts `LowRankInverseMassMatrix`) -- but MEADS+GHMC is the D6 fork, not a drop-in. | kernel fork D6 | done |
+| L2 | Stop rule: is an in-graph early stop reachable without the LAPS `shard_map` constraint? | **lane e5-blackjax — answered, yes** | `blackjax.eca.while_with_info` is a pure `jax.lax.while_loop` primitive (no `shard_map`, no mesh) and `blackjax.diagnostics.{rhat,effective_sample_size,ess_bulk,ess_tail,pareto_khat,psis_weights}` are all public pure `jnp`, `jit`-compatible. Verified on CPU: a `while_loop` with `rhat` as the cond stopped dynamically at i=19. Granularity: per-block in-graph (chunk the 2000-step warmup into 250-step scans, R-hat over a window as the outer cond). JAX 0.11 gotcha: `while_loop`'s body returns just the carry, not `(carry, ys)`. Note `arviz_stats.rhat_nested` is NOT installed. | stop-rule granularity | done |
+| L3 | Stratified init: what is reachable from public API and what is our current init? | **lane e5-blackjax — answered** | `info.path.elbo` (shape `(path_size,)`) is the per-path PSIS log-weights (Algorithm 5); `pathfinder.sample` is i.i.d.-only, but the stratified/low-discrepancy transform is an affine map on public `PathfinderState` fields, replicable with a Halton `u` and no private call. `multi_approximate` + `psis_weights` is fully public. Our current init (single best-ELBO path + one random draw per chain) is the weakest available option; the strictly-better public upgrade is a PSIS mixture over `info.path`. | init change | done |
+| L4 | Warmup stop rule: published criteria + does early-stopped warmup bias the posterior? | lane (queued, flash slot) | primary papers on stopping / convergence-aware warmup | stop-rule thresholds, bias gate G-B | queued |
+| L5 | Re-trace elimination: what exactly keys a JIT compile on, and is the per-chain-count cost avoidable? | **lane e5-retrace (running)** | JAX version, cache-key docs, `jax_log_compiles` attribution | re-trace fix | running |
+| L6 | Metric refresh during warmup: is it implementable without touching private state, and what must be reset? | **lane e5-metric-refresh (running)** | ChEES state/parameter fields, metric-switch step-size semantics, Stan shrinkage call sites | metric-refresh work item | running |
 | O1 | Where does the per-transition overhead live — 1,990 us measured in production against 462 us of model evaluation at 8 Schools (4.1x), 11.4 ms against 4.9 ms at radon (2.3x)? | **me** | arm-by-arm scan-cost attribution on the real logp: kernel only, +info carry, +Halton trajectory-length machinery, +host callback, full warmup step | largest remaining lever | ~10 min |
 | G7 | Is there a supported way to make a PyMC model evaluate all chains in one wide op instead of `vmap`, and what breaks (transforms' jacobian, deterministics, coords)? | lane: pytensor-batching | source + 3-dim CPU experiment | implementation route for (2) | ~25 min |
 | G8 | Is there published evidence that PS-IR / stratified init beats one random draw from the same approximation, measured in warmup length or convergence diagnostics — and that start dispersion matters for *ensemble* adaptation specifically? | lane: init-reuse | primary papers, tiers | whether (4) is worth code | ~20 min |
@@ -205,26 +211,32 @@ change the design.
 | C2 | Does nested R-hat separate warmup 500 / 1,000 / 2,000 on models where we know the answer? | **me** | `arviz_stats.rhat_nested` on existing draws | stop criterion validity | ~10 min |
 | C3 | How many distinct XLA traces does one run create, and which knob (chains, draws, dtype) creates them? | **me** | compile-time attribution per stage | re-trace fix | ~10 min |
 
-## Two corrections this probe forced
+## Corrections to the roofline/latency claims (two rounds, both measured)
 
-1. **My roofline "latency floor of 130-155 us per 32-chain gradient" was dispatch cost, not kernel
-   cost.** That probe timed a single jitted call, so it measured Python-side dispatch. Inside the
-   compiled scan the sampler actually runs in, 8 Schools costs 22.5 us per 32-chain gradient, not 154.
-   Anything derived from the floor is re-priced: warmup at 8 Schools is ~0.9 s of model evaluation,
-   not ~8 s.
-2. **Float32 is 1.06-1.07x on the real graphs, not 3.3x.** The 3.3x-20x figures were a dense
-   919x175 synthetic matmul at the fp64 ALU limit; radon is a gather and never touches that limit.
-   The parked float32 item stays parked, and the reason is now measured rather than assumed.
+1. **First pass was wrong, and this second pass corrects the first correction.** The original probe
+   timed a single jitted `value_and_grad` call and read the 130-155 us as a "latency floor". A
+   corrected probe that forces the gradient into the `lax.scan` carry (so it is computed, not DCEd)
+   gives, us per 32-chain batched gradient on the real graphs: **8 Schools 18.5, radon 131.6,
+   logistic 116.6** (f64). The pure scan floor is only **5-7 us**. So the real per-step model cost
+   for 8 Schools is ~23 us, not 154 -- the first correction stands on the number, and the
+   "dispatch cost" attribution is retracted; the original probe was measuring the real value+grad,
+   just with the wrong label.
+2. **Float32 is ~1.05-1.1x on the real graphs, not 3.3x** (radon 131.6 f64 vs 142.5 f32; logistic
+   116.6 vs 115.9; 8 Schools 18.5 vs 18.8). The 3.3x-20x figures came from a dense 919x175 synthetic
+   matmul at the fp64 ALU limit; radon is a gather and never touches that limit. Parked float32
+   stays parked.
 
-**Chain batching is cancelled as a work item.** Per-chain marginal cost already collapses with
-vmap: radon 50.7 us at one chain to 4.17 us per chain at 32 and 1.93 at 128; 8 Schools 20.8 us at one
-chain and still 20.8 us at 128 chains. There is no duplicated data read left to remove, so a
-hand-written wide likelihood would trade a correctness trap (per-chain transform jacobians) for
-something close to zero.
+**Chain batching is cancelled as a work item**, and the PyTensor lane confirmed it from the other
+side: the design matrix is a single constant in the jaxpr, and per-chain marginal cost collapses
+(radon 44 us at 1 chain -> 1.94 us per chain at 128). What a hand-written wide op *would* buy is
+1.4-1.9x at C <= 32 narrowing to ~0.9x at 128, and it is unreachable for arbitrary user models
+(`pt.vectorize_graph` replaces RVs with constants; `Matmul` has no vectorize dispatch). The jacobian
+trap is documented, and it is silent: omitting it shifts every transformed dimension's gradient by
+exactly 1.0 with no error.
 
-**The prize moved.** With the model priced correctly, 8 Schools spends ~1.5 s of logp evaluation
-inside a 12.4 s run at 40,000 draws, and radon ~4.9 ms of its 11.4 ms per transition. The gap is our
-own loop machinery -- 4.1x at 8 Schools, 2.3x at radon. O1 attributes it.
+**The prize moved, and it is now very large.** With the model priced at its true cost, 8 Schools
+spends ~0.05 s of model evaluation in a 12.4 s run and radon ~0.3 s in a 43 s run. Nearly all of the
+wall time is our own loop machinery and warmup -- O1 attributes it to specific components.
 
 ## Gates carried over
 
