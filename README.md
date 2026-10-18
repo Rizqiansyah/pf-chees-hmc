@@ -62,12 +62,14 @@ with pymc.Model() as model:
   # Define prior ...
   # Define likelihood
   # Call the sampler
-  trace = sample_pf_chees_hmc(draws=2000, chains=32, random_seed=42)
+  trace = sample_pf_chees_hmc(draws=2000, chains=128, random_seed=42)
 
 #Postprocess the trace with arviz, as usual
 ```
 
 Pass `random_seed`: if it is omitted the seed defaults to the current date, so the run is not reproducible.
+
+**Chain count is the cheapest performance lever.** On an RTX A2000 the wall time per transition is flat from 32 to 256 chains (+2%), while ESS grows linearly with the number of chains, so more chains are nearly free until memory runs out. Measured on the 8 Schools example (2000 draws, 10 000 ChEES warmup, warm): 2,933 ESS/s at 4 chains, 21,324 at 32, 75,755 at 128. Sample histories are kept as `chains × draws × dim`, so raise `chains` with the model dimension in mind.
 
 Stage-specific options are forwarded as dicts: `pathfinder_kwargs`, `step_size_tune_kwargs`, `chees_kwargs`, `dynamic_hmc_kwargs`.
 
