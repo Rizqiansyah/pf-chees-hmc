@@ -817,7 +817,7 @@ def sample_pf_chees_hmc(
     model: Optional[pm.Model] = None,
     *,
     draws: int = 1000,
-    chains: int = 4,
+    chains: int = 32,
     random_seed: Optional[int] = None,
     # pass-through buckets for your class:
     pathfinder_kwargs: Optional[Dict[str, Any]] = None,
@@ -830,7 +830,7 @@ def sample_pf_chees_hmc(
 
     Works inside a model context:
         with model:
-            idata = sample_pf_chees_hmc(draws=2000, chains=4)
+            idata = sample_pf_chees_hmc(draws=2000, chains=32)
 
     Or outside:
         idata = sample_pf_chees_hmc(model, draws=2000, chains=4)
