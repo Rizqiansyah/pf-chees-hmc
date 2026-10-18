@@ -72,3 +72,48 @@ GEV 504 and 0.328 versus 1,482 and 11.5; radon noncentered 126 and 0 versus 204 
 - Padding ratio (`max/mean` leapfrog steps across chains per draw) was **1.0** in every GPU cell,
   at 4, 32 and 128 chains. None of these results is warp divergence; the ChEES lockstep design is
   doing its job.
+
+## Metric A/B (E4)
+
+Same harness, 32 GPU chains, 2,000 draws, 2,000 warmup, warm. `mc` is the shipped metric
+(inverse of Pathfinder's empirical covariance + ridge). `lbfgs_lowrank` converts Pathfinder's own
+L-BFGS factors, which are already computed and thrown away, so it costs nothing.
+`fisher_lowrank` is Algorithm 1 of arXiv:2603.18845 via
+`blackjax.adaptation.metric_estimators.fisher_score_low_rank` over 4,096 draws.
+
+| model | mc | lbfgs_lowrank | fisher_lowrank | steps mc -> fisher |
+|---|---|---|---|---|
+| 8 Schools | 41,568 | — | **50,626** (1.22x) | 21 -> 8 |
+| logistic 1000x25 | 24,944 | — | **48,986** (1.96x) | 60 -> 9 |
+| radon noncentered | **271,585** | 155,190 | 51,971 | 37 -> 514 |
+| radon centered | 266, R-hat 3.79 | 447, R-hat 3.55 | **9,356, R-hat 2.10** (rank 40) | 4 -> 314 |
+
+Eigen-spectra of the metrics themselves explain the failure (geometric mean / condition number of
+the inverse mass matrix, d=175):
+
+| metric | geo_mean | cond | p95 | max |
+|---|---|---|---|---|
+| mc | 148 | 74 | 213 | 2,025 |
+| lbfgs_lowrank | 0.0069 | 72 | 0.0085 | 0.036 |
+| fisher_lowrank | 0.069 | 2,366 | **1.000** | **1.000** |
+
+Fisher's tail is pinned at exactly 1.0 by the construction's clamp, and its units are 2,000x below
+the posterior's own scale. One step size has to serve both.
+
+**Rescaling to the empirical covariance's geometric mean was tried and rejected.** It made every
+model worse: 8 Schools 50,626 -> 13,628, logistic 48,986 -> 15,044, radon noncentered 51,971 ->
+53,188 with steps still at 416, and radon centered R-hat 2.10 -> 5.69. The "wrong" units were
+carrying part of the benefit, which is the honest read of why: with the metric, the step size and
+the trajectory length all adapted jointly, isolating one of them is not a free operation. The code
+for it is not in the repo.
+
+Raising `cutoff` from 2 to 10 (keep fewer eigen-directions) helped radon noncentered modestly --
+514 -> 359 steps, 51,971 -> 60,442 ESS/s -- and did not close the gap to `mc`.
+
+**Verdict.** E4 ships as an option, not a default. `imm_source="fisher_lowrank"` is worth 1.2-2.0x
+on models whose current metric is a poor fit, and loses 5x on models where it is already good, and
+the discriminator is realised trajectory length (a jump from tens to hundreds of steps is the
+symptom), which no per-draw diagnostic shows until it is too late. The centered funnel is not a
+metric problem either: rank 10/40, warmup 2,000/10,000, cutoff 2/10 and scaling all leave R-hat
+between 2.10 and 5.69, while non-centering the same model reaches 1.005. That is a parameterisation
+fix in the user's model, not a sampler fix.
