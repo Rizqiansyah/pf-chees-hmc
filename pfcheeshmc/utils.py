@@ -167,15 +167,25 @@ def chees_warmup_with_progress(
         return jax.lax.scan(one_step_jit, carry, (jnp.arange(start, start + n), ks))
 
     def _stop_met(pos_win, info_win, astate):
-        """Rank-normalised split-R-hat over a window, plus adapter quietness.
+        """Rank-normalised split-R-hat over a window, plus step-size quietness.
 
         R-hat is the load-bearing part. Adapter stability on its own would have declared the radon
-        centered funnel converged while its trajectory was frozen at 4.4 leapfrog steps -- the
-        adapter was perfectly happy and the sampler was not exploring.
+        centered funnel converged while its trajectory was frozen at 4.4 leapfrog steps -- the adapter
+        was perfectly happy and the sampler was not exploring.
+
+        The harmonic-mean acceptance is deliberately NOT part of the default gate. Measured on a
+        unit Normal (8 chains, 250-step window) it reads 0.0000-0.0126 for a well-tuned sampler:
+        harmonic mean is dominated by the worst chain, and a single fully-rejected proposal -- which
+        happens routinely -- drives it to zero. It is a per-step adaptation signal, not a windowed
+        stability statistic. Supply accept_band=(lo, hi) to opt back in.
+
+        Window length matters: with 50 draws per chain split-R-hat sits at 1.035-1.058 forever on
+        that same trivial target; at 250 draws it reads 1.0031-1.0099. Short-window R-hat is a
+        property of the estimator, not of the sampler.
         """
         rhat_limit = float(stop_rule.get("rhat", 1.01))
         eps_limit = float(stop_rule.get("eps_stability", 0.5))
-        lo, hi = stop_rule.get("accept_band", (0.601, 0.701))
+        band = stop_rule.get("accept_band")   # opt-in only; see the note below
 
         vals = []
         for leaf in jax.tree_util.tree_leaves(pos_win):
@@ -188,7 +198,9 @@ def chees_warmup_with_progress(
         div = jnp.asarray(info_win.is_divergent)[-window:]
         hm = float(chees_harmonic_acceptance(acc, div))
         eps_gap = float(jnp.abs(astate.log_step_size_moving_average - jnp.log(astate.step_size)))
-        met = (rhat < rhat_limit) and (lo <= hm <= hi) and (eps_gap < eps_limit)
+        met = (rhat < rhat_limit) and (eps_gap < eps_limit)
+        if band is not None:
+            met = met and (band[0] <= hm <= band[1])
         if stop_rule.get("debug"):
             print(f"    stop_check step={done}: rhat={rhat:.4f} (limit {rhat_limit}) "
                   f"accept_hm={hm:.4f} (band {lo}-{hi}) eps_gap={eps_gap:.4f} (limit {eps_limit}) "
@@ -197,7 +209,9 @@ def chees_warmup_with_progress(
 
     if stop_rule:
         block = int(stop_rule.get("block", 250))
-        window = int(stop_rule.get("window", min(block, 100)))
+        # Default window = the whole block. A 50-draw window made split-R-hat read 1.04 on a unit
+        # Normal no matter how long warmup ran; 250 draws per chain reads 1.003-1.010.
+        window = int(stop_rule.get("window", block))
         carry = (init_states, adaptation_state)
         done = 0
         stopped_at = None

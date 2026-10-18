@@ -34,17 +34,22 @@ def test_no_stop_rule_runs_every_step():
 
 
 def test_easy_target_stops_early():
-    """KNOWN GAP, measured rather than hoped away.
+    """The gate is split-R-hat over a 250-draw window plus step-size quietness.
 
-    With split-R-hat over a 50-100 draw window the criterion never fires: on a trivial unit Normal
-    (8 chains) rhat sits at 1.035-1.058 block after block, and the harmonic-mean acceptance swings to
-    ~0.0003 in any window containing a divergence. Both are properties of short windows, not of the
-    model. So the default thresholds stop nothing, and the fix is a criterion built for short chains
-    (nested R-hat, arXiv:2110.13017) rather than tighter constants here -- `arviz_stats` is not
-    installed and the library exports no nested variant, so that is its own work item.
+    Both parts were measured: a 50-draw window reads rhat 1.035-1.058 on a unit Normal forever, and
+    the harmonic-mean acceptance reads ~0.0003 for a well-tuned sampler because one fully rejected
+    proposal zeroes it. Neither is a convergence signal at that window size, which is why the window
+    defaults to the whole block and acceptance is opt-in only.
     """
-    _, params = _run(600, {"block": 100, "window": 50, "rhat": 1.01})
-    assert params["warmup_steps_used"] == 600, "criteria are inert today; see docstring"
+    _, params = _run(1000, {"block": 250, "window": 250, "rhat": 1.01})
+    used = params["warmup_steps_used"]
+    assert 250 <= used < 1000, f"expected an early stop, used={used}"
+
+
+def test_window_too_short_never_stops():
+    """Guards the reason the default window is the full block: at 50 draws nothing passes."""
+    _, params = _run(1000, {"block": 250, "window": 50, "rhat": 1.01})
+    assert params["warmup_steps_used"] == 1000, "criteria are inert today; see docstring"
 
 
 def test_blocked_scan_does_not_restart_adaptation():
@@ -56,7 +61,7 @@ def test_blocked_scan_does_not_restart_adaptation():
     jitter would replay from zero and the tuned step size would land far away.
     """
     _, single = _run(400)
-    _, blocked = _run(400, {"block": 100, "window": 50, "rhat": 0.999})   # never fires -> full run
+    _, blocked = _run(400, {"block": 250, "window": 250, "rhat": 0.999})   # never fires -> full run
     eps_single = float(jnp.mean(single["step_size"]))
     eps_blocked = float(jnp.mean(blocked["step_size"]))
     assert 0.5 < eps_blocked / eps_single < 2.0, f"{eps_single=} {eps_blocked=}"
@@ -64,10 +69,11 @@ def test_blocked_scan_does_not_restart_adaptation():
 
 
 def test_impossible_threshold_never_truncates():
-    _, params = _run(400, {"block": 100, "window": 50, "rhat": 0.999})
+    _, params = _run(400, {"block": 200, "window": 200, "rhat": 0.999})
     assert params["warmup_steps_used"] == 400
 def test_early_stop_leaves_a_usable_state():
-    states, params = _run(1000, {"block": 250, "window": 100, "rhat": 1.01}, progressbar=True)
+    states, params = _run(1000, {"block": 250, "window": 250, "rhat": 1.01}, progressbar=True)
+    assert params["warmup_steps_used"] < 1000
     assert jnp.all(jnp.isfinite(states.logdensity))
     eps = jnp.atleast_1d(params["step_size"])
     assert jnp.all(jnp.isfinite(eps)) and jnp.all(eps > 0)

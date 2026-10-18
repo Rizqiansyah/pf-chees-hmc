@@ -928,6 +928,9 @@ class PfCheesHMC:
             chain_axis=1,         # and chains second (vmapped)
             keep_untransformed=False,
         )
+        # How much warmup actually ran. Visible in the output on purpose: with a stop rule the
+        # configured warmup length is an upper bound, and a reader must be able to see the difference.
+        idata.attrs["warmup_steps_used"] = int(chees_parameters.get("warmup_steps_used", -1))
         return idata
     
 
