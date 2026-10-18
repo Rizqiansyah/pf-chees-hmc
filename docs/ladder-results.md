@@ -184,3 +184,43 @@ takes 17.3 s for 4,096 draws versus 8.5 s for the CPU at 32x125.
 Next work item this points at, in order: kill the warmup fixed cost (criterion-based stop, then a
 tuned-hyperparameter cache for the second run of the same model), and stop re-tracing per chain
 count. Both are generic across models; neither touches the kernel.
+
+## What limits a step on the GPU (roofline probe)
+
+`tools/probe_gpu_roofline.py`, run as `X64=1 pixi run python tools/probe_gpu_roofline.py` and again
+with `X64=0`. It measures this card's ceilings in the dtype under test (a 4096^3 matmul for
+arithmetic, a 64M-element reduction for bytes), then times a 32-chain batched `value_and_grad` of a
+linear-Gaussian log-density at shapes that matter. RTX A2000, measured 2026-10-18.
+
+Ceilings measured: float64 **195.6 GFLOP/s**, float32 **14,771 GFLOP/s** (75x). The reduction-based
+bandwidth numbers are not trustworthy (float64 measured 218 GB/s against float32's 186, which is
+physically backwards), so conclusions below rest on dtype ratios, not on percentage-of-bandwidth.
+
+Per 32-chain gradient, microseconds:
+
+| shape (n observations, d params) | float64 | float32 | f64/f32 |
+|---|---|---|---|
+| 1, 175 (control: parameters, no data) | 155.3 | 140.5 | 1.1x |
+| 8, 10 (8 Schools) | 153.8 | 130.5 | 1.2x |
+| 919, 175 (radon) | 377.7 | 115.9 | **3.3x** |
+| 9,190, 175 | 2,196.7 | 316.1 | **7.0x** |
+| 91,900, 175 | 18,862.4 | 936.6 | **20.1x** |
+
+1. **Small models sit on a dtype-independent latency floor of ~130-155 us per batched gradient.**
+   8 Schools and a 175-parameter control with one observation cost the same. Nothing data- or
+   arithmetic-shaped is happening there; it is launch and dependency-chain cost, and it is the reason
+   2,000 warmup steps dominate a short run.
+2. **Above the floor the cost is dtype-dependent and grows with n.** A bandwidth limit would give a
+   ratio near 2 (float64 moves 2x the bytes); measured 3.3x at n=919 and 20x at n=91,900, where the
+   fp64:f32 arithmetic-rate ratio is 75x. So at data-heavy shapes the float64 ALU path, not DRAM
+   bandwidth, is what costs.
+3. **Retracted from the first pass of this analysis:** the claim that radon is "50% of the bandwidth
+   ceiling" and that chain cost is linear in chain count at the radon shape. Both came from a byte
+   model that assumed every chain re-reads the design matrix, and from a bandwidth ceiling
+   measurement that is itself unreliable. The dtype ratios above are the evidence that survives.
+4. **Practical consequence, and it is the largest lever measured here:** running the model in
+   float32 makes each gradient 3.3x cheaper at radon's shape and 20x at 91,900 observations, while
+   costing nothing at 8 Schools' shape. Before any of it ships: the sampler's numerics must be
+   re-validated in float32 (draw-covariance condition numbers reach 8,837 on radon, so metric
+   conditioning is the risk), and the existing "one fp64 rerun" gate becomes the comparison, not an
+   afterthought.
