@@ -148,12 +148,30 @@ Prior caveats that remain true: PSIS as a mixture covariance has no published de
 Algorithm 5 is PS-IR resampling "as an initialization algorithm for MCMC" and the phrase "mass matrix"
 never appears in the paper; the `:373` "**Paper-canonical** (Zhang et al. 2022)" label is unsupported
 and applies only to the `num_chains>=2, n_paths>=2` cell; the wheel ships **no tests** and its docs never
-mention `imm_estimator`. (`ref/README.md` mis-numbered this as Algorithm 4; fixed.)
+mention `imm_estimator`. (`ref/README.md` mis-numbered this as Algorithm 4; fixed, and its
+Pathfinder author list and JMLR article number were also wrong — the paper is Zhang, Carpenter,
+Gelman, Vehtari, JMLR 23(306):1-49, verified against arXiv metadata and jmlr.org.)
+
+**Literature verdict, from a full-text sweep of the likely sources:** a PSIS-weighted mixture
+covariance used as an HMC mass matrix has **no published derivation**; the empirical covariance of
+draws, which we use today, **is** the standard derived choice (Bales et al., *Selecting the Metric
+in Hamiltonian Monte Carlo*, arXiv:1905.11916 §3.3 — id verified by direct fetch;
+Seyboldt/Carlson/Carpenter arXiv:2603.18845 §2.2; Stan Reference Manual MCMC chapter). So the
+library estimator is *less* founded than what we have, and it is also **less regularised**: our path
+adds `1e-6·I`, while `_psis_weighted_mixture_covariance` (`:46-136`) and the `psis_empirical`
+`jnp.cov` branch (`:639`) add nothing, even though the metric later hard-Cholesky-factors the result.
+Related: Pathfinder warns its own inverse Hessian "can fail to generate a positive definite" estimate,
+nutpie and Stan do not use Pathfinder for the metric at all, and Pathfinder's PSIS k̂ is documented
+elsewhere as unreliable for Pathfinder (pymc_extras: "Pareto k may not be a good diagnostic for
+Pathfinder"), so exporting k̂ is not the safety net it looked like. BlackJAX does ship the standard
+Stan shrinkage — `adaptation/mass_matrix.py:319-353`, `(n/(n+5))·cov + (5/(n+5))·1e-3·I` — via
+`window_adaptation`, which also offers `diagonal_estimator="fisher"`.
 
 ### D4 — Diagnostics and stop rule (adopt)
 Gate on: no divergences, `E-BFMI ≥ 0.3`, rank-normalized bulk-ESS ≥ 400 and tail-ESS ≥ 400,
 `R̂ < 1.01` for long chains or **nested R̂** (`arviz_stats.rhat_nested`) in the many-short-chains
-regime, `k̂ ≤ min(1 − 1/log₁₀S, 0.7)` wherever PSIS reweighting is used, and one fp64 rerun as a
+regime, `k̂ ≤ min(1 − 1/log₁₀S, 0.7)` wherever PSIS reweighting is used — with the caveat that k̂ is
+documented as an unreliable diagnostic specifically for Pathfinder — and one fp64 rerun as a
 numerics gate (single precision has a 24-bit mantissa; |logp| > 2²⁴ corrupts accept/reject) **[F/C]**.
 Early stopping is implementable in-library: `blackjax.eca.add_splitR` and
 `while_with_info(..., while_cond)` **[C]**.
