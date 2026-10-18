@@ -36,6 +36,7 @@ def chees_warmup_with_progress(
     max_sampling_steps=1000,
     max_leapfrog_steps=1000,
     update_every=25,           # <-- throttle UI updates to keep overhead tiny
+    progressbar=True,          # False removes jax.debug.callback from the compiled scan
 ):
     # --- Halton jitter (same idea as BJ’s ChEES) ---
     def halton_u(i):
@@ -83,7 +84,10 @@ def chees_warmup_with_progress(
     )
 
     # --- one progress bar, like your dynamic-HMC bar ------------------------
-    bar = tqdm(total=num_steps, desc="ChEES Adaptation", position=0, leave=True)
+    # With progressbar=False no host callback enters the jaxpr at all. That is not cosmetic:
+    # a scan containing jax.debug.callback cannot be written to JAX's on-disk compilation cache,
+    # so leaving the bar on costs every fresh process a full recompile of the warmup scan.
+    bar = tqdm(total=num_steps, desc="ChEES Adaptation", position=0, leave=True) if progressbar else None
     _div_total = {"n": 0}  # host-side mutable counter
 
     def _host_update(i, div_step, acc_mean, step_size_now):
@@ -131,19 +135,21 @@ def chees_warmup_with_progress(
             imm_diag,              # 1.7 requires the diagonal metric here
         )
 
-        # JAX-safe throttling of host callback
-        should_cb = jnp.logical_or(((i + 1) % update_every) == 0,
-                                   (i + 1) == num_steps)
+        # JAX-safe throttling of host callback. Removed at trace time when the bar is off, so the
+        # compiled scan is cacheable and carries no callback overhead.
+        if progressbar:
+            should_cb = jnp.logical_or(((i + 1) % update_every) == 0,
+                                       (i + 1) == num_steps)
 
-        def do_cb(_):
-            jax.debug.callback(
-                _host_update, i, div_step, acc_mean, new_astate.step_size, ordered=True
-            )
-            return ()
-        def dont_cb(_):  # no-op
-            return ()
+            def do_cb(_):
+                jax.debug.callback(
+                    _host_update, i, div_step, acc_mean, new_astate.step_size, ordered=True
+                )
+                return ()
+            def dont_cb(_):  # no-op
+                return ()
 
-        lax.cond(should_cb, do_cb, dont_cb, operand=None)
+            lax.cond(should_cb, do_cb, dont_cb, operand=None)
 
         return (new_states, new_astate), info  # (carry, y)
 
@@ -159,7 +165,8 @@ def chees_warmup_with_progress(
         (jnp.arange(num_steps), keys),
     )
 
-    bar.close()
+    if bar is not None:
+        bar.close()
 
     # Assemble parameters like BJ’s run()
     traj_len_adj = jnp.exp(
