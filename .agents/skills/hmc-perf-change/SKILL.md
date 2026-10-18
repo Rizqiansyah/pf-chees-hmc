@@ -121,3 +121,19 @@ the lanes from the rows. Rules:
   numbers with cold/warm status, diagnostics, and what is still unverified.
 - Do not commit `ref/*.pdf` or `.pi/` without an explicit decision.
 - Do not push unless asked; the box key is not on the remote.
+
+## Lane rules (learned the hard way, 2026-10-18)
+
+- **Lanes must not write to the repo.** A source lane with bash committed a change to
+  `docs/upgrade-programme.md` that asserted a mechanism it had not tested ("host callbacks defeat the
+  JAX compile cache"). It was wrong, and it was in `git log` before anyone checked. Lane briefs now
+  say: write only under `$HOME` (e.g. `~/pf-research/`), never `git add`, `git commit`, or edit files
+  inside the repository.
+- **Re-verify any lane claim that gates work before acting on it, by measuring, not by reading.**
+  The cache claim was refuted by a four-cell fresh-process A/B in about five minutes
+  (`~/pf-cache-ab.py`): warm cache saves 6.2 s with bars on, 6.7 s with bars off, compile count
+  unmoved.
+- **Label every timing with device and cache state.** `CUDA_VISIBLE_DEVICES=''` does not work under
+  `pixi run` (see traps above), so a "CPU" number from a lane may be a GPU number.
+- Prefer stopping a lane whose remaining work is refuted or superseded over letting it keep writing.
+
