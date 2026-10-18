@@ -221,6 +221,45 @@ float64, inside a 20-iteration `lax.scan` (dispatch excluded), GPU.
    leapfrog steps of the real logp cost ~480 us. That is ~83% overhead. Radon: 11.4 ms per transition
    against 37 x 139 us = 5.1 ms of model, ~55% overhead. Attribution is the next measurement.
 
+## Where the wall time actually lives (stage timers, both models)
+
+`~/pf-o1-stages.py` monkeypatches each `PfCheesHMC` stage with a wall timer that blocks on the GPU
+result before stopping. Two runs per model in one process; **read the warm run** — the first carries
+compilation. One correction on first reading: `finite_init` runs *inside* `_run_pathfinder`, so the
+stages overlap and the residual column goes negative. The numbers below have that double count
+removed (pathfinder shown net of finite_init).
+
+8 Schools, 32 chains, 1,250 draws, 2,000 warmup, warm total 11.86 s:
+
+| stage | s | share |
+|---|---|---|
+| PyMC adapt_diag start | 0.37 | 3% |
+| finite-start repair | 1.75 | 15% |
+| Pathfinder (net) | 1.72 | 15% |
+| ε0 tuner | 1.03 | 9% |
+| ChEES warmup, 2,000 steps | 4.09 | 35% |
+| sampling, 1,250 draws | 3.11 | 26% |
+
+Radon non-centered, same shape, warm total 43.03 s: start 0.75 (2%), finite repair 4.24 (10%),
+Pathfinder net 3.23 (7%), tuner 1.56 (4%), **warmup 18.39 (43%)**, **sampling 14.99 (35%)**.
+
+Cold runs are dominated by compilation instead: Pathfinder stage 25.18 s of 39.28 s on 8 Schools,
+43.11 s of 91.32 s on radon.
+
+1. **Warmup is the biggest single stage, but not because its steps are expensive.** 4.09 s / 2,000
+   steps = 2.05 ms per warmup step on 8 Schools, versus 3.11 s / 1,250 = 2.49 ms per sampling step.
+   Warmup ≈ 1.6x the count-adjusted sampling cost, i.e. roughly the same step, just 2,000 of them.
+   An earlier isolated probe reported 8.6 ms per warmup step; that probe used an identity metric and
+   no Pathfinder initialisation, so its trajectories were longer than production's. Production is the
+   authority here.
+2. **~80% of every step is not the model.** Kernel-only scan at L=21 on the real 8 Schools logp is
+   443 us; carrying the full HMCInfo makes it 491 us (+48 us). Production pays ~2,000-2,500 us per
+   step. So the overhead is machinery around the kernel, and the info carry is not it.
+3. **The finite-start repair is now the third-largest fixed cost** (1.75 s at 8 Schools, 4.24 s at
+   radon, ~10-15% of a warm run). It checks log-density and gradient per chain with 32 separate
+   eager calls, which is Python dispatch, not compute — the same dispatch cost that misled the
+   roofline probe. One vmapped check should collapse it.
+
 ## What limits a step on the GPU (roofline probe)
 
 `tools/probe_gpu_roofline.py`, run as `X64=1 pixi run python tools/probe_gpu_roofline.py` and again
