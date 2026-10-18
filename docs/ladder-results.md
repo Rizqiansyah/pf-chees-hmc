@@ -300,10 +300,21 @@ Per 32-chain gradient, microseconds:
    conditioning is the risk), and the existing "one fp64 rerun" gate becomes the comparison, not an
    afterthought.
 
-## After the batched start check (8 Schools, same config)
+## After the batched start check (same config, warm runs)
 
-finite-start repair **1.75 s -> 0.24 s** (15% -> 2% of a warm run). Total wall did not move:
-11.86 s -> 12.03 s, because the sampling stage went 3.11 s -> 4.52 s in the same pair of runs.
-Two seeds is not enough to separate that from noise, and the fix also stops jittering starts that
-were already usable, so realised trajectories change. Stage-level saving: measured. End-to-end
-win: not claimed until 5 seeds.
+| model | finite-start repair before | after | warm total before | after |
+|---|---|---|---|---|
+| 8 Schools | 1.75 s (15%) | **0.24 s (2%)** | 11.86 s | 12.03 s |
+| radon non-centered | 4.24 s (10%) | **0.39 s (1%)** | 43.03 s | **39.66 s** |
+
+Radon gains 3.4 s end to end, which is the stage saving. On 8 Schools the total did not move,
+because the sampling stage went 3.11 s -> 4.52 s in the same pair of runs; two seeds cannot separate
+that from noise, and the fix also stops jittering already-usable starts, so realised trajectories
+change. The stage-level saving is measured on both models; the 8 Schools end-to-end claim is left
+open until 5 seeds.
+
+What is left after the fix, warm, on radon: **ChEES warmup 19.11 s (48%)**, sampling 14.97 s (38%),
+Pathfinder 3.39 s (8.5%), PyMC start 0.73 s, tuner 1.57 s. Warmup is now the whole game: 2,000
+steps at ~2.05 ms each, of which the model accounts for ~0.3 ms at L=21. Two exits, and they are
+independent: do fewer warmup steps (a stop rule) or make each step cheaper (the kernel fork, which
+the MEADS lane prices at one leapfrog per step instead of L).
