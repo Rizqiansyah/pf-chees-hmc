@@ -488,6 +488,7 @@ class PfCheesHMC:
             inverse_mass_matrix,   # your PF-based diag/dense (flattened if diag)
             target_acceptance_rate=kwargs['target_accept'],
             max_leapfrog_steps=kwargs['max_leapfrog_steps'],
+            progressbar=bool(kwargs.get("progressbar", True)),
         )
 
         return (
@@ -576,7 +577,12 @@ class PfCheesHMC:
 
         # ---------- progress bar and host aggregator ----------
         update_every = 25
-        hmc_bar = tqdm(total=num_draws, desc="Sampling Dynamic HMC", position=0, leave=True)
+        # Same reason as the warmup bar: with the bar off, no jax.debug.callback enters the jaxpr,
+        # the sampling scan becomes eligible for JAX's on-disk compilation cache, and the per-step
+        # host round-trip disappears.
+        progressbar = bool(kwargs.get("progressbar", True))
+        hmc_bar = (tqdm(total=num_draws, desc="Sampling Dynamic HMC", position=0, leave=True)
+                   if progressbar else None)
         _div_total = {"n": 0}
 
         def _host_update(i, window_div_sum, acc_mean):
@@ -623,19 +629,22 @@ class PfCheesHMC:
             else:
                 acc_mean = jnp.asarray(jnp.nan, dtype=jnp.float32)
 
-            should_cb = jnp.logical_or(((i + 1) % update_every) == 0,
-                                    (i + 1) == num_draws)
+            if progressbar:
+                should_cb = jnp.logical_or(((i + 1) % update_every) == 0,
+                                        (i + 1) == num_draws)
 
-            def do_cb(_):
-                jax.debug.callback(_host_update, i, window_div, acc_mean, ordered=True)
-                # *** reset to 0 with same dtype as carry ***
-                return jnp.zeros((), dtype=window_div.dtype)
+                def do_cb(_):
+                    jax.debug.callback(_host_update, i, window_div, acc_mean, ordered=True)
+                    # *** reset to 0 with same dtype as carry ***
+                    return jnp.zeros((), dtype=window_div.dtype)
 
-            def dont_cb(_):
-                # *** ensure dtype stays consistent in false branch too ***
-                return window_div.astype(window_div.dtype)
+                def dont_cb(_):
+                    # *** ensure dtype stays consistent in false branch too ***
+                    return window_div.astype(window_div.dtype)
 
-            window_div_next = lax.cond(should_cb, do_cb, dont_cb, operand=None)
+                window_div_next = lax.cond(should_cb, do_cb, dont_cb, operand=None)
+            else:
+                window_div_next = window_div.astype(window_div.dtype)
             return (new_state, window_div_next), (new_state, info)
 
         rng, key_sample = jax.random.split(rng)
@@ -873,6 +882,7 @@ def sample_pf_chees_hmc(
     draws: int = 1000,
     chains: int = 32,
     random_seed: Optional[int] = None,
+    progressbar: bool = True,
     # pass-through buckets for your class:
     pathfinder_kwargs: Optional[Dict[str, Any]] = None,
     step_size_tune_kwargs: Optional[Dict[str, Any]] = None,
@@ -915,6 +925,12 @@ def sample_pf_chees_hmc(
     step_size_tune_kwargs = {} if step_size_tune_kwargs is None else dict(step_size_tune_kwargs)
     chees_kwargs = {} if chees_kwargs is None else dict(chees_kwargs)
     dynamic_hmc_kwargs = {} if dynamic_hmc_kwargs is None else dict(dynamic_hmc_kwargs)
+
+    # One flag controls both bars. Off means no jax.debug.callback in either scan, which removes the
+    # per-step host round-trip and makes both compiled scans eligible for JAX's on-disk compilation
+    # cache. A per-stage value in chees_kwargs / dynamic_hmc_kwargs still wins.
+    chees_kwargs.setdefault("progressbar", progressbar)
+    dynamic_hmc_kwargs.setdefault("progressbar", progressbar)
 
     idata = sampler.sample(
         chains=chains,
