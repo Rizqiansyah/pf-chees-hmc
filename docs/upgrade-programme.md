@@ -167,3 +167,59 @@ No overlap: literature lane takes Q1–Q4, source lane takes Q5–Q6, rest is mi
 4. E2.4 whenever it is cheap; it is a reporting bug, not a sampler bug.
 5. E4 only if G1 opens; otherwise the ladder result is written up as evidence that the current
    metric is adequate for this model class.
+
+---
+
+# E5 — Gradient economy, chain batching, warmup policy, initialisation
+
+Opened 2026-10-18 by owner decision after the ladder and roofline work. In scope: **(1)** fewer
+gradients per effective sample, **(2)** batched likelihood only, **(3)** all of the fixed-cost work,
+**(4)** stratified Pathfinder initialisation. Explicitly **out of scope for now**: float32 (measured
+3.3x–20x on data-heavy shapes, parked with its numbers), data subsampling per leapfrog step,
+adaptive chain spawning.
+
+Why these: a step costs `L x cost_of_one_gradient`, warmup is 2,000 of those steps regardless of how
+many samples you want, and both the E4 metric A/B and the roofline probe say the leverage is in
+gradients-per-effective-sample and in fixed cost, not in device throughput. Measured anchors: the
+latency floor is ~130–155 us per 32-chain gradient on small models; radon's real per-transition cost
+(11.4 ms at ~37 steps) matches its own gradient cost, so kernel plumbing is not the gap.
+
+## Question map
+
+Owner "me" = answered by a probe I run, no lane. Lanes get at least two questions whose answers could
+change the design.
+
+| # | Question | Owner | Settling evidence | Gates | Cost |
+|---|---|---|---|---|---|
+| G1 | Does momentum persistence (GHMC) reduce gradients per ESS versus momentum-refreshing HMC at equal trajectory length, at d < 50? | lane: ghmc-evidence | primary papers, numbers with tiers | kernel fork D6 | ~20 min |
+| G2 | Does persistence interact with a **fixed lockstep** trajectory length, and does it move the optimal target acceptance away from 0.651? | lane: ghmc-evidence | primary papers + BlackJAX defaults | whether ChEES's tuning rule still applies | ~20 min |
+| G3 | What does installed BlackJAX 1.7.1 GHMC actually require — init/step signature, state fields, info field names — and can our ChEES `update_adapt` call drive it unchanged? | lane: blackjax-source | file:line | implementation route | ~15 min |
+| G4 | Can a stop rule live inside the warmup loop: what do `blackjax.eca` / `ns/` expose, are they jit/scan compatible, and do they carry the `shard_map` "chains" mesh constraint that killed LAPS? | lane: blackjax-source | file:line + a 3-dim CPU check | stop-rule granularity | ~15 min |
+| G5 | What does Pathfinder expose for stratified init (`info` fields, PSIS weights, log-ratios), and is PS-IR reachable through public API? | lane: blackjax-source | file:line | init change | ~10 min |
+| G6 | On the graphs we ship, does per-chain cost fall with chain count (reads shared) or stay flat (re-read per chain)? | **me** | `~/pf-batchprobe.py`, real jaxed logp at C=1..128, f64 and f32 | whether batching chains exists as a lever at all | ~8 min |
+| G7 | Is there a supported way to make a PyMC model evaluate all chains in one wide op instead of `vmap`, and what breaks (transforms' jacobian, deterministics, coords)? | lane: pytensor-batching | source + 3-dim CPU experiment | implementation route for (2) | ~25 min |
+| G8 | Is there published evidence that PS-IR / stratified init beats one random draw from the same approximation, measured in warmup length or convergence diagnostics — and that start dispersion matters for *ensemble* adaptation specifically? | lane: init-reuse | primary papers, tiers | whether (4) is worth code | ~20 min |
+| G9 | Is persisting tuned HMC hyperparameters across runs standard practice, what are the documented failure modes, and do samplers re-verify after a warm start? | lane: init-reuse | Stan/PyMC docs + papers | cache design, verification block | ~15 min |
+| C1 | How early in warmup are the frozen parameters (step size, trajectory-length statistics) within 10% of their 2,000-step values? | **me** | instrumented run, 250-step blocks | stop rule thresholds | ~10 min |
+| C2 | Does nested R-hat separate warmup 500 / 1,000 / 2,000 on models where we know the answer? | **me** | `arviz_stats.rhat_nested` on existing draws | stop criterion validity | ~10 min |
+| C3 | How many distinct XLA traces does one run create, and which knob (chains, draws, dtype) creates them? | **me** | compile-time attribution per stage | re-trace fix | ~10 min |
+
+## Gates carried over
+
+- **G-A (kernel change):** no kernel swap without ≥5 seeds, divergences per 1,000 draws non-increasing
+  at equal chains, max R̂ ≤ 1.01, posterior means within 1σ, **and** gradients-per-ESS reported — that
+  last metric is the currency of this epic, so a wall-time-only comparison is not admissible.
+- **G-B (warmup policy):** an early stop must reproduce the 2,000-step posterior within 1σ on both
+  example models and must reject a deliberately short warmup on GEV, where 1,000 steps produced R̂
+  1.068 and a 6.2-step frozen trajectory. A stop rule that cannot detect that case is not a stop rule.
+- **G-C (cache):** a persisted-hyperparameter cache ships only with a graph fingerprint that fails
+  loudly when the model changes, plus a verification block of real sampling; no silent reuse.
+- **G-D (init):** stratified init is only worth shipping if it changes a measured quantity (warmup
+  length to reach R̂ < 1.01, or max R̂ at fixed budget), not "looks better spread".
+
+## Baselines to beat, measured
+
+- Gradients per effective sample: computed from existing rows as `steps_mean x draws_total / total_bulk_ESS`.
+- Warmup cost: 2,000 lockstep steps ≈ 23 s at 32 chains on radon, ≈ 8 s at 8 Schools — flat in chains.
+- Re-trace: 15–19 s per new chain count per model per process.
+- 4,000-draw budget quality: GPU max R̂ 1.006 → 1.017 (8 Schools) and 1.025 → 1.083 (radon) as chains go 4 → 32.
