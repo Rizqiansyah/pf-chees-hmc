@@ -290,3 +290,26 @@ wall time is our own loop machinery and warmup -- O1 attributes it to specific c
 - Warmup cost: 2,000 lockstep steps ≈ 23 s at 32 chains on radon, ≈ 8 s at 8 Schools — flat in chains.
 - Re-trace: 15–19 s per new chain count per model per process.
 - 4,000-draw budget quality: GPU max R̂ 1.006 → 1.017 (8 Schools) and 1.025 → 1.083 (radon) as chains go 4 → 32.
+
+## L5 follow-up: the callback/cache claim is refuted
+
+The retrace lane concluded that `JAX_COMPILATION_CACHE_DIR` does not help this sampler because the
+warmup and sampling scans contain `jax.debug.callback`, and that making the progress bar optional was
+therefore the top re-trace fix. Measured directly, four fresh processes, 8 Schools at 32 chains with
+200 draws and 200 warmup, one cache directory per bar setting (`~/pf-cache-ab.py`):
+
+| scenario | wall | logged compiles |
+|---|---|---|
+| bar ON, cold cache | 29.10 s | 652 |
+| bar ON, warm cache | 22.89 s | 644 |
+| bar OFF, cold cache | 28.54 s | 642 |
+| bar OFF, warm cache | 21.89 s | 643 |
+
+The cache saves 6.2 s with the bar on and 6.7 s with it off. Compile counts do not move. So host
+callbacks are not what defeats the cache here, `progressbar=False` is not a compile fix — it is a
+noise and host-round-trip fix — and the README's 8.5 s figure from `6aebe30` stands, measured at
+6-7 s on this smaller configuration.
+
+What still stands from the lane: chains is a compile key (the 15-19 s per-new-chain-count penalty is
+reproducible and unexplained by draws), and ~640 individually compiled subgraphs is the real shape of
+the problem, which is a PyTensor-lowering property, not a sampler bug.
