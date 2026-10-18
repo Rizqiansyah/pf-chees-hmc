@@ -63,6 +63,21 @@ Findings:
    **overhead removal is necessary but not sufficient**; the lever is preconditioning (§5-D1).
 4. GPU runs had fewer divergences and slightly lower max R̂ than CPU NUTS at these settings.
 
+**Status of that table: superseded by two shipped changes.** After `cb74b1b` (ε0 search traced once,
+32 probes instead of once per chain) and `c128ca1` (default chains 4 → 32), and with warmup 2,000
+instead of 10,000, the same measurements on this box are:
+
+| config | wall (warm) | ESS/s | vs CPU NUTS | max R̂ | divs/1k draws | tail-ESS |
+|---|---|---|---|---|---|---|
+| 8 Schools, 32 ch, warmup 2k | 10.5 s | 45,614 | 2.5× | 1.0014 | 0.008 | 30,732 |
+| 8 Schools, 128 ch, warmup 2k | 15.0 s | 134,898 | **7.4×** | 1.0011 | 0.000 | 139,353 |
+| GEV, 32 ch, warmup 2k | 15.5 s | 7,856 | 2.6× | 1.0052 | 0.148 | 8,163 |
+| GEV, 128 ch, warmup 2k | 32.4 s | 17,464 | **5.9×** | 1.0012 | 0.135 | 83,458 |
+
+Cold start remains 48.3 s → 39.8 s with `JAX_COMPILATION_CACHE_DIR` on the 8 Schools default, and
+the CPU reference is still a one-shot 4-lane single-threaded run — the equal-budget, all-core CPU
+comparison in §7 is unrun, so the honest scope is *these two models, this box, warm*.
+
 ---
 
 ## 3. Stage cost model (unchanged, still the basis for W-items)
@@ -250,7 +265,7 @@ kernel survives W6.
 
 | # | Item | Evidence | Gate |
 |---|---|---|---|
-| W0 | **Crossover ladder** (see §7) — decides whether §1(b) survives at all | none exists; nothing in the literature gives an ESS/s-vs-chain-count curve | report the crossover, or report that none exists on this box |
+| W0 | **Partially answered.** GPU now exceeds CPU NUTS on both example models at 32 and 128 chains (§2 table above). Still unrun: the ladder over model size — ill-conditioned Gaussian d=50/500, logistic 1000×25, and the CPU arm on all cores with its own core-count curve | chain sweep + warmup sweep measured here; no published ESS/s-vs-chain-count curve exists | report where the crossover lies as models get larger, or that GPU's advantage is confined to small cheap-gradient models |
 | W1 | Delete per-chain ε tuner; replace with a documented initialiser (Pathfinder-derived, MEADS-style closed form, or 1.0) | 49% of runtime; H&G Alg 4 is an initializer that "works for any ε₁"; NumPyro ships it off | ESS/s gain ≥ 30% with r̂, tail-ESS, BFMI and divergence gates held |
 | W1b (done) | ~~Read LAPS end to end and audit `adaptation/laps.py`~~ — done, verdict in D7: not adopted | LAPS metric is gradient calls, not ESS or seconds [F-verified] | closed |
 | W6a | **LAPS preconditioner arm, public API only.** Gate first: wall-clock per gradient call for `dynamic_hmc` vs `adjusted_mclmc` at our d and 32 chains (~2 min). Then arms (a) current ChEES+dhmc, (b) dhmc with metric = ensemble `Var[x]` and step size from ~200 unadjusted `blackjax.mclmc` steps (`L=2·sqrt(ΣVar)`, `C=0.025`, switch on `delta[x_i^2] < 0.01`), (c) `adjusted_mclmc` driven by (b) | D7 ablation says the kernel, not the metric, carries LAPS's win; if MAMS's per-call cost is worse on an A2000 the paper's derived advantage cannot transfer and (b)/(c) are decided before they run | ~2 GPU-min/arm; budget-matched ESS/s at 90 s, scored over the whole run and post-t=30 s |
@@ -260,7 +275,7 @@ kernel survives W6.
 | W4 | Drop unused scan outputs (`warm_info`, `infos_hist` leaves, `logdensity_grad`) | ~59 MB at D=10, ~5.9 GB at D=1000 | memory report before/after; behaviour identical |
 | W5 | Delete the field-discovery probe and `_find_path`; name fields explicitly | one wasted real 32-chain transition + a silent-wrong-UI collision class | probe gone; test still green |
 | W6 | Kernel-family bake-off: dhmc+ChEES vs GHMC+MEADS, at matched ESS/s including adaptation cost | §4 rows MEADS vs ChEES disagree by target | whichever wins on our ladder; document the other as an option |
-| W7 | Warmup-length sweep (1k/2k/5k/10k) with nested R̂ in-loop early stopping | Margossian & Gelman: cross-chain adaptation lowers gradients-to-bias with more chains; SNAPER: a non-zero optimum exists | find the knee; publish the curve |
+| W7 | **Done.** Warmup-length sweep 1k/2k/5k/10k × {8 Schools, GEV} × 5 seeds at 32 and 128 chains. Knee is 2,000: 1,000 collapses GEV (frozen 6.2 leapfrog steps, R̂ 1.068, tail-ESS 583); 2,000 gives 1.8–2.2× ESS/s over 10,000 with posterior means within 0.5σ (8 Schools) and 0.7σ (GEV) and sds within 0.6% | Margossian & Gelman cross-chain result; SNAPER short-warmup warning, observed here at 1k | examples and README updated to 2,000; in-loop nested-R̂ early stopping still unbuilt |
 | W8 | Metric bake-off at fixed kernel: current dense vs analytic PSIS vs Welford diagonal vs low-rank Fisher | D1 is the only ~4x published method gain | pick by ESS/s, not by condition number |
 
 Order: W0 first (it can invalidate the premise), then W1+W3+W5 (mechanical, no statistics change),

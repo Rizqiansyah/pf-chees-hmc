@@ -73,6 +73,19 @@ Pass `random_seed`: if it is omitted the seed defaults to the current date, so t
 
 **First run in a process is slower than later runs.** On the 8 Schools example at 32 chains: 48.3 s cold, 39.8 s cold with a persistent compile cache, 22 s warm in the same process. Setting `JAX_COMPILATION_CACHE_DIR` to a writable directory recovered 8.5 s of the 26 s compile cost at no cost to results (2.5 MB cache); the rest is JAX tracing, which that cache does not cover. Quote cold or warm, not both interchangeably.
 
+**Warmup length: 2,000 is enough for these models; 10,000 was not.** Measured on both examples (2000 draws, 32 chains, warm median of 5 seeds, RTX A2000):
+
+| model | warmup | wall | ESS/s | max R-hat | divs /1k draws | tail-ESS |
+|---|---|---|---|---|---|---|
+| 8 Schools | 1,000 | 10.4 s | 48,014 | 1.0011 | 0.008 | 30,227 |
+| 8 Schools | 2,000 | 12.1 s | 39,624 | 1.0012 | 0.024 | 31,743 |
+| 8 Schools | 10,000 | 22.4 s | 21,082 | 1.0014 | 0.008 | 32,436 |
+| GEV | 1,000 | 12.1 s | 1,469 | **1.0680** | 0.039 | **583** |
+| GEV | 2,000 | 16.2 s | 6,486 | 1.0052 | 0.125 | 8,163 |
+| GEV | 10,000 | 50.9 s | 3,672 | 1.0009 | 0.438 | 24,048 |
+
+Do not go as low as 1,000: on GEV the frozen trajectory length collapsed to 6.2 leapfrog steps, R-hat went to 1.068 and tail-ESS to 583 — ChEES had not learned the trajectory length. At 2,000 the posterior is indistinguishable from 10,000: worst per-variable difference 0.49 sigma (8 Schools) and 0.70 sigma (GEV), posterior sds within 0.6%. More chains also means less needed warmup, since ChEES pools statistics across all chains.
+
 Stage-specific options are forwarded as dicts: `pathfinder_kwargs`, `step_size_tune_kwargs`, `chees_kwargs`, `dynamic_hmc_kwargs`.
 
 For use with GPU sampling, see also the `examples/` folder.
@@ -87,7 +100,7 @@ For use with GPU sampling, see also the `examples/` folder.
 # Common Issues
 1. If the sampler is not converging, try increasing the number of ChEES draws using the argument
 ```
-sample_pf_chees_hmc(chees_kwargs={"draws": 10_000})
+sample_pf_chees_hmc(chees_kwargs={"draws": 2_000})
 ```
 2. On a shared GPU, JAX pre-allocates most of the device memory at import. Set `XLA_PYTHON_CLIENT_PREALLOCATE=false` (the pixi env already does) so other users' jobs are not starved.
 3. Divergence counts can differ by one between identical runs at the same seed. XLA does not guarantee bitwise-identical reductions, so a near-threshold divergence may flip; this is not a sampler change.
