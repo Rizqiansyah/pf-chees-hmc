@@ -21,14 +21,37 @@ parameters, which is the GPU's weakest regime.
 
 ## E1 — Model ladder
 
-Models, cheapest-gradient first: (1) 8 Schools funnel d=10 (have), (2) GEV d=3 (have),
-(3) ill-conditioned Gaussian d=50 and d=500 with condition number ~1e4, (4) logistic regression
-1000×25 and 10,000×50, (5) one real model from PosteriorDB so the result is not self-invented.
+Models, from PosteriorDB (Magnusson, Torgander, Bürkner, Zhang, Carpenter, Vehtari — arXiv:2407.04967;
+not "Charnti", which an earlier note here had wrong), verified against `stan-dev/posteriordb` at
+`91027f9c`. It ships plain files, not an R package: 120 Stan models, 91 datasets, 148
+model+data pairs, 57 published reference fits. **Reference fits stop at d = 66**, and only 12 of
+the 63 posteriors with 10 ≤ d ≤ 500 have one, so a "10–500 parameters with ground truth" ladder is
+not available and larger models need a self-generated reference under the DB's published criteria
+(10,000 draws per parameter, R̂ < 1.01, lag-1 autocorrelation < 0.05, no divergences).
 
-Arms: GPU at 32 / 128 / 256 chains; CPU NUTS with **chains = cores** at 4 / 8 / 16 / 32.
-Report per cell: wall (cold and warm separately), bulk ESS/s total and worst-variable, min
-tail-ESS, max R̂, divergences per 1,000 draws, mean leapfrog steps, and the padding ratio
-(useful gradients / issued gradients).
+| posterior id (as the database names it) | d | N | ref fit | role on the ladder |
+|---|---|---|---|---|
+| 8 Schools (repo example) | 10 | **8** | — | centered funnel control; N=8 is below the database's own data floor |
+| GEV Port Pirie (repo example) | 3 | 259 | — | stiff, cheap |
+| `nes1972-nes` | 10 | 1350 | **yes** | same parameter count as 8 Schools with 168× the data, benign |
+| `diamonds-diamonds` | 26 | 5000 | **yes** | well-conditioned GLM control at realistic N |
+| `mcycle_gp-accel_gp` | 66 | 133 | **yes** | centered GP with whitened eigen-expansion; Seyboldt et al. **excluded it because nothing converged** |
+| `irt_2pl-irt_2pl` | 144 | 2000 | self-gen | the 8-Schools pathology at 14× the parameters |
+| `radon_mn-radon_variable_intercept_slope_centered` / `_noncentered` | 175 | 919 | self-gen | the conditioning A/B pair, same model two parameterisations |
+| `science_irt-grsm_latent_reg_irt` | 408 | 2744 | self-gen | correlated high-d plus funnel |
+
+Synthetic ill-conditioned Gaussians are **dropped**: my d=50 build made CPU NUTS fail too
+(R̂ 1.33, tail-ESS 23), so that cell measured the model rather than the sampler.
+
+Protocol spine, chosen because none of the three published GPU/CPU studies is copyable 1:1
+(Sountsov reports ESS for one parameter with no seed count and no warmup at all; Dance excludes
+warmup and uses identity metrics for its NUTS rows; Seyboldt states no hardware and no repeats):
+bulk ESS summed over parameters divided by wall seconds **including warmup and compilation**,
+per-parameter minimum reported alongside the total, **gradients per ESS** as the hardware-free
+second axis, chain sweep GPU {1,4,16,32,64,128} and CPU {1,8,32}, ≥10 seeds with median and IQR,
+cold versus warm flagged, divergences per 1,000 draws plus tail-ESS, E-BFMI and max R̂ per run, and
+**non-converged models reported rather than dropped** — dropping them is exactly how the Fisher
+paper's 4× became funnel-free.
 
 ## E2 — Correctness guards
 
@@ -67,9 +90,23 @@ with library code and feeding it into our existing dense-metric path.
 
 ## Decision gates
 
-- **G1 (E4 go/no-go):** proceed only if at least one ladder model shows imm condition number ≥ 50 or
-  divergence rate ≥ 1 per 1,000 draws at 32 chains. Otherwise E4 is descoped and written up as
-  not-needed for this model class, because our two shipped examples (5.25 and 10.2) do not need it.
+- **G1 (E4 go/no-go):** proceed only if a ladder model with a usable reference fit shows imm
+  condition number ≥ 50 or a divergence rate ≥ 1 per 1,000 draws at 32 chains. The evidence makes
+  this less likely than it looked, and sharpens what E4 would be claiming: the Fisher result is
+  dominated by **small** models (median d = 9, 68 of 114 at d ≤ 15), the low-rank and
+  gradients-per-ESS gains are reported as the *same* 4×, which is only overhead-free at tiny d, and
+  **every centered/funnel model was excluded for non-convergence** — including
+  `eight_schools_centered` and `mcycle_gp-accel_gp`. So the published 4× does not cover our
+  geometry, and the regime where a low-rank term should matter (correlated 100–400 parameters,
+  funnelled) is the set that paper never isolated. Our own condition numbers, 5.25 and ~10.2, sit
+  where that paper's §2.3 simulation shows Fisher and covariance diagonals barely separating.
+- **G1b (if E4 proceeds):** implement nutpie's measured recipe, not the paper's prose — diagonal
+  σ = (Var[x] / Var[∇])^(1/4), initialised at diag(|score₀|), covariances regularised as
+  XXᵀ/γ + I with γ = 1e-5, eigenfilter keep λ > 2 or λ < 1/2, clamps [1e-20, 1e20] on the diagonal
+  and [1e-10, 1e10] on the low-rank σ, ≥3 good draws before any update, draws from divergent
+  trajectories excluded unless |index| > 4, whole update rejected on any non-finite value, step size
+  re-initialised on the first metric change. Note the trap: `sample.py:1064` documents the
+  eigenvalue cutoff default as 100 while the Rust default that actually applies is 2.0.
 - **G2 (fair CPU arm):** every CPU cell uses chains = cores and reports its own frontier. The 4-chain
   single-thread reference is retired — it produced a 7.4× claim that measured 3.6×.
 - **G3 (default changes):** no default moves without ≥5 seeds, divergence rate non-increase at equal
@@ -80,16 +117,17 @@ with library code and feeding it into our existing dense-metric path.
 
 | Q | Question | Owner | Evidence that settles it | Gates | Cost |
 |---|---|---|---|---|---|
-| Q1 | Which PosteriorDB models are cheap enough for a 6 GB A2000 and span conditioning? | lane: literature | posteriordb index + dimensions + observations | E1 model list | ~15 min |
-| Q2 | What benchmark protocol do published GPU-vs-CPU HMC papers use for scaling and reporting? | lane: literature | primary papers' experiment sections | E1 protocol | ~15 min |
-| Q3 | What did arXiv:2603.18845 actually measure, and does the ~4× hold for small d and dense metrics? | lane: literature | full text, numbers with tiers | E4 worth doing at all | ~20 min |
-| Q4 | How do nutpie/nuts-rs clamp and regularise the metric (eigenvalue floor, gamma, rank)? | lane: literature | source, file:line | E4 implementation | ~20 min |
+| Q1 | Which PosteriorDB models are cheap enough for a 6 GB A2000 and span conditioning? | lane — **answered**: 120 models / 148 pairs / 57 reference fits, reference fits stop at d=66; ladder set in E1 above | posteriordb index + dimensions + observations | E1 model list | done |
+| Q2 | What benchmark protocol do published GPU-vs-CPU HMC papers use for scaling and reporting? | lane — **answered**: none copyable 1:1; adopted spine in E1 above (ESS/s incl. warmup + compile, gradients/ESS second axis, chain sweeps, ≥10 seeds) | primary papers' experiment sections | E1 protocol | done |
+| Q3 | What did arXiv:2603.18845 actually measure, and does the ~4× hold for small d and dense metrics? | lane — **answered**: 4× is mostly small-d (median d=9, 68/114 at d≤15) but **every centered/funnel model was dropped for non-convergence**, hardware and repeats not stated → E4 gate rewritten as G1 | full text, numbers with tiers | E4 worth doing at all | done |
+| Q4 | How do nutpie/nuts-rs clamp and regularise the metric (eigenvalue floor, gamma, rank)? | lane — **answered**: recipe recorded as G1b above, incl. the doc-vs-default eigenvalue cutoff trap (100 documented, 2.0 applied) | source, file:line | E4 implementation | done |
 | Q5 | In BlackJAX 1.7.1, can `window_adaptation_low_rank` / `diagonal_estimator="fisher"` be used to *produce* a metric usable by `dynamic_hmc`, and with what chain-count constraints? | lane: source audit | file:line | E4 route (library vs hand-rolled) | ~20 min |
 | Q6 | Which PyTensor/JAX op makes GEV's gradient NaN at a finite log-density point, and is it upstream? | lane: source audit | minimal repro (3-dim, CPU only) + graph read | E2.1 fix shape | ~20 min |
 | Q7 | Confirm the key-collision line numbers and that a `fold_in` split changes no benchmark | me — **done**: collision confirmed at `sampler.py:426-427` vs `:452`/`:587`; fix is `fold_in` per stage, then re-run the 5-seed matrix | E2.2 | ~15 min |
 | Q8 | Confirm harmonic vs arithmetic at both display sites | me — **done**: arithmetic at `utils.py:109` and `sampler.py:565` | E2.3 | ~5 min |
 | Q9 | Is non-finite `energy` a divergent-transition artefact or a real overflow? | me | inspect one GEV run's sample_stats | E2.4 | ~10 min |
-| Q10 | Build the ladder harness and run the two existing models through it as a smoke test | me | harness + one row per model | E1 start | ~30 min |
+| Q10 | Build the ladder harness and run the two existing models through it as a smoke test | me — **done**: `tools/bench_ladder.py` (commit `de15e59`); padding ratio 1.0 measured on both GPU models; synthetic Gaussians dropped because CPU NUTS failed them too | harness + one row per model | E1 start | done |
+| Q11 | Is there any published ESS/s head-to-head of a Pathfinder / quasi-Newton metric against an adapted sample covariance? | lane — **answered**: no. The only peer-visible wall-clock comparison is Bales et al. 2019 on CPU Stan and its headline is mixed (sample covariance won on Prophet and Radon). So E4 is gated on our own A/B of `diag` vs `draw_diag` vs `low_rank` on the radon funnel pair, not on the 4×. | searched: arXiv API/ti/abs combos, Crossref, full texts | E4 justification | done |
 
 No overlap: literature lane takes Q1–Q4, source lane takes Q5–Q6, rest is mine.
 
