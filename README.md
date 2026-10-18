@@ -71,6 +71,8 @@ Pass `random_seed`: if it is omitted the seed defaults to the current date, so t
 
 **Chain count is the cheapest performance lever.** On an RTX A2000 the wall time per transition is flat from 32 to 256 chains (+2%), while ESS grows linearly with the number of chains, so more chains are nearly free until memory runs out. Measured on the 8 Schools example (2000 draws, 10 000 ChEES warmup, warm): 2,933 ESS/s at 4 chains, 21,324 at 32, 75,755 at 128. Sample histories are kept as `chains × draws × dim`, so raise `chains` with the model dimension in mind.
 
+**First run in a process is slower than later runs.** On the 8 Schools example at 32 chains: 48.3 s cold, 39.8 s cold with a persistent compile cache, 22 s warm in the same process. Setting `JAX_COMPILATION_CACHE_DIR` to a writable directory recovered 8.5 s of the 26 s compile cost at no cost to results (2.5 MB cache); the rest is JAX tracing, which that cache does not cover. Quote cold or warm, not both interchangeably.
+
 Stage-specific options are forwarded as dicts: `pathfinder_kwargs`, `step_size_tune_kwargs`, `chees_kwargs`, `dynamic_hmc_kwargs`.
 
 For use with GPU sampling, see also the `examples/` folder.
