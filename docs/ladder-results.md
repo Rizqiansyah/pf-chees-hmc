@@ -449,3 +449,26 @@ Two things worth keeping from the probe:
 E5 status: the warmup-gradient lever is closed negative, along with the stopping rule. What remains
 measured and open is the metric refresh during warmup (the lane showed it is a value change, not a
 state rebuild) and the 5-seed end-to-end confirmation of the batched finite-start check.
+
+### Five-seed confirmation of the batched start check (8 Schools, 32 chains, 1,250 draws, 2,000 warmup)
+
+The previous note reported the repair cost dropping 1.75 s -> 0.24 s but no end-to-end gain, because
+the sampling stage read 3.11 s before and 4.52 s after across two seeds. Five warm seeds say the
+sampling stage was the unstable measurement, not the change:
+
+| seed | total | finite-start check | ChEES warmup | sampling | max R-hat | min bulk ESS |
+|---|---|---|---|---|---|---|
+| 43 | 10.42 s | 0.23 s | 4.10 s | 3.09 s | 1.0020 | 22,652 |
+| 44 | 10.64 s | 0.25 s | 4.12 s | 3.17 s | 1.0017 | 22,567 |
+| 45 | 10.57 s | 0.26 s | 4.27 s | 3.09 s | 1.0016 | 21,997 |
+| 46 | 10.63 s | 0.25 s | 4.15 s | 3.11 s | 1.0020 | 21,240 |
+| 47 | 10.85 s | 0.26 s | 4.43 s | 3.12 s | 1.0020 | 22,086 |
+| **median** | **10.63 s** | **0.25 s** | **4.15 s** | **3.11 s** | **1.0020** | **22,086** |
+
+Against the pre-change warm reference of 11.86 s with a 1.75 s repair: **1.23 s faster (10%)**, and
+the per-seed spread on the total is 0.43 s (4%), so the gain is larger than seed-to-seed variation.
+Convergence readouts are flat across all five seeds.
+
+Method note: the ESS in this table is arviz's per-chain quantity under this script's own convention and
+is only comparable within it. Cross-model ESS/s claims use `tools/bench_ladder.py`, which is what the
+grid numbers elsewhere in this file come from.
