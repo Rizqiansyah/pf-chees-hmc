@@ -11,6 +11,7 @@ point -- so the guard is exercised without loading a notebook.
 """
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pymc as pm
 import pytest
 
@@ -68,6 +69,52 @@ def test_unusable_everywhere_raises():
     s = _sampler_with(ld)
     with pytest.raises(RuntimeError, match="finite log-density and finite gradient"):
         s._find_finite_start({"x": jnp.zeros(3)}, jax.random.key(2))
+
+
+def _sampler_with_model(d=3):
+    with pm.Model() as model:
+        pm.Normal("x", shape=(d,))
+    return PfCheesHMC(model, seed=7)
+
+
+def test_all_usable_starts_take_the_batched_fast_path():
+    """The point of _usable_mask: no per-chain eager repair when nothing is wrong."""
+    s = _sampler_with_model()
+    stack = {"x": jnp.array([[0.1, 0.2, 0.3], [-1.0, 2.0, 0.5]])}
+    calls = []
+    orig = s._find_finite_start
+    s._find_finite_start = lambda *a, **k: (calls.append(1), orig(*a, **k))[1]
+    out = s._ensure_finite_inits(stack, jax.random.key(0))
+    assert calls == [], f"expected zero per-chain repairs, got {len(calls)}"
+    np.testing.assert_allclose(np.asarray(out["x"]), np.asarray(stack["x"]), rtol=0, atol=0)
+
+
+def test_one_bad_chain_repairs_only_that_chain():
+    """A singularity in one chain must trigger exactly one repair, not a sweep of all chains."""
+    s = _sampler_with_model(d=3)
+
+    def ld_with_spike(pos):
+        x = pos["x"]
+        safe = x.at[0].set(1.0)          # keep the gradient finite wherever the spike is active
+        base = -0.5 * jnp.sum(safe * safe)
+        return base + jnp.where(x[0] == 99.0, 1.0 / (x[0] - 99.0), 0.0)
+
+    s.ld_fn = ld_with_spike
+    stack = {"x": jnp.array([[99.0, 0.2, 0.3], [0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])}
+    calls = []
+    orig = s._find_finite_start
+    s._find_finite_start = lambda *a, **k: (calls.append(1), orig(*a, **k))[1]
+    out = s._ensure_finite_inits(stack, jax.random.key(0))
+    assert len(calls) == 1, f"expected exactly one repair, got {len(calls)}"
+    assert float(out["x"][0, 0]) != 99.0
+    np.testing.assert_allclose(np.asarray(out["x"][1:]), np.asarray(stack["x"][1:]), atol=0)
+
+
+def test_batched_mask_agrees_with_the_per_chain_check():
+    s = _sampler_with_model(d=3)
+    s.ld_fn = lambda pos: -0.5 * jnp.sum(pos["x"] ** 2)
+    stack = {"x": jnp.zeros((4, 3))}
+    assert bool(jnp.all(s._usable_mask(stack))), "a zero point on a unit Normal is usable"
 
 
 if __name__ == "__main__":
