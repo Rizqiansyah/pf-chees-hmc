@@ -185,6 +185,31 @@ Next work item this points at, in order: kill the warmup fixed cost (criterion-b
 tuned-hyperparameter cache for the second run of the same model), and stop re-tracing per chain
 count. Both are generic across models; neither touches the kernel.
 
+## Per-gradient cost of the real graphs, chains varied
+
+Valid version: the scan carry consumes the gradient (accumulated as a sum of squares) and every row
+carries a logp-only floor control. The first two versions of this probe are void — `x - 0.0 * g` in a
+carry is dead-code-eliminated by XLA, so they timed an empty loop. Microseconds per batched gradient,
+float64, inside a 20-iteration `lax.scan` (dispatch excluded), GPU.
+
+| model | 1 chain | 4 | 8 | 32 | 128 | floor at 32 |
+|---|---|---|---|---|---|---|
+| 8 Schools | 24.9 | 29.9 | 19.7 | **23.0** | 25.3 | 19.1 |
+| logistic 1000x25 | 29.4 | 86.0 | 86.9 | **116.3** | 394.6 | 111.2 |
+| radon non-centered | 44.6 | 91.0 | 119.9 | **138.7** | 268.8 | 41.6 |
+
+1. **Chains are effectively free on small models.** 8 Schools costs the same 23-25 us whether 1, 32 or
+   128 chains run. This is why ESS/s scales almost linearly with chains, and it also closes the
+   chain-batching idea from the sampler side: there is no duplicated per-chain work left to remove.
+2. **Float32 buys nothing on the graphs we ship.** f64 vs f32 at 32 chains: 8 Schools 23.0 vs 22.5,
+   radon 138.7 vs 141.4, logistic 116.3 vs 126.7. The 3.3x-20x float32 win in the synthetic probe was
+   a dense 919x175 matmul pinned at the fp64 ALU limit; real PyMC graphs are not that. **The parked
+   float32 item should stay parked** — measured, not assumed.
+3. **The remaining cost is ours, not the model's.** 8 Schools production runs at ~2.9 ms per
+   transition at 32 chains (12.4 s for 3,250 lockstep steps at the 40,000-draw budget) while 21
+   leapfrog steps of the real logp cost ~480 us. That is ~83% overhead. Radon: 11.4 ms per transition
+   against 37 x 139 us = 5.1 ms of model, ~55% overhead. Attribution is the next measurement.
+
 ## What limits a step on the GPU (roofline probe)
 
 `tools/probe_gpu_roofline.py`, run as `X64=1 pixi run python tools/probe_gpu_roofline.py` and again
