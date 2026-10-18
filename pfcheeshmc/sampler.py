@@ -423,8 +423,10 @@ class PfCheesHMC:
         kwargs.setdefault("max_leapfrog_steps", 1000)
 
         optim = optax.adam(learning_rate=kwargs["adam_lr"])
-        rng = jax.random.key(kwargs["seed"])
-        _, key_warm = jax.random.split(rng)
+        # Stage-scoped key. This site used to be `_, key_warm = jax.random.split(jax.random.key(seed))`,
+        # which produced exactly the key the sampling stage derived, so sampling replayed the warmup
+        # key stream's child. Stage numbers are part of the key now: 1 = warmup, 2 = sampling.
+        key_warm = jax.random.fold_in(jax.random.key(kwargs["seed"]), 1)
         (chees_states, chees_parameters), chees_info = chees_warmup_with_progress(
             self.ld_fn,
             key_warm,
@@ -449,7 +451,7 @@ class PfCheesHMC:
         kwargs.setdefault("draws", 1000)
         kwargs.setdefault("seed", self.seed)
 
-        rng = jax.random.key(kwargs["seed"])
+        rng = jax.random.fold_in(jax.random.key(kwargs["seed"]), 2)  # 2 = sampling stage, see _run_chees
         num_chains = kwargs["chains"]
         num_draws = kwargs["draws"]
 
@@ -467,7 +469,7 @@ class PfCheesHMC:
             return jax.vmap(kernel_step)(keys, state)
 
         # ---------- discover real paths to fields (once, outside jit) ----------
-        probe_keys = jax.random.split(jax.random.key(0), num_chains)
+        probe_keys = jax.random.split(jax.random.fold_in(rng, 3), num_chains)
         _, info_probe = _vmapped_step(chees_states, probe_keys)  # one real step (we discard state)
 
         def _find_path(obj, want_bool=False, substr=""):
