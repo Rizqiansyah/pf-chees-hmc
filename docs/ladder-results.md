@@ -318,3 +318,46 @@ Pathfinder 3.39 s (8.5%), PyMC start 0.73 s, tuner 1.57 s. Warmup is now the who
 steps at ~2.05 ms each, of which the model accounts for ~0.3 ms at L=21. Two exits, and they are
 independent: do fewer warmup steps (a stop rule) or make each step cheaper (the kernel fork, which
 the MEADS lane prices at one leapfrog per step instead of L).
+
+## Chain-start dispersion feeds the ensemble tuner, but only at short warmup
+
+`tools/probe_init_policy.py`, radon non-centered, 32 chains, 500 draws, 2 seeds per cell, one shared
+Pathfinder fit and metric per (warmup, policy) so only the start *pick* varies. `spread` is the mean
+per-dimension standard deviation of the 32 chosen starts. Worst R-hat across seeds; min bulk ESS
+across variables.
+
+| warmup | policy | worst R-hat | min bulk ESS | mean steps | spread |
+|---|---|---|---|---|---|
+| 250 | same_point | 1.0379 | 13,037 | 7.0 | 0.0000 |
+| 250 | iid (today) | 1.0323 | 13,303 | 7.5 | 0.0827 |
+| 250 | stratified | 1.0210 | 14,111 | 9.0 | 0.0828 |
+| 250 | overdispersed 2x | **1.0166** | **15,154** | 11.9 | 0.1654 |
+| 500 | same_point | 1.0128 | 14,855 | 15.4 | 0.0000 |
+| 500 | iid | 1.0099 | 15,495 | 17.2 | 0.0827 |
+| 500 | stratified | 1.0084 | 16,236 | 21.6 | 0.0828 |
+| 500 | overdispersed | **1.0061** | 16,628 | 27.4 | 0.1654 |
+| 1000 | same_point | 1.0053 | 17,061 | 37.2 | 0.0000 |
+| 1000 | iid | 1.0055 | 17,024 | 37.4 | 0.0827 |
+| 1000 | stratified | 1.0067 | 16,961 | 37.9 | 0.0828 |
+| 1000 | overdispersed | 1.0064 | 16,932 | 37.9 | 0.1654 |
+| 2000 | same_point | 1.0054 | 16,909 | 37.6 | 0.0000 |
+| 2000 | iid | 1.0071 | 16,930 | 37.5 | 0.0827 |
+| 2000 | stratified | 1.0060 | 16,682 | 37.5 | 0.0828 |
+
+(Overdispersed at warmup 2,000 was cut by the job's own time cap; 30 of 32 cells.)
+
+1. **Dispersion is not neutral — but it is temporary.** At warmup 250 and 500 the ranking is strictly
+   monotone in dispersion on both R-hat and ESS. By warmup 1,000 every policy is within 0.0014 of
+   every other and mean steps have converged to ~37.5, i.e. the ensemble forgets where it started.
+2. **Stratified beats iid at exactly the point where it is free.** Same spread as iid (0.083), no
+   extra steps at 1,000+, +6% min bulk ESS at 250, and worst R-hat 1.0210 vs 1.0323. It is a
+   different *pick* from the same pool, so the cost is a sort and a strided index.
+3. **Over-dispersion buys quality with compute.** Best R-hat at 250 and 500 (1.0166, 1.0061) but 1.6x
+   the mean steps at 500 (27.4 vs 17.2). Not a default; a knob for people chasing a marginal R-hat.
+4. **PS-IR with replacement is ruled out on evidence, not taste** — Pathfinder's own paper reports it
+   collapsing to 4 distinct draws out of 100 on `mcycle_gp-accel_gp`. If a weighted resampling variant
+   is ever tried, it must be systematic/without-replacement.
+5. **Coupling that changes the order of work:** the init policy only matters when warmup is short, and
+   a stop rule's whole purpose is to make warmup short. So the stop rule must be validated *with*
+   stratified starts in place, not after. Deciding them separately would produce a stop rule measured
+   in a regime that no longer exists.

@@ -328,3 +328,16 @@ seam's size (C=4, d=5): 0.111 s vs 0.049 s. `meads.run` cannot be jitted (it bui
 Python and host round trips, not kernels. Any GPU warmup-cost estimate for MEADS is therefore only
 valid at production scale (C=32-128, d>=10) and must be measured there, not extrapolated from a
 5-dimensional seam proof.
+
+## Item (4) verdict after P1
+
+Stratified chain starts: **ship-able, small, and conditional on the stop rule**. Measured on radon
+non-centered (worst R-hat / min bulk ESS at warmup 250): iid 1.0323 / 13,303 vs stratified 1.0210 /
+14,111, at identical spread and no extra steps; differences vanish by warmup 1,000 (all within 0.0014,
+steps ~37.5). Zero-dispersion `same_point` is strictly worse than iid at short warmup, so the
+ensemble tuner does consume start information. Over-dispersion (2x) gives the best R-hat at 250-500
+but costs 1.6x mean steps: a knob, not a default. PS-IR with replacement is excluded by Pathfinder's
+own reported diversity collapse.
+
+Consequence for sequencing: implement stratified picks before tuning the warmup stop rule, and
+measure the stop rule with stratified starts in place.
