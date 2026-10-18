@@ -352,6 +352,37 @@ class PfCheesHMC:
         cov = (X.T @ X) / (total - 1) + ridge * jnp.eye(X.shape[1], dtype=X.dtype)
         inverse_mass_matrix = jnp.linalg.inv(cov)
 
+        # 6b) Optional alternative metric (E4). Default "mc" keeps the empirical covariance above,
+        # so nothing changes for existing callers. Anything other than "mc" produces a
+        # LowRankInverseMassMatrix and expands it to the same dense (D,D) the pipeline already
+        # consumes -- ChEES takes jnp.diag(imm) and dynamic_hmc takes imm -- so only the *value* of
+        # the metric changes here, not the contract.
+        imm_source = kwargs.get("imm_source", "mc")
+        if imm_source != "mc":
+            if imm_source == "lbfgs_lowrank":
+                # Free: these are the L-BFGS factors Pathfinder already fitted (zhang2022pathfinder
+                # formula II.1/II.3). No extra gradients, no extra solve.
+                lr = bj.mcmc.metrics.lbfgs_inverse_hessian_to_low_rank_metric(
+                    pf_state.alpha, pf_state.beta, pf_state.gamma)
+            elif imm_source == "fisher_lowrank":
+                # Algorithm 1 of seyboldt2026preconditioning, as shipped in BlackJAX. Needs
+                # gradients of the log-density at the Pathfinder draws, so subsample: cost is
+                # n_grad gradients, not `total`.
+                n_grad = int(min(total, kwargs.get("fisher_draws", 4096)))
+                _, unravel = ravel_pytree(jax.tree_util.tree_map(lambda x: x[0], samples_total))
+                gdraws = flat_mat[:n_grad]
+                ggrads = jax.vmap(lambda f: ravel_pytree(jax.grad(self.ld_fn)(unravel(f)))[0])(gdraws)
+                lr = bj.adaptation.metric_estimators.fisher_score_low_rank(
+                    gdraws, ggrads, int(kwargs.get("max_rank", 10)),
+                    gamma=float(kwargs.get("fisher_gamma", 1e-5)),
+                    cutoff=float(kwargs.get("fisher_cutoff", 2.0)))
+            else:
+                raise ValueError(
+                    f"imm_source must be 'mc', 'lbfgs_lowrank' or 'fisher_lowrank', got {imm_source!r}")
+            D = jnp.diag(lr.sigma)
+            inverse_mass_matrix = (D @ (jnp.eye(lr.sigma.shape[0], dtype=lr.sigma.dtype)
+                                        + lr.U @ jnp.diag(lr.lam - 1.0) @ lr.U.T) @ D)
+
         # 7) Return dict-of-arrays keyed by variable (leading axis = chains)
         if isinstance(pf_inits_tree, (list, tuple)):
             pf_samples = {name: arr for name, arr in zip(self.rvs, pf_inits_tree)}
