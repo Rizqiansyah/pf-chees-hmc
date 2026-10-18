@@ -116,24 +116,39 @@ W1 ε tuner (49%), W3 identical-start repair (3%), W5 field-discovery probe, and
 Monte-Carlo covariance (9%) are all removable, and three of them have no counterpart in the ChEES
 algorithm. The covariance is replaced by a library call (§D3).
 
-### D3 — Pathfinder metric: keep the library route, downgrade the claim (adopt with caveat)
-`_psis_weighted_mixture_covariance` (pathfinder_adaptation.py:46-137) is analytic — softmax of
-per-path logsumexp weights, within-path weighted covariance plus between-path outer products,
-zero Monte-Carlo draws, no d×d `inv` **[C]**. That strictly dominates our current
-`cov + 1e-6·I → inv` estimator, which approximates the covariance of a *single* Gaussian
-(`pathfinder.sample` → `bfgs_sample` draws i.i.d. from one Gaussian, lbfgs.py:412-439 **[C]**).
+### D3 — Pathfinder metric: **HELD** — the library route is degenerate as wired (verified 2026-10-18)
+Earlier in this plan D3 said "adopt with caveat". That is superseded by three source reads, each
+verified personally rather than taken from a review lane:
 
-Caveat, now verified against the paper: **PSIS as a mixture covariance has no published
-derivation.** Pathfinder's Algorithm 5 is PS-IR — sampling **with replacement** proportional to
-`w_j`, for use "as an initialization algorithm for MCMC" — and the phrase "mass matrix" never
-appears in the paper **[F-verified]**. Counter-evidence, now read in context: LAPS says ensemble
-Pathfinder (Algorithm 2 of Zhang et al.) "failed to converge for most of our benchmark problems",
-but gives numbers for only two of six targets — Banana reaching `b²_max = 0.02` in 67 gradient
-evaluations and German Credit plateauing at **21.5**, roughly 2,150x over its threshold. "Most" is
-unquantified **[F-verified]**; the SNUTS quote remains unverified **[U]**. Also `pathfinder_adaptation.py:372-375` labels the estimator "**Paper-canonical
-(Zhang et al. 2022)**" and that badge is **unsupported by the paper** — worth an upstream issue.
-PD of the mixture is a docstring claim with no code guarantee **[C]**. So we adopt it as an
-engineering default, not as method. (`ref/README.md` also mis-numbers this as Algorithm 4; fixed.)
+1. `_run_multipathfinder` broadcasts **one** user position across all paths —
+   `pathfinder_adaptation.py:600-605`, comment: "Replicate single position to (n_paths, ...)".
+2. `multi_approximate` simply vmmaps `approximate` over the supplied starts
+   (`vi/multipathfinder.py:99-112`); identical starts give identical solves.
+3. `pathfinder.approximate` runs L-BFGS with **no randomness at all** — `_minimize_lbfgs(objective_fn,
+   initial_position_flatten, ...)` at `vi/pathfinder.py:125-133`; the RNG only feeds `bfgs_sample`.
+
+Therefore through the builder every path traces the same trajectory, so the between-path outer-product
+term is exactly zero and the within-path term is the single `Sigma` for any weights: the "PSIS-weighted
+mixture" collapses to the plain single-path L-BFGS IMM we already effectively use. We would pay
+`n_paths` full L-BFGS solves for the old answer, and the reported Pareto k̂ — weights over a
+*duplicated* pool — structurally cannot detect it. Separately, the cost justification is gone: the
+`sample` + flatten + `cov + 1e-6·I + inv` block measures **0.01–0.02 s** at 512,000 draws, so the
+"−9% runtime" attributed to W2 was first-call compile cost booked to the wrong stage. `pathfinder_adaptation`
+also merges `_pathfinder_psis_pareto_k` into the returned `parameters` dict, which must not be splatted
+into the kernel.
+
+If a mixture is ever pursued it has to be built directly: `vi.multipathfinder.multi_approximate` with
+**genuinely distinct starts** (we already hold dispersed per-chain inits), then `psis_weights` and
+`_psis_weighted_mixture_covariance`, plus our own positive-definiteness guard — there is no jitter,
+ridge or eigenvalue floor in that estimator (`:46-136`) or in the `jnp.cov` branch (`:639`), while the
+downstream metric hard-Cholesky-factors the dense IMM (`mcmc/metrics.py:712`). No evidence yet that a
+mixture would help our models: measured condition numbers are 5.25 (8 Schools) and ~10.2 (GEV).
+
+Prior caveats that remain true: PSIS as a mixture covariance has no published derivation — Pathfinder's
+Algorithm 5 is PS-IR resampling "as an initialization algorithm for MCMC" and the phrase "mass matrix"
+never appears in the paper; the `:373` "**Paper-canonical** (Zhang et al. 2022)" label is unsupported
+and applies only to the `num_chains>=2, n_paths>=2` cell; the wheel ships **no tests** and its docs never
+mention `imm_estimator`. (`ref/README.md` mis-numbered this as Algorithm 4; fixed.)
 
 ### D4 — Diagnostics and stop rule (adopt)
 Gate on: no divergences, `E-BFMI ≥ 0.3`, rank-normalized bulk-ESS ≥ 400 and tail-ESS ≥ 400,
@@ -221,8 +236,9 @@ kernel survives W6.
 | W1 | Delete per-chain ε tuner; replace with a documented initialiser (Pathfinder-derived, MEADS-style closed form, or 1.0) | 49% of runtime; H&G Alg 4 is an initializer that "works for any ε₁"; NumPyro ships it off | ESS/s gain ≥ 30% with r̂, tail-ESS, BFMI and divergence gates held |
 | W1b (done) | ~~Read LAPS end to end and audit `adaptation/laps.py`~~ — done, verdict in D7: not adopted | LAPS metric is gradient calls, not ESS or seconds [F-verified] | closed |
 | W6a | **LAPS preconditioner arm, public API only.** Gate first: wall-clock per gradient call for `dynamic_hmc` vs `adjusted_mclmc` at our d and 32 chains (~2 min). Then arms (a) current ChEES+dhmc, (b) dhmc with metric = ensemble `Var[x]` and step size from ~200 unadjusted `blackjax.mclmc` steps (`L=2·sqrt(ΣVar)`, `C=0.025`, switch on `delta[x_i^2] < 0.01`), (c) `adjusted_mclmc` driven by (b) | D7 ablation says the kernel, not the metric, carries LAPS's win; if MAMS's per-call cost is worse on an A2000 the paper's derived advantage cannot transfer and (b)/(c) are decided before they run | ~2 GPU-min/arm; budget-matched ESS/s at 90 s, scored over the whole run and post-t=30 s |
-| W2 | Replace hand-rolled 128k-draw covariance with `pathfinder_adaptation`/`multipathfinder` analytic PSIS mixture; keep `pareto_k` in sample_stats | D3 | −9% runtime, Pareto k reported, no new divergences |
-| W3 | Collapse the identical-start machinery (PyMC `adapt_diag` returns one point; `tune=500` is inert) | 3% + a 2592-sync retry cliff | −3%, and the retry path deleted |
+| W2 | **Held.** The library route is degenerate as wired (D3): one start broadcast to every path makes the mixture equal the single-path IMM. Cost of the code it would replace measured at 0.01–0.02 s, so there is no speed case; condition numbers 5.25 and 10.2 give no quality case on these models. Reopen only as a direct `multi_approximate` call with distinct starts, on a model where the metric demonstrably hurts | D3 + probe §21 | was: −9% runtime — **that figure was a compile-cost misattribution** |
+| W3 | **Do not delete as written.** PyMC `adapt_diag` does return one point and `tune=500` is inert, but on GEV the finite-start repair is what moves the seed off a point where the jaxed gradient is NaN, so removing it breaks that model | measured §21: at `model.initial_point()` GEV has logp −7.749 (finite) and all three partials NaN; the repaired seed has finite gradients and a finite imm | keep the repair; only collapse the duplicated scoring/selection |
+| W3b | Guard **gradient** finiteness, not just log-density, in `_ensure_finite_inits`, and document that PyTensor's jaxed GEV logp has NaN gradients at its default initial point while logp is finite | measured §21 | a start that passes the current guard can still poison Pathfinder |
 | W4 | Drop unused scan outputs (`warm_info`, `infos_hist` leaves, `logdensity_grad`) | ~59 MB at D=10, ~5.9 GB at D=1000 | memory report before/after; behaviour identical |
 | W5 | Delete the field-discovery probe and `_find_path`; name fields explicitly | one wasted real 32-chain transition + a silent-wrong-UI collision class | probe gone; test still green |
 | W6 | Kernel-family bake-off: dhmc+ChEES vs GHMC+MEADS, at matched ESS/s including adaptation cost | §4 rows MEADS vs ChEES disagree by target | whichever wins on our ladder; document the other as an option |
