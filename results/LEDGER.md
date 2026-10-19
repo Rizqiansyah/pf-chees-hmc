@@ -74,3 +74,15 @@ only arbiter that matters, and to ship the **permutation** fix regardless — `o
 value-vars order ≠ JAX dict-flatten order; kinetic energy 0.5 where 50 was intended) is independent of this question.
 If WP1's moment test shows the `cov` arm recovering the analytic covariance and the `inv(cov)` arm not, Part B wins and
 this entry is superseded with its numbers.
+
+## 2026-10-19 · tools · `bench_ladder.load_notebook_model` leaked a sampling stub into the whole process
+`tools/bench_ladder.py:106-109` replaced `pm.sample`, `pm.sample_prior_predictive`, `pm.sample_posterior_predictive`
+and **`pfcheeshmc.sample_pf_chees_hmc`** with `_tiny_idata` to keep notebook loading from sampling, and never restored
+them. The harness survived only because it cached `REAL_SAMPLE_PF` at `:49` and calls that. Any other code that called
+`pfcheeshmc.sample_pf_chees_hmc(...)` after a notebook load in the same process got a tiny fake InferenceData: fast wall
+time, no divergences, no diagnostics, no error. Found by the WP3 task; confirmed by reading `:106-109` and the absence of
+any restore. Fix: stub inside `try:` / restore in `finally:`. Verified by loading 8 Schools and checking identity of both
+entry points (`restored: True`, `pm.sample restored: True`), and pinned by
+`tests/test_bench_ladder_stub_restore.py` (2 passed, 4.15 s, CPU).
+Consequence for open work: every harness that loads ladder models and then samples through the public API must assert
+`pfcheeshmc.sample_pf_chees_hmc is bench_ladder.REAL_SAMPLE_PF` before each cell until this merge reaches its checkout.

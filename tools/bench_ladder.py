@@ -103,6 +103,12 @@ def load_notebook_model(nb_path: str):
     import pymc as pm
     import pfcheeshmc
 
+    saved = (
+        pm.sample,
+        pm.sample_prior_predictive,
+        pm.sample_posterior_predictive,
+        pfcheeshmc.sample_pf_chees_hmc,
+    )
     pm.sample = _tiny_idata
     pm.sample_prior_predictive = _tiny_idata
     pm.sample_posterior_predictive = _tiny_idata
@@ -110,16 +116,23 @@ def load_notebook_model(nb_path: str):
 
     nb = json.loads(Path(nb_path).read_text())
     ns = {"pm": pm, "np": np, "az": az}
-    for cell in nb["cells"]:
-        if cell["cell_type"] != "code":
-            continue
-        src = "".join(cell["source"])
-        lines = ["" if ln.strip().startswith(SKIP_PREFIX) else ln for ln in src.splitlines()]
-        try:
-            code = "\n".join(lines)
-            exec(compile(code, str(nb_path), "exec"), ns)
-        except SyntaxError:
-            exec(compile(src, str(nb_path), "exec"), ns)
+    try:
+        for cell in nb["cells"]:
+            if cell["cell_type"] != "code":
+                continue
+            src = "".join(cell["source"])
+            lines = ["" if ln.strip().startswith(SKIP_PREFIX) else ln for ln in src.splitlines()]
+            try:
+                code = "\n".join(lines)
+                exec(compile(code, str(nb_path), "exec"), ns)
+            except SyntaxError:
+                exec(compile(src, str(nb_path), "exec"), ns)
+    finally:
+        # The stubs must not outlive the load: they are silent, so any later call to
+        # pfcheeshmc.sample_pf_chees_hmc in the same process would return the tiny fake
+        # InferenceData and produce a plausible but void measurement row.
+        (pm.sample, pm.sample_prior_predictive, pm.sample_posterior_predictive,
+         pfcheeshmc.sample_pf_chees_hmc) = saved
     model = ns.get("model")
     if model is None or not getattr(model, "observed_RVs", []):
         raise RuntimeError(f"{nb_path}: no model or no observed RVs — a data cell did not execute")
