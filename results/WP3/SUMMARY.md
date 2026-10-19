@@ -12,7 +12,8 @@ Branch `wp/wp3` from `pf-r1` (`c3bdbfc`), merged to `448fcc8`. Device: RTX A2000
 | `tools/wp3_summarize.py` | gate aggregation: smallest W with b²_max < 0.01 on **every** seed, warm rows only | `7d01a77` |
 | `tools/wp3_selftest.sh` | the §2e matrix, one process per (model, W, seed) | `f82d1ba` |
 | `pfcheeshmc/sampler.py` | `pathfinder_kwargs={"superchains": K}` — K stratified Pathfinder draws, each replicated C/K times. Default off; byte-identical when off (tested) | `2a68fb3` |
-| `tests/test_r1_bias.py`, `tests/test_nested_rhat.py` | 25 tests, CPU, 18.4 s | all three |
+| `tools/r1_bias.py` (later) | explicit shape contract `flatten_run(by_name, chains, draws)` / `flatten_ref`; `grads_per_chain_total` | `542c12c`, this commit |
+| `tests/test_r1_bias.py`, `tests/test_nested_rhat.py` | 27 tests, CPU, 18.6 s | all three |
 
 Two process-local wraps of the library, per A8's legacy-arm contract, and no library API change:
 `_to_inference_data` forced to `keep_untransformed=True` (b² is defined in unconstrained value-var
@@ -22,20 +23,22 @@ see §7.
 
 ## 2. Tests added
 
-25 new. Each named failure mode was reproduced before it was fixed.
+27 new. Each named failure mode was reproduced before it was fixed.
 
 | Test | Failed on the parent commit? | Passes now |
 |---|---|---|
 | `test_nested_rhat.py` (4): stationary chains ≈ 1 at 10 draws/chain; dispersed superchains > 1.5; global offset invisible; unequal superchains rejected | new file | yes |
 | `test_argmax_names_a_parameter_and_which_moment_failed` | **yes** — `IndexError` | yes |
 | `test_run_and_reference_are_flattened_by_the_same_rule` | **yes** — run side produced 10 fake leaves for 8 Schools | yes |
-| `test_scoring_a_radon_shaped_posterior_does_not_merge_the_dims` | **yes** — `ValueError`, 4 rows vs 100 | yes |
+| `test_scalar_value_vars_contribute_exactly_chain_x_draw_rows` | **yes** — `ValueError`, a 2-D scalar gave 4 rows where the vector gave 100 | yes |
+| `test_fold_agrees_whether_a_scalar_arrives_as_2d_or_3d` | **yes** | yes |
+| `test_shape_contract_rejects_a_wrong_axis_order_instead_of_reshaping_it` | new (pins the (draw, chain) transposition) | yes |
 | `test_nominal_length_recovers_the_frozen_trajectory_length` | **yes** — returned `None` | yes |
 | `test_collapsed_reference_statistics_are_rejected_at_load`, `test_reference_missing_a_value_var_is_an_error_not_a_silent_subset`, `test_missing_reference_is_a_named_gate_failure` | new | yes |
 | `test_superchains_replicates_K_distinct_starts_and_validates_K`, `test_superchains_off_leaves_the_pick_unchanged` | new | yes |
 | `bias` / `g_r1` / flattening / reference-reader tests | new | yes |
 
-Full suite on the merged branch: **63 passed** (CPU, 87.9 s), including the lead's
+Full suite on the merged branch: **65 passed** (CPU, 86.8 s), including the lead's
 `test_bench_ladder_stub_restore.py`.
 
 ## 3. Measurements — §2e self-test (GPU, C=1024, D=10, warm rows, `arm=legacy` = `~/pf/legacy` @ `ecd9ba1`)
@@ -120,7 +123,41 @@ are read directly.
    spread inside one noise unit. Any arm comparison at one seed and one W will disagree by more than
    the arms differ. Decisions need ≥ 3 seeds (5 for a default change) and the floor printed beside
    every number — which is why the harness prints it in the row, not in a log line.
-4. **Harness constraint for the R1 sweep (WP1's radon dim trap).** `idata.posterior.to_array()` on
+4. **Which code produced the 33 self-test rows (provenance, since the fold bug was found after
+   them).** All 33 were produced at `f82d1ba` by a path that is correct for the shape it received, and
+   the rows prove it independently of my reading of the code: every version of `run_cell` normalises
+   each variable to 3-D (`unc[n] = a.reshape(a.shape[0], a.shape[1], -1)`, line 377 at `2a68fb3`,
+   414 at `f82d1ba`, 427 now) before scoring, and every grid row records `d = 10` for 8 Schools and
+   `d = 25` for logistic. A leaf-folding bug on the run side would have changed those numbers (folding
+   the draws axis into leaves gives 90 leaves for 8 Schools, not 10), and the run-vs-reference leaf
+   label check would have aborted the cell — which is exactly what happened at `2a68fb3`, where the
+   first attempt failed with `mu[0], mu[1], mu[2], mu[3]` and wrote **no** grid rows. So the §2e
+   agreement is not coincidence and `theta` is not masking a mis-scored scalar. What `542c12c` fixed
+   is the *entry contract* of `score_ensemble`: it accepted 2-D `(chain, draw)` arrays and read them as
+   `(rows, leaves)`, so any caller that did not pre-reshape (my new test, and any future WP that
+   reuses the scorer) would score 4 draws for a scalar while scoring 100 for a vector. The design is
+   now explicit rather than shape-guessed: `flatten_run(by_name, chains, draws)` asserts both axes
+   separately and `flatten_ref` requires `(rows, leaves)` with equal rows; `flatten_by_leaf`, the
+   guessing function, is gone.
+   **The draws are not persisted** (only the statistics in the rows), so the existing cells cannot be
+   re-scored old-vs-new without re-running them; re-running is cheap (33 rows took ~50 min of GPU) and
+   is not needed for the argument above, so I did not spend the lock on it.
+
+4a. **The population a wrong fold skips is precisely the scalars.** Unconstrained value variables by
+   shape:
+
+   | model | scalar value vars | vector value vars |
+   |---|---|---|
+   | 8 Schools | `mu`, `tau_log__` (2 of 3, 2 of 10 leaves) | `theta` (8) |
+   | GEV | **`μ`, `σ_log__`, `ξ_interval__` — all 3, all leaves** | none |
+   | logistic 1000×25 | none | `b` (25) |
+   | radon NC | `sigma_y_log__`, `sigma_alpha_log__`, `sigma_beta_log__`, `mu_alpha`, `mu_beta` (5 of 7 params, 5 of 175 leaves) | `alpha_raw` (85), `beta_raw` (85) |
+
+   GEV is the worst case: a fold that drops 2-D variables scores **nothing** on GEV while still
+   printing a b². That is why the regression test asserts counts and *names a scalar as the argmax*
+   after biasing exactly one scalar leaf by a sd — a dropped scalar would name a vector leaf instead.
+
+5. **Harness constraint for the R1 sweep (WP1's radon dim trap).** `idata.posterior.to_array()` on
    radon materialises a 137 TiB cross-product: xarray merges the repeated 85-length dim and the
    scalar dims into one index. Nothing in `r1_bias.py` calls `to_array` — the scorer extracts one
    variable at a time (`idata.posterior[n].values`) — and
@@ -129,19 +166,19 @@ are read directly.
    a scalar variable arriving as 2-D `(chain, draw)` was folded as `(rows, leaves)`, so it scored 4
    draws while the vector variable scored 100 — it raises now, and on radon it would have been a
    silent 4-vs-100 mismatch if the sizes had happened to line up.
-5. **`bench_ladder.load_notebook_model` leaked its sampling stubs process-wide.** Loading 8 Schools
+6. **`bench_ladder.load_notebook_model` leaked its sampling stubs process-wide.** Loading 8 Schools
    replaced `pfcheeshmc.sample_pf_chees_hmc` and `pm.sample` with a 1-draw fake for the rest of the
    process; a cell that hits it returns instantly with zero divergences and looks like a good result.
    It broke `tests/test_rng_stage_keys.py` by test ordering alone. Fixed permanently on `pf-r1`
    (`9890db7`, `test_bench_ladder_stub_restore.py`), merged into this branch, and the harness also
    asserts `pfcheeshmc.sample_pf_chees_hmc is bench_ladder.REAL_SAMPLE_PF` before every cell.
-6. **`_common.peak_mem_bytes()` at row-creation time measured an empty process** (512 bytes on every
+7. **`_common.peak_mem_bytes()` at row-creation time measured an empty process** (512 bytes on every
    row). The shared helper now stamps after the cell (`8f6578c`); my rows use that. Device peak is
    process-cumulative — JAX 0.11.2 has no reset on this card — which is why the matrix runs one
    process per cell.
-7. **Part B §0.6's OOM framing is pool size, not C.** At C=1,024 with `--pf-draws 64` the whole run
+8. **Part B §0.6's OOM framing is pool size, not C.** At C=1,024 with `--pf-draws 64` the whole run
    peaks at 610–919 MB on logistic. Nothing about C=1,024 itself was unaffordable on 6 GB.
-8. No contradiction with §2e beyond the W=100 wording in §3.
+9. No contradiction with §2e beyond the W=100 wording in §3.
 
 ## 7. Library-first exceptions
 

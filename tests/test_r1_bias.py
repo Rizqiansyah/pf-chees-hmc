@@ -116,7 +116,7 @@ def test_nominal_length_refuses_to_guess_when_the_bounds_are_empty():
 
 def test_leaves_are_ordered_by_name_and_indexed_within_a_vector():
     by_name = {"theta": np.zeros((5, 1, 3)), "mu": np.ones((5, 1, 1))}
-    flat, labels = rb.flatten_by_leaf(by_name)
+    flat, labels = rb.flatten_run(by_name, 5, 1)
     assert labels == ["mu", "theta[0]", "theta[1]", "theta[2]"]
     assert flat.shape == (5, 4)
 
@@ -135,14 +135,14 @@ def test_argmax_names_a_parameter_and_which_moment_failed():
     assert sc["nested_rhat_max"] is not None
 
 
-def test_run_and_reference_are_flattened_by_the_same_rule():
-    """The run is (chains, draws, *shape) and the reference is (rows, leaves). Folding the chain
-    axis into the leaf axis on one side only gives a plausible-looking b2 with the wrong leaves, so
-    both sides go through one function and their labels must agree."""
+def test_run_and_reference_are_flattened_to_the_same_leaves():
+    """The run is (chains, draws, *shape) and the reference is (rows, leaves). Folding the chain axis
+    into the leaf axis on one side only gives a plausible-looking b2 with the wrong leaves, so the two
+    flatteners must agree on the leaf names and on chains*draws rows."""
     run = {"mu": np.zeros((4, 3, 1)), "theta": np.zeros((4, 3, 8))}
     ref = {"mu": np.zeros((12, 1)), "theta": np.zeros((12, 8))}
-    fr, lr = rb.flatten_by_leaf(run)
-    ff, lf = rb.flatten_by_leaf(ref)
+    fr, lr = rb.flatten_run(run, 4, 3)
+    ff, lf = rb.flatten_ref(ref)
     assert lr == lf == ["mu", "theta[0]", "theta[1]", "theta[2]", "theta[3]", "theta[4]",
                         "theta[5]", "theta[6]", "theta[7]"]
     assert fr.shape == ff.shape == (12, 9)
@@ -330,22 +330,70 @@ def test_cold_rows_starts_rows_and_error_rows_are_excluded():
     assert t["smallest_passing_W"] == 100
 
 
-def test_scoring_a_radon_shaped_posterior_does_not_merge_the_dims():
-    """A trap WP1 hit in the same code path: `idata.posterior.to_array()` on radon materialises a
-    137 TiB cross-product, because xarray merges the repeated 85-length dim and the scalar dims into
-    one index. The scorer must extract variables one at a time. Shape here is radon's (two scalars
-    plus an (85,) vector, one of each size), sizes shrunk so the test costs milliseconds: if anything
-    ever joins the dims, this raises or explodes instead of passing quietly."""
+def test_scalar_value_vars_contribute_exactly_chain_x_draw_rows():
+    """The population a wrong fold silently skips is the SCALAR value vars: all 3 of GEV's, and 5 of
+    radon NC's 7 (sigma_y_log__, sigma_alpha_log__, sigma_beta_log__, mu_alpha, mu_beta). A fold that
+    reads (chain, draw) as (rows, leaves) scores 4 draws for those parameters while the vector
+    variables score chain*draw, and nothing downstream notices -- b2_max is a max over leaves, so a
+    silently under-sampled scalar just stops being the maximum. Asserted by COUNT, not by shape:
+    a 2-D (chain, draw) variable must contribute chain*draw rows and a (chain, draw, 85) variable
+    chain*draw*85 elements, and both branch must agree when the scalar arrives in either form."""
     import xarray as xr
 
     C, D = 4, 25
-    ds = xr.Dataset({
-        "sigma_y_log__": (("chain", "draw"), np.zeros((C, D))),
-        "mu_alpha": (("chain", "draw"), np.zeros((C, D))),
-        "alpha_raw": (("chain", "draw", "alpha_raw_dim_0"), np.zeros((C, D, 85))),
+    rng = np.random.default_rng(11)
+    post = xr.Dataset({
+        "sigma_y_log__": (("chain", "draw"), rng.normal(size=(C, D))),          # 2-D scalar var
+        "mu_alpha": (("chain", "draw", "unused"), rng.normal(size=(C, D, 1))),  # 3-D scalar var
+        "alpha_raw": (("chain", "draw", "alpha_raw_dim_0"),
+                      rng.normal(size=(C, D, 85))),                              # vector var
     })
-    unc = {str(v): np.asarray(ds[v].values, dtype="float64") for v in ds.data_vars}
-    ref = {n: np.zeros((C * D, a.shape[2] if a.ndim == 3 else 1)) for n, a in unc.items()}
+    unc = {str(v): np.asarray(post[v].values, dtype="float64") for v in post.data_vars}
+    ref = {n: rng.normal(size=(C * D, a.shape[2] if a.ndim == 3 and a.shape[2] > 1 else 1))
+           for n, a in unc.items()}
+
+    # rows and leaves: 1 scalar from the 2-D form, 1 from the 3-D form, 85 from the vector
+    ens, labels = rb.flatten_run(unc, C, D)
+    assert ens.shape == (C * D, 87), (ens.shape, labels)
+    assert len(labels) == 87 and labels[0] == "alpha_raw[0]"
+    n_scalar = sum(1 for l in labels if "[" not in l)
+    assert n_scalar == 2, labels                                  # sigma_y_log__, mu_alpha
+    assert sum(1 for l in labels if l.startswith("alpha_raw[")) == 85
+
     sc = rb.score_ensemble(unc, ref, chains=C, draws=D, superchains=2, nested_limit=1.01)
-    assert sc["d"] == 87                       # 2 scalars + 85 leaves, one variable at a time
-    assert sc["b2_max"] == pytest.approx(0.0, abs=1e-12)
+    assert sc["d"] == 87
+    total_elements = sum(int(np.asarray(v).size) for v in unc.values())
+    assert total_elements == C * D * 87, total_elements           # 25 + 100 + 8500
+
+    # The point of the count: a scalar variable must actually be scored. Bias ONE scalar leaf by a
+    # whole sd and the gate has to name it -- a fold that dropped scalars would name a vector leaf
+    # (or nothing) and the run would still look fine.
+    biased = {n: v.copy() for n, v in unc.items()}
+    biased["sigma_y_log__"] = np.asarray(biased["sigma_y_log__"]).reshape(C, D) + 1.0
+    sc2 = rb.score_ensemble(biased, ref, chains=C, draws=D, superchains=2, nested_limit=1.01)
+    assert sc2["b2_argmax"] == "sigma_y_log__ (x)", sc2["b2_argmax"]
+    assert sc2["b2_max"] > 0.5, sc2["b2_max"]
+
+
+def test_fold_agrees_whether_a_scalar_arrives_as_2d_or_3d():
+    """The exact regression: (chain, draw) and (chain, draw, 1) must score the same parameter set."""
+    C, D = 6, 40
+    x = np.random.default_rng(12).normal(size=(C, D))
+    a = rb.flatten_run({"mu": x.reshape(C, D), "v": np.zeros((C, D, 2))}, C, D)
+    b = rb.flatten_run({"mu": x.reshape(C, D, 1), "v": np.zeros((C, D, 2))}, C, D)
+    assert a[0].shape == b[0].shape == (C * D, 3)
+    assert np.allclose(a[0][:, a[1].index("mu")], x.reshape(C * D))
+    assert a[1] == b[1] == ["mu", "v[0]", "v[1]"]
+
+
+
+
+def test_shape_contract_rejects_a_wrong_axis_order_instead_of_reshaping_it():
+    """A (draws, chains) transposition is the classic silent error: the product is the same, so a
+    reshape-based reader accepts it and every leaf gets the wrong samples. chains and draws are
+    checked separately, so this raises."""
+    with pytest.raises(ValueError) as e:
+        rb.flatten_run({"mu": np.zeros((3, 4))}, chains=4, draws=3)
+    assert "expected (chains=4, draws=3" in str(e.value)
+    with pytest.raises(ValueError):
+        rb.flatten_ref({"mu": np.zeros((4, 3)), "theta": np.zeros((5, 3))})

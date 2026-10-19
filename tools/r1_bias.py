@@ -198,28 +198,47 @@ def load_reference(model, names, require_stats=True):
     return out
 
 
-def _rows_by_leaf(a):
-    """(chains, draws, *shape) / (n, leaves) / (n,) -> (rows, leaves).
+def flatten_run(by_name, chains, draws):
+    """{name: (chains, draws, *shape)} -> ((chains*draws, leaves), labels), sorted by name.
 
-    One rule for both sides of the comparison: fold the first two axes into rows when there are
-    three or more, otherwise the input is already row-by-leaf. Applied to the run ((C, D, ...)) and
-    to the reference ((n, leaves)) with the same function, because folding the *chain* axis into the
-    leaf axis on one side only is a silent, wrong-but-plausible b2 (caught by the label check, which
-    is why it must stay).
+    The shape is asserted, never inferred. A 2-D array is ambiguous -- it is either (chain, draw) for
+    a SCALAR value variable or (rows, leaves) for a pre-flattened reference -- and guessing wrong
+    silently under-samples exactly the scalar parameters: all three of GEV, and 5 of radon NC's 7
+    (sigma_y_log__, sigma_alpha_log__, sigma_beta_log__, mu_alpha, mu_beta). Because b2_max is a max
+    over leaves, an under-sampled scalar simply stops being the maximum: the number stays plausible
+    and the gate stops covering those parameters.
     """
-    a = np.asarray(a)
-    if a.ndim == 1:
-        return a.reshape(-1, 1)
-    if a.ndim >= 3:
-        return a.reshape(int(np.prod(a.shape[:2])), -1)
-    return a.reshape(a.shape[0], -1)
-
-
-def flatten_by_leaf(by_name):
-    """{name: array} -> (rows, total_leaves), ['name', 'name[j]', ...] in sorted-name order."""
     cols, labels = [], []
     for name in sorted(by_name):
-        a = _rows_by_leaf(by_name[name])
+        a = np.asarray(by_name[name], dtype="float64")
+        if a.ndim == 1:
+            if a.size != chains * draws:
+                raise ValueError(f"{name}: 1-D run array has {a.size} entries, "
+                                 f"expected chains*draws = {chains * draws}")
+            a = a.reshape(chains * draws, 1)
+        else:
+            if a.shape[0] != chains or a.shape[1] != draws:
+                raise ValueError(f"{name}: expected (chains={chains}, draws={draws}, ...), "
+                                 f"got {a.shape}")
+            a = a.reshape(chains * draws, -1)
+        cols.append(a)
+        labels += [name] if a.shape[1] == 1 else [f"{name}[{j}]" for j in range(a.shape[1])]
+    return np.concatenate(cols, axis=1), labels
+
+
+def flatten_ref(by_name):
+    """{name: (rows, leaves)} from WP0.2 -> ((rows, total_leaves), labels). All variables must
+    carry the same number of reference rows (8 chains x 10,000 draws = 80,000)."""
+    cols, labels = [], []
+    rows = None
+    for name in sorted(by_name):
+        a = np.asarray(by_name[name], dtype="float64")
+        if a.ndim != 2:
+            raise ValueError(f"reference {name}: expected (rows, leaves), got {a.shape}")
+        if rows is None:
+            rows = a.shape[0]
+        elif a.shape[0] != rows:
+            raise ValueError(f"reference row counts disagree: {name} has {a.shape[0]}, others {rows}")
         cols.append(a)
         labels += [name] if a.shape[1] == 1 else [f"{name}[{j}]" for j in range(a.shape[1])]
     return np.concatenate(cols, axis=1), labels
@@ -349,17 +368,14 @@ def score_ensemble(unc, ref, chains, draws, superchains, nested_limit):
     """b2 / nested R-hat for one run. `unc` is {name: (chains, draws, leaves)}."""
     import arviz_stats as AS
 
-    # Normalise to (chains, draws, leaves) here rather than trusting the caller: a scalar variable
-    # arrives as 2-D (chain, draw) and the generic 2-D rule reads it as (rows, leaves), which mixes
-    # 4 rows against the vector variable's 100 and dies in the concatenation -- or, if the sizes
-    # happened to agree, would silently score different numbers of draws per parameter.
-    unc = {n: np.asarray(v, dtype="float64").reshape(chains, draws, -1) for n, v in unc.items()}
-    ens, labels = flatten_by_leaf(unc)
-    reff, rlabels = flatten_by_leaf(ref)
+    ens, labels = flatten_run(unc, chains, draws)
+    reff, rlabels = flatten_ref(ref)
     if labels != rlabels:
         raise KeyError(f"run/reference leaf mismatch: {labels[:4]} vs {rlabels[:4]} "
                        f"(wrong space or missing value var?)")
-    stacked = np.concatenate([unc[n] for n in sorted(unc)], axis=2)   # (C, D, d)
+    stacked = np.concatenate(
+        [np.asarray(unc[n], dtype="float64").reshape(chains, draws, -1) for n in sorted(unc)],
+        axis=2)                                                        # (C, D, d)
     d = stacked.shape[2]
     b2_max, k, floor, _, _ = bias(
         ens, reff,
@@ -507,9 +523,9 @@ def run_starts(bl, model_name, args, rep, cold):
     t_start = time.perf_counter()
     pos, imm = s._run_pathfinder(chains=args.chains, draws=args.pf_draws,
                                  init_pick=args.init_pick, superchains=args.superchains)
-    ens, labels = flatten_by_leaf(
-        {n: np.asarray(v).reshape(args.chains, 1, -1) for n, v in pos.items()})
-    reff, rlabels = flatten_by_leaf(load_reference(model_name, names))
+    # one start per chain => "draws" = 1 for the shape contract
+    ens, labels = flatten_run({n: np.asarray(v) for n, v in pos.items()}, args.chains, 1)
+    reff, rlabels = flatten_ref(load_reference(model_name, names))
     if labels != rlabels:
         raise KeyError(f"start/reference leaf mismatch {labels[:4]} vs {rlabels[:4]}")
     b2_max, k, _, _, _ = bias(ens, reff, np.zeros(ens.shape[1]), np.zeros(ens.shape[1]))
