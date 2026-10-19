@@ -86,3 +86,14 @@ entry points (`restored: True`, `pm.sample restored: True`), and pinned by
 `tests/test_bench_ladder_stub_restore.py` (2 passed, 4.15 s, CPU).
 Consequence for open work: every harness that loads ladder models and then samples through the public API must assert
 `pfcheeshmc.sample_pf_chees_hmc is bench_ladder.REAL_SAMPLE_PF` before each cell until this merge reaches its checkout.
+
+## 2026-10-19 · WP1 · the three imm_source arms do NOT share an orientation (task-reported, measurement pending)
+`mc` passes `inv(cov)` = M⁻¹ (correct, matches my momentum measurement), but the `lbfgs_lowrank` and `fisher_lowrank`
+branches expand `D(I + U(Λ−I)Uᵀ)D` from the L-BFGS / Fisher factors, which **is** the inverse Hessian ≈ Σ, and feed that
+into the same slot. So the three arms have been consuming the array with opposite conventions.
+Consequence: every `mc` vs `lbfgs_lowrank` vs `fisher_lowrank` comparison in the repo — including the README's
+1.22x / 1.96x / 0.19x — compared differently-oriented metrics, not just differently-estimated ones. Part B §0.1 pointed at
+the wrong line but the underlying "metric orientation is a mess" complaint is real, and it lives in the non-default arms.
+Decision: WP1 makes orientation an explicit, measured choice across all three arms (permutation fix unconditional;
+arbitrated by posterior moments on a known-variance target, not by ε magnitude). WP9's retraction of the Fisher numbers
+should cite the orientation mismatch as the mechanism.
