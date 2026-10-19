@@ -47,3 +47,11 @@ Verified data banked: references 4/4 sha256 match and per-parameter shapes confi
 3. Then merges in dependency order: `wp0refs`, `wp8`, `wp3`, `wp1`, then branch `wp/wp2` (vendored ChEES) and `wp5` (capacity at C=1024, needs wp1 merged).
 4. WP3's unfinished positive control: `K=8 SEEDS=1,2 WS_8S=25,100 WS_LOGIT=25,400 ARM=legacy_k8 OUT=$HOME/pf/wp3/results/runs/WP3__nested_k8.jsonl sh $HOME/pf/wp3/tools/wp3_selftest.sh`
 5. Open gate question to resolve before any accept/kill cites nested R̂: nR̂ reads ~1.004 at both b²=0.00063 and b²=0.4100 (LEDGER `d4779fa`).
+
+## 2026-10-20 00:12 · A4 two-review gate is ENVIRONMENT-BLOCKED, not skipped
+
+Both mandated reviewer tasks for `wp/wp1` were interrupted and the replacement task wrote `NOT RUN` to `~/pf-research/REVIEW-wp1-stats.md` (1 line, on disk). `static review pass` also failed: all three panel members timed out at 3,000 s. Reviews on record: `WP3-code.md`, `wp0refs-code.md`, `WP1-lead-verification.md`.
+
+**Decision: no branch merges into `pf-r1` until at least one independent review can actually execute.** The gate is a trust boundary, and silently substituting the lead's own review for two independent ones is exactly the kind of thing this run exists to catch. Measurement continues on `pf-r1-int`, which is where every number in the REPORT already comes from.
+
+Substituted evidence, so the record is not empty: merged-tree suite 99 passed · G-ORDER teeth verified by running the tests against `ecd9ba1` (12 substantive failures, 5 passes) · orientation fixture re-measured personally · T1 48 rows and the GEV G3 probe run by the lead. What those do *not* replace: a second pair of eyes on whether the acceptance criteria were read correctly.
