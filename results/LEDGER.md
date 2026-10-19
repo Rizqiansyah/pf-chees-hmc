@@ -292,3 +292,15 @@ Three things settle here.
 5. Two limits it found that I had not stated: T1's arms move **two** factors (orientation and iterate) so the R1 gain is not attributable to the metric alone, and all 48 rows are **cold** with 2 seeds, so they support no wall-clock claim. A `covariance + ma` arm at C=1,024 is the missing attributable cell.
 
 **Governance note, recorded rather than hidden:** that task was launched read-only and appended 20 lines to the main checkout's `results/STATUS.md`. I reviewed the block, corrected its two inherited errors (the radon "passes at W=200" claim and the 4/5 count), and committed it — content kept, scope breach noted.
+
+## 2026-10-20 01:05 · WP4 CPU deliverables complete; R1 estimator measurement queued behind WP5 on the GPU
+
+`wp/wp4` (from `pf-r1-int`) now carries the two-phase ensemble-metric refresh, built CPU-side and committed in two pieces:
+
+1. **`50fe971`** — `pfcheeshmc/ensemble_metric.py` (four estimators: `sample_diag`, `fisher_diag`, `dense_shrunk`, `diag_lowrank`; each returns a **covariance in kernel order**, library-first over the BlackJAX fork's `metric_estimators`, with the only hand-written steps being the diagonal shrinkage and the explicit ridge + positive-definite assertion the fork lacks) and the sampler wiring: `_run_chees` routes to `_run_chees_two_phase` when `chees_kwargs["metric_refresh"]` names an estimator (default `"none"` keeps the single-phase path bit-for-bit). Phase A = short fixed warmup on the Pathfinder metric; the estimator builds the refreshed covariance from phase-A draws; eps is re-searched on the new metric via the existing traced 32-probe `_run_step_size_tune` (cost independent of chain count); T is re-seeded at `(π/2)·sqrt(l_max(Σ⁻¹))`; phase B continues to the budget from phase A's final positions. The two HMCInfo stacks are concatenated so the **exact** A8 warmup gradient count spans both phases. Additive `WarmupInfo.positions` field (default None) exposes phase-A draws; `.info`/`.trace` consumers are unaffected. 13 new tests; **full suite 112 passed forced CPU** (was 99).
+
+2. **`34fd462`** — `tools/r1_bias.py` gains `--metric-refresh`, forwarded to `chees_kwargs` with `metric_refresh_warmup = max(2, W//2)`, so the estimator arms are scored by b²/gradients-per-chain on the *same instrument and R1 shape* (C=1,024 × D=10) as the T1 `int:covraw` baseline they are compared against.
+
+Two bugs the tests caught while writing this: `ravel_pytree` concatenates **all** leaves into one flat vector (losing the (steps, C, d) structure) — the correct flatten is per-leaf in sorted-key order; and the ChEES `trace` is a `ChEESTrace` named tuple (one (steps,) array per field), not a 2-D array, so it must be concatenated field-wise through the pytree.
+
+**Remaining:** the R1 estimator grid (4 models × 4 estimators × W × seeds, `~/scratch/wp4_r1.sh`, rows `~/pf/wp4/results/runs/WP4__r1.jsonl`), queued to run the moment WP5's acceptance sequence releases the GPU lock. The baseline is the already-measured T1 `int:covraw` rows, so no control cell is re-run.
