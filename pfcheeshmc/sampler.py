@@ -781,7 +781,7 @@ class PfCheesHMC:
         # Gradients are needed only by the Fisher estimator; chunked so peak memory is O(chunk).
         grads = None
         if refresh == "fisher_diag":
-            grads = self._pool_gradients(pos_pool, pool, kwargs)
+            grads = self._pool_gradients(pos_pool, draws, kwargs)
 
         # ---- The swap: build the refreshed covariance (kernel order), re-search eps, re-seed T
         imm_B = estimate_covariance(
@@ -829,15 +829,22 @@ class PfCheesHMC:
             combined = combined.info
         return (states_B, params_B, combined)
 
-    def _pool_gradients(self, pos_pool, pool, kwargs):
-        """Log-density gradients at the pooled phase-A positions, in kernel order, chunked."""
-        raveled, unravel = jax.tree_util.ravel_pytree(pos_pool)          # (pool, C, d)
-        N = int(raveled.size) // int(raveled.shape[-1])
-        flat = raveled.reshape(N, -1)
-        chunk = int(kwargs.get("score_chunk", 1024))
+    def _pool_gradients(self, pos_pool, draws, kwargs):
+        """Log-density gradients at the pooled phase-A positions, in kernel order, chunked.
+
+        ``draws`` is the (N, d) kernel-order flat matrix (== positions_to_draws(pos_pool, pool)).
+        The un-ravel is built from ONE position (a single chain at a single step), because a
+        ravel_pytree of the whole (pool, C, ...) stack maps a full-stack vector, not one row --
+        un-ravelling a single row with the stack's un-ravel produced a malformed position and a
+        non-scalar log-density (caught: "Gradient only defined for scalar-output functions").
+        """
+        one = {n: pos_pool[n][0, 0] for n in pos_pool}
+        _, unravel_one = ravel_pytree(one)
         grad_vmap = jax.jit(jax.vmap(
-            lambda f: ravel_pytree(jax.grad(self.ld_fn)(unravel(f)))[0]))
-        return jnp.concatenate([grad_vmap(flat[i:i + chunk])
+            lambda f: ravel_pytree(jax.grad(self.ld_fn)(unravel_one(f)))[0]))
+        chunk = int(kwargs.get("score_chunk", 1024))
+        N = int(draws.shape[0])
+        return jnp.concatenate([grad_vmap(draws[i:i + chunk])
                                 for i in range(0, N, chunk)], axis=0)
     
     def _run_dynamic_hmc(self, chees_states, chees_parameters, inverse_mass_matrix, **kwargs):
