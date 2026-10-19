@@ -353,3 +353,18 @@ So the baseline at W=200 does **not** pass — it fails on one of two seeds and 
 3. Two of the four cells that decide this are borderline on the resolution rule (floors 0.00505 and 0.00528 against a 0.005 threshold). The verdict should not rest on those; the pass/fail at W=200 does not depend on them.
 
 WP4's measurement job is still running (`fisher_diag` re-run after its gradient-path fix at `2430ae8`); its own estimator-comparison verdict is not final, and I have not treated it as such.
+
+## 2026-10-20 10:10 · WP4 W=50 grid complete (32 cells) + CORRECTION: the refresh is the only reliable radon fix, not a pure cost
+
+Full W=50, C=1,024 × D=10, 4 estimators × 4 models × seeds 1–2 (`~/pf/wp4/results/runs/WP4__r1.jsonl`), vs the corrected T1 no-refresh baseline (`int:covraw`). All four estimators give a COVARIANCE; the re-seed A/B (next entry) isolates the trajectory cost.
+
+| model | T1 baseline (no refresh) | sample_diag | fisher_diag | dense_shrunk | diag_lowrank |
+|---|---|---|---|---|---|
+| 8 Schools | **955** g, b² 0.0015 pass | 1,292 g | 1,157 g | 1,344 g | 1,400 g |
+| logistic | **335** g, b² 0.0058 pass | 2,386 g | 1,352 g | 2,323 g | 4,934 g |
+| GEV | **595** g, b² 0.0001 pass | 4,804 g | 6,673 g | 4,237 g | 3,778 g |
+| radon NC | 485 g, b² 0.22 **FAIL** (seed 1 FAILs at *every* W: 3.00/0.43/0.023 at W=50/100/200) | 5,612 g, pass | 3,886 g, pass | 5,469 g, pass | 5,317 g, pass |
+
+**Correction to my previous entry.** I claimed radon's benefit "is cheaper to get by running the baseline at W=200." That is **refuted by the rows**: the no-refresh baseline fails radon on seed 1 at every warmup tested (b² 0.0234 at W=200, still above the 0.0048 floor); only seed 2 passes at W=200. The refresh is the **only** configuration that clears G-R1 on radon at C=1,024, on both seeds. So the refresh **stays (opt-in)**; the open question is no longer whether to keep it but why it costs 1.2–15× more gradients.
+
+**The cost driver is the trajectory length.** The re-seed `T=(π/2)·√λ_max` on the short-phase ensemble metric lands at frozen L=23–402 (e.g. fisher_diag/GEV L=402, diag_lowrank/logistic L=261) versus the baseline's well-adapted L=10–27. λ_max of a 50-step ensemble estimate is noise-dominated, so the re-seed overestimates the needed trajectory. **Next:** a re-seed A/B (`metric_refresh_reseed` flag, committed `0dea14f`) at C=1,024, D=10, W=50, seeds 1,2,3 — `sample_diag` (with re-seed) vs `sample_diag_noreseed` (phase B starts at L=1) vs the no-refresh baseline — in `WP4__reseed_ab.jsonl`. CPU smoke already shows the effect: the no-re-seed arm freezes at L≈4 vs L≈109–231 re-seeded, on the same model.
