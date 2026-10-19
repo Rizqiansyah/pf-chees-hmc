@@ -82,7 +82,7 @@ Two limits on this table: the arms move **two** factors at once (orientation and
 | G-B tail ESS / E-BFMI | PASS | min tail 1,207; E-BFMI 0.60–0.99 |
 | G-R1 b² < 0.01 at C·D ≥ 2,000 | corrected arm passes at W=50 on 8 Schools (955 gradients/chain), GEV and logistic; **radon NC passes on no W for both seeds**. Shipped arm: never on logistic | T1, 48 rows, per-seed verdicts under `g_r1` |
 | G-R1-diag | REDEFINED | §4.2 |
-| G-MEM peak ≤ 5.0 GB | PENDING | WP5 stage-memory table |
+| G-MEM peak ≤ 5.0 GB | **MET for radon at C=1,024** | 653 MiB peak — the R1 wall was the `chains × pf_draws` Pathfinder pool chain (radon died at C≥128 before); bounding the pool (`pf_pool_cap≈4C`) and `pm_chains=1` fixes it. GEV/8 Schools already fit at C=1,024 (0.9 / 2.3 GB). Warm init 4.1 s misses the 2 s stretch sub-goal |
 | G3 (default change: ≥5 seeds, no divergence increase, means within 1σ) | NOT MET on GEV, with the terms now separated | shipped arm fails R̂ ≤ 1.01 on **5/5 seeds** (to 1.0688); candidate passes **3/5** and halves mean error, but divergences rise seed-stably 0.025 → 0.400 per 1k. The "means within 1σ" clause is unsatisfiable as written (worst z 3.4 on a 0.026 sd shift) and should be restated in sd units |
 
 ## 6. Reference artifacts
@@ -92,7 +92,7 @@ Two limits on this table: the arms move **two** factors at once (orientation and
 ## 7. Open before this run can close
 
 1. Reviews outstanding: `wp/wp1` (running), `wp/wp0refs` (statistical), `wp/wp8`, `wp/wp3` (statistical), `wp/wp9docs`, `wp/wp2`.
-2. T1 R1 sweep (48 cells, running) and WP5 capacity: radon NC has never run above 64 chains on this card and the memory source is still NOT ESTABLISHED.
+2. WP5 capacity: **radon NC now runs at C=1,024 × D=10 (peak 653 MiB)** — the memory source is the `chains × pf_draws` pool chain, bounded by `pf_pool_cap`. Remaining: the warm-init 4.1 s vs 2 s stretch, and the GEV/8 Schools acceptance rows.
 3. WP4 (ensemble metric) and WP6 (per-step efficiency) have not started; both depend on the merged metric fix.
 4. ~~GEV divergence diagnosis~~ — done: the rise is real and seed-stable (0.875, 0.350, 0.400, 0.200, 0.575 per 1k on the candidate; ≤ 0.100 on every shipped seed). What is still missing is *which coordinate* diverges, which needs one instrumented run reporting the divergence position's implied velocity.
 5. **Recommendation on the default: flip to `covariance`, in the same merge as the permutation.** The static review killed my earlier hedge: the permutation in `wp/wp1` is unconditional, so merging it while holding `precision` does not preserve the status quo — it ships permuted+precision, which fails R̂ ≤ 1.01 on GEV in 5/5 seeds where today's code passes. **There is no neutral interim state.** Remaining gaps for G3: the GEV divergence rise (0.025 → 0.400 per 1k, seed-stable) with no mechanism, and one attributable arm pair (orientation alone at C=1,024) so the R1 gain is not confounded with the iterate change. `tests/test_metric_orientation.py::test_default_is_still_precision_orientation` is the test that flips with the default.
