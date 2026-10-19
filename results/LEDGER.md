@@ -52,3 +52,37 @@ GEV caveat intact (18 divergences at target_accept 0.99).
 Decision: references are **usable for scoring now** (files are on disk outside git, so WP3 is unblocked), but the branch
 merge into `pf-r1` waits for the two A4 reviews (code + stats, both fast-tier), and both fast-tier slots are occupied.
 Queued as the first thing to run when a fast-tier slot frees.
+
+## 2026-10-19 · CONTRADICTION · Part B §0.1 "the default metric is the precision, not the covariance" is refuted for the kernel path
+Command: `~/scratch_metric_semantics.py` (CPU, x64, 20,000 momentum draws), run against the installed wheel.
+Set `Sigma = [[4, 1.2], [1.2, 1]]` and pass `imm = inv(Sigma)` to `metrics.default_metric`, exactly as `sampler.py:406` does:
+
+    passed array (inv Sigma) diag : [0.391 1.562]
+    true Sigma diag               : [4. 1.]
+    momentum variance             : [4.007 1.004]      -> matches Sigma, NOT inv(Sigma)
+
+So the array BlackJAX is handed really is M⁻¹, and `inverse_mass_matrix = jnp.linalg.inv(cov)` produces the textbook
+choice M = Σ_posterior: momentum is drawn with the posterior covariance. Applying Part B's fix verbatim
+(`inverse_mass_matrix = cov`) would make momentum ~ N(0, Σ⁻¹) — narrow directions get large momenta — i.e. it would
+*invert* a metric that is currently correct.
+Reconciling with Part B's §2c numbers (frozen ε 0.0021 → 0.66, nominal L 136 → 26 on logistic): both orientations are
+valid HMC and preserve the target, so a change in ε does not prove an inversion. With the correct metric ε scales like
+Σ, so a small ε and a large step count are the expected behaviour for a narrow posterior, not a pathology. That leaves
+§0.3 (the trajectory-length rate limit) standing on its own evidence and §0.1 refuted as stated.
+Not acted on silently: WP1 is instructed to settle it by posterior moments on a known-variance Gaussian, which is the
+only arbiter that matters, and to ship the **permutation** fix regardless — `order_check.py` (my own run: GEV and radon
+value-vars order ≠ JAX dict-flatten order; kinetic energy 0.5 where 50 was intended) is independent of this question.
+If WP1's moment test shows the `cov` arm recovering the analytic covariance and the `inv(cov)` arm not, Part B wins and
+this entry is superseded with its numbers.
+
+## 2026-10-19 · tools · `bench_ladder.load_notebook_model` leaked a sampling stub into the whole process
+`tools/bench_ladder.py:106-109` replaced `pm.sample`, `pm.sample_prior_predictive`, `pm.sample_posterior_predictive`
+and **`pfcheeshmc.sample_pf_chees_hmc`** with `_tiny_idata` to keep notebook loading from sampling, and never restored
+them. The harness survived only because it cached `REAL_SAMPLE_PF` at `:49` and calls that. Any other code that called
+`pfcheeshmc.sample_pf_chees_hmc(...)` after a notebook load in the same process got a tiny fake InferenceData: fast wall
+time, no divergences, no diagnostics, no error. Found by the WP3 task; confirmed by reading `:106-109` and the absence of
+any restore. Fix: stub inside `try:` / restore in `finally:`. Verified by loading 8 Schools and checking identity of both
+entry points (`restored: True`, `pm.sample restored: True`), and pinned by
+`tests/test_bench_ladder_stub_restore.py` (2 passed, 4.15 s, CPU).
+Consequence for open work: every harness that loads ladder models and then samples through the public API must assert
+`pfcheeshmc.sample_pf_chees_hmc is bench_ladder.REAL_SAMPLE_PF` before each cell until this merge reaches its checkout.
