@@ -57,7 +57,8 @@ def run_cfg(model_name, C, D, W, pf_draws, seed, out_path):
                    draws_per_chain=D, warmup=W, seed=seed, rep=0, cold=True,
                    kwargs=json.dumps({"pf_draws": pf_draws}, sort_keys=True))
     d_flat = sum(v.size for v in jax.tree_util.tree_leaves(
-        {n: jnp.zeros_like(model.initial_point()[n]) for n in model.value_vars}))
+        {rv.name: jnp.zeros_like(model.initial_point()[rv.name])
+         for rv in model.value_vars}))
     row0["d"] = int(d_flat)
     banner(model=model_name, cold=True, wp="WP5", arm="memprobe")
     require_gpu_lock("WP5 memory probe")

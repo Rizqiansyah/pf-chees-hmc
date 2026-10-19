@@ -76,7 +76,8 @@ def main():
 
     sampler = PfCheesHMC(model, seed=a.seed)
     d_flat = sum(v.size for v in jax.tree_util.tree_leaves(
-        {n: jnp.zeros_like(model.initial_point()[n]) for n in model.value_vars}))
+        {rv.name: jnp.zeros_like(model.initial_point()[rv.name])
+         for rv in model.value_vars}))
 
     row = new_row(wp="WP5", arm="accept", model=a.model, d=int(d_flat), chains=a.chains,
                   draws_per_chain=a.draws, warmup=a.warmup, seed=a.seed, rep=a.rep,
