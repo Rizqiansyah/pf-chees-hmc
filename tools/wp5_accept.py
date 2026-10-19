@@ -42,7 +42,7 @@ def timed_sampler(sampler):
                 times[nm] = time.perf_counter() - t0
                 return out
             return inner
-        setattr(sampler, name, wrap(nm))
+        setattr(sampler, name, wrap())   # defaults capture fn=orig, nm=name at loop time
     return times
 
 
@@ -95,7 +95,7 @@ def main():
         t_pf = time.perf_counter() - t0
         eps0 = sampler._run_step_size_tune(pf_samples, imm, seed=a.seed)
         t_eps = time.perf_counter() - t0 - t_pf
-        (chees_states, chees_parameters), chees_info = sampler._run_chees(
+        chees_states, chees_parameters, chees_info = sampler._run_chees(
             pf_samples, imm, eps0, chains=a.chains, draws=a.warmup, seed=a.seed,
             progressbar=False)
         t_warm = time.perf_counter() - t0 - t_pf - t_eps
