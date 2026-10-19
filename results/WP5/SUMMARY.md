@@ -26,7 +26,7 @@ Rows: `results/runs/WP5__memprobe_before.jsonl` (cold). Stage = last row written
 | radon NC | 256 | **pf_pool_draw** — 1.35 GiB allocation fails | — | — |
 | radon NC | 1,024 | **pf_pool_draw** — 5.36 GiB allocation fails | — | — |
 | logistic 1000×25 (d=25) | 1,024 | **pf_pool_draw** — XLA `NOT_FOUND` while profiling the pool | — | — |
-| GEV (d=3) | 1,024 | **fits** (peak 946.4 MiB) | 750.9 MiB | 946.4 MiB |
+| GEV (d=3) | 1,024 | **fits** (peak 946.4 MiB) | 589.9 MiB | 946.4 MiB |
 | 8 Schools (d=8) | 1,024 | **fits** (peak 2,314.1 MiB) | 1,378.2 MiB | 2,314.1 MiB |
 
 The allocation size scales with C exactly like the pool does (699.59 MiB at 64k rows, 1.35 GiB at 128k, ~5.4 GiB at 4.1M rows), and at C=64 the pool stage (1.43 GB) plus the covariance flatten (2.58 GB total) is the dominant user — the warmup scan adds ~0.7 GB on top (2,218 MiB live at C=64). So the two retracted explanations (total stacked draws, warmup stack) were wrong about the R1 shape: **the wall is the C×pf_draws pool chain (draw → flatten → X → XᵀX)**, with the old full-info warmup stack as the second consumer. (The 64-chain ceiling measured earlier at D=1,250 was the same pool chain with different numbers behind it.)
