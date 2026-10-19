@@ -53,6 +53,17 @@ Readings that matter:
 - **Permutation + covariance improves gradients/ESS on 4 of 4** and ESS/s on 3 of 4, and passes R̂ everywhere.
 - **GEV is the honest counter-example**: there the double-wrong shipped arm scores 403 ESS/s at R̂ 1.0023 while the correct cell scores 303–343, and divergences rise 0.225 → 0.475 per 1k. Unresolved, logged for WP4: on GEV the *wrongly-ordered* covariance metric beats the correct one (1,310 vs 343 ESS/s), and `xi_interval__` is boundary-constrained.
 
+## 3b. R1, the owner's regime (C=1,024 × D=10, seeds 1–2)
+
+| model | shipped orientation | corrected (covariance + raw iterate) |
+|---|---|---|
+| 8 Schools | passes at W=100, 1,283 gradients/chain | **passes at W=50, 955** |
+| logistic 1000×25 | **never** (b² 0.193 / 0.158 / 0.0498 at W=50 / 100 / 200) | **passes at W=50, 335 gradients/chain** |
+| GEV | passes at W=100, fails at W=50 (b² 0.087) | no failing W; W=50/100 below the resolution floor, W=200 resolvable |
+| radon NC | **never** (b² 106 / 64 / 12.1) | **passes at W=200, 1,521 gradients/chain** |
+
+The plan's project target (R1 passing G-R1 with warmup ≤ 300 steps on all four models) is met by the corrected arm and unreachable by the shipped one. Split R̂ across the same cells reads 1.12–8.87, including in cells whose bias is below the noise floor — direct confirmation that R̂ cannot arbitrate at 10 draws per chain.
+
 ## 4. Decisions taken in this run
 
 1. `imm_orientation` is an explicit, tested parameter (default unchanged for now); `imm_order` likewise. The default flip is owner-gated (G3) — recommendation and remaining evidence in §7.
@@ -67,10 +78,10 @@ Readings that matter:
 | G-ORDER (permanent metric tests) | PASS | 17 tests in `tests/test_metric_orientation.py`; 12 fail on `ecd9ba1` |
 | G-A R̂ ≤ 1.01 (permuted + covariance) | PASS 4/4 | §3 |
 | G-B tail ESS / E-BFMI | PASS | min tail 1,207; E-BFMI 0.60–0.99 |
-| G-R1 b² < 0.01 at C·D ≥ 2,000 | PASS, first integrated cell | 8 Schools C=1024 D=10 W=50: b² 0.00051 vs floor 0.00118, 807 warmup gradients/chain |
+| G-R1 b² < 0.01 at C·D ≥ 2,000 | **PASS at W=50** on 8 Schools (955 gradients/chain) and logistic (335); GEV never fails; radon NC needs W=200 (1,521) | T1 sweep, 48 rows, `results/runs/T1__r1_sweep.jsonl`. Shipped orientation: **never** passes on logistic or radon at W=50/100/200 |
 | G-R1-diag | REDEFINED | §4.2 |
 | G-MEM peak ≤ 5.0 GB | PENDING | WP5 stage-memory table |
-| G3 (default change: ≥5 seeds, no divergence increase, means within 1σ) | NOT MET on GEV | divergences 0.225 → 0.475 per 1k |
+| G3 (default change: ≥5 seeds, no divergence increase, means within 1σ) | NOT MET on GEV, with the terms now separated | shipped arm fails R̂ ≤ 1.01 on **5/5 seeds** (to 1.0688); candidate passes 4/5 and halves mean error, but divergences rise seed-stably 0.025 → 0.400 per 1k. The "means within 1σ" clause is unsatisfiable as written (worst z 3.4 on a 0.026 sd shift) and should be restated in sd units |
 
 ## 6. Reference artifacts
 
@@ -81,5 +92,5 @@ Readings that matter:
 1. Reviews outstanding: `wp/wp1` (running), `wp/wp0refs` (statistical), `wp/wp8`, `wp/wp3` (statistical), `wp/wp9docs`, `wp/wp2`.
 2. T1 R1 sweep (48 cells, running) and WP5 capacity: radon NC has never run above 64 chains on this card and the memory source is still NOT ESTABLISHED.
 3. WP4 (ensemble metric) and WP6 (per-step efficiency) have not started; both depend on the merged metric fix.
-4. GEV divergence diagnosis — the last item between the current default and a flip. Cheapest decisive design: GEV, 32 chains, ≥5 seeds, both orientations, per-variable mean shift against the 0.011/0.029 sd noise floors, and the divergence locations by coordinate.
+4. ~~GEV divergence diagnosis~~ — done: the rise is real and seed-stable (0.875, 0.350, 0.400, 0.200, 0.575 per 1k on the candidate; ≤ 0.100 on every shipped seed). What is still missing is *which coordinate* diverges, which needs one instrumented run reporting the divergence position's implied velocity.
 5. Recommendation on the default: flip to `covariance`. The counter-evidence is a divergence-rate rise on one model; keeping a metric that yields R̂ 12.1 on a four-parameter Gaussian is not defensible. `tests/test_metric_orientation.py::test_default_is_still_precision_orientation` is the test that flips with it.
