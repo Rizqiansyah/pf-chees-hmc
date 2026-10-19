@@ -165,3 +165,101 @@ def test_invalid_iterate_raises():
 def test_bad_single_step_iters_raises():
     with pytest.raises(ValueError, match="single_step_iters"):
         vendored_base(lambda i: 0.5, lambda i: i + 1, optax.adam(0.05), 0.651, 0.5, 1000, single_step_iters=-1)
+
+
+# --- raw-iterate behaviour and the utils-level guards -------------------------
+
+def _aniso_gaussian(sd):
+    """log-density of an anisotropic 2-D Gaussian, dict-of-arrays pytree.
+
+    Called per chain under jax.vmap, so each leaf is a single position (2,).
+    """
+    import math
+    logdet = math.log(2 * math.pi * sd[0] * sd[1])
+
+    def ld(pos):
+        z = jnp.asarray(pos["theta"])
+        return -0.5 * (z[0] ** 2 / sd[0] ** 2 + z[1] ** 2 / sd[1] ** 2) - 0.5 * logdet
+
+    return ld
+
+
+def _run_warmup(iterate, n_steps=300, chains=8, seed=0, t0=None):
+    from pfcheeshmc.utils import chees_warmup_with_progress
+
+    sd = (1e-2, 1e2)  # one stiff, one soft direction
+    rng = np.random.default_rng(seed)
+    pos = {"theta": jnp.asarray(rng.normal(0.0, 1.0, size=(chains, 2)))}
+    imm = jnp.asarray(1.0 / np.array(sd) ** 2)  # diagonal inverse mass (d,)
+    (states, params), warm = chees_warmup_with_progress(
+        _aniso_gaussian(sd),
+        jax.random.key(seed),
+        pos,
+        0.05,
+        optax.adam(0.05),
+        n_steps,
+        imm,
+        progressbar=False,
+        max_leapfrog_steps=100,
+        iterate=iterate,
+        t0=t0,
+    )
+    tr = warm.trace
+    L = tr.trajectory_length / tr.step_size
+    return L, tr, params
+
+
+def test_raw_iterate_grows_L_faster_in_the_early_phase():
+    """Mechanism check on a synthetic target: the paper-faithful raw iterate
+    must let the trajectory length grow at least as fast as the
+    moving-average-fed one in the early phase, where the MA feedback is the
+    rate limit. The frozen-value comparison (raw better than ma at W=2,000 on
+    the real targets) is the GPU deliverable, not something this 2-D toy can
+    certify: here dual averaging drives eps to ~1e-4 and the two modes
+    couple to it differently, so the late-phase ordering on this target is a
+    regime artifact, not evidence about the fix.
+    """
+    L_ma, tr_ma, _ = _run_warmup("ma")
+    L_raw, tr_raw, _ = _run_warmup("raw")
+    assert L_raw[99] >= L_ma[99], (
+        f"raw L@100 {L_raw[99]:.3f} below ma L@100 {L_ma[99]:.3f} -- "
+        "the rate limit is not lifted"
+    )
+    # Both traces finite throughout; the modes are genuinely different, not
+    # silently identical.
+    assert bool(jnp.all(jnp.isfinite(L_raw))) and bool(jnp.all(jnp.isfinite(L_ma)))
+    assert not bool(jnp.all(jnp.equal(L_raw, L_ma)))
+
+
+def test_trace_matches_state_and_counts():
+    L, tr, params = _run_warmup("ma", n_steps=50)
+    assert tr.step.shape[0] == 50
+    assert tr.step_size.shape == (50,)
+    assert tr.trajectory_length.shape == (50,)
+    assert tr.harmonic_acceptance.shape == (50,)
+    assert bool(jnp.all(jnp.isfinite(tr.harmonic_acceptance)))
+    assert float(params["warmup_steps_used"]) == 50.0
+    # frozen_L_nominal = exp(logT_ma - logEps_ma): same trajectory MA the trace
+    # consumed, divided by the step-size MA rather than the raw step size, so
+    # on a target where eps is still moving the two can differ by the MA lag.
+    # Pin the order of magnitude, not the exact value.
+    assert 0.25 * float(L[-1]) <= float(params["frozen_L_nominal"]) <= 4.0 * float(L[-1]) + 1e-6
+
+
+def test_metric_shape_guard_raises():
+    from pfcheeshmc.utils import chees_warmup_with_progress
+
+    rng = np.random.default_rng(0)
+    pos = {"theta": jnp.asarray(rng.normal(size=(4, 2)))}
+    bad_imm = jnp.ones((3, 3))  # model spans 2 flat coordinates
+    with pytest.raises(ValueError, match="flat coordinates"):
+        chees_warmup_with_progress(
+            _aniso_gaussian((1.0, 1.0)), jax.random.key(0), pos, 0.05,
+            optax.adam(0.05), 20, bad_imm, progressbar=False,
+        )
+    bad_imm1 = jnp.ones(5)
+    with pytest.raises(ValueError, match="flat coordinates"):
+        chees_warmup_with_progress(
+            _aniso_gaussian((1.0, 1.0)), jax.random.key(0), pos, 0.05,
+            optax.adam(0.05), 20, bad_imm1, progressbar=False,
+        )

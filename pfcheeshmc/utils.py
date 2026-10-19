@@ -1,7 +1,7 @@
 from functools import partial
 import jax, jax.numpy as jnp
 import time
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, NamedTuple, Optional
 
 import numpy as np
 import arviz as az
@@ -10,7 +10,30 @@ from jax import lax
 from tqdm.auto import tqdm
 import blackjax.mcmc.dynamic_hmc as dynamic_hmc
 
-__all__ = ["chees_warmup_with_progress", "chees_harmonic_acceptance", "block_max_rhat"]
+from . import chees as _chees_vendored
+
+
+class WarmupInfo(NamedTuple):
+    """What the warmup scan stacks, plus the per-step scalar trace.
+
+    info
+        The HMCInfo stack (draws, chains, ...) -- same as before the vendored
+        adapter existed.
+    trace
+        A (steps, 4) float stack: (step, step_size, trajectory_length,
+        harmonic_acceptance) at each warmup step, from the vendored adapter's
+        ChEESTrace. trace.trajectory_length / trace.step_size is the nominal
+        leapfrog count L at each step; that is the curve the trajectory-growth
+        reproduction reads. harmonic_acceptance is the quantity ChEES adapts
+        the step size on (harmonic mean over non-divergent chains), not the
+        arithmetic mean the progress bar used to show.
+    """
+
+    info: Any
+    trace: Any
+
+
+__all__ = ["chees_warmup_with_progress", "chees_harmonic_acceptance", "block_max_rhat", "WarmupInfo"]
 
 
 def chees_harmonic_acceptance(acc_vals, is_divergent):
@@ -75,7 +98,35 @@ def chees_warmup_with_progress(
                              #     Measured net negative on all four ladder models (block
                              #     boundaries cost 6.7-9.0 s, more than any warmup saving);
                              #     kept opt-in for instrumentation, see docs/ladder-results.md
+    iterate="ma",              # "ma" = installed BlackJAX behaviour (default); "raw" =
+                             #     paper-faithful Adam on the raw log-T iterate, moving
+                             #     average used only at the freeze. pfcheeshmc/chees.py.
+    t0=None,                   # initial trajectory length in time units (paper: pi/2);
+                             #     None keeps the installed initialisation (step_size)
+    single_step_iters=0,       # run L=1 for this many steps while the step size settles
 ):
+    # --- metric shape guard -------------------------------------------------
+    # The metric is a flat kernel-order quantity: its dimension must equal the
+    # number of unconstrained coordinates the chains carry. Ordering is another
+    # task's concern (WP1); this only checks the SIZE, so a mismatched metric
+    # raises here instead of broadcasting silently inside the whitened criterion.
+    d_flat = sum(a.size // a.shape[0] for a in positions.values())
+    imm_arr = jnp.asarray(inverse_mass_matrix)
+    if imm_arr.ndim == 2:
+        if tuple(imm_arr.shape) != (d_flat, d_flat):
+            raise ValueError(
+                f"inverse_mass_matrix is {imm_arr.shape} but the start positions "
+                f"span {d_flat} flat coordinates; expected ({d_flat}, {d_flat})"
+            )
+    elif imm_arr.ndim == 1:
+        if tuple(imm_arr.shape) != (d_flat,):
+            raise ValueError(
+                f"inverse_mass_matrix is {imm_arr.shape} but the start positions "
+                f"span {d_flat} flat coordinates; expected ({d_flat},)"
+            )
+    else:
+        raise ValueError(f"inverse_mass_matrix must be 1-D or 2-D, got ndim={imm_arr.ndim}")
+
     # --- Halton jitter (same idea as BJ’s ChEES) ---
     def halton_u(i):
         return dynamic_hmc.halton_sequence(
@@ -101,9 +152,12 @@ def chees_warmup_with_progress(
         integration_steps_fn=integration_steps_fn,
     )
 
-    # Low-level ChEES adapter (init, update)
-    init_adapt, update_adapt = bj.adaptation.chees_adaptation.base(
-        jitter_gn, next_random_arg_fn, optim, target_acceptance_rate, decay_rate, max_leapfrog_steps
+    # Low-level ChEES adapter (init, update). Vendored in pfcheeshmc/chees.py:
+    # iterate="ma" (default) is bit-for-bit the installed BlackJAX base();
+    # update additionally returns a scalar per-step trace (see WarmupInfo).
+    init_adapt, update_adapt = _chees_vendored.base(
+        jitter_gn, next_random_arg_fn, optim, target_acceptance_rate, decay_rate, max_leapfrog_steps,
+        iterate=iterate, t0=t0, single_step_iters=single_step_iters,
     )
 
     # Batch-initialize states for all chains
@@ -162,8 +216,8 @@ def chees_warmup_with_progress(
         div_step  = jnp.sum(info.is_divergent)
         acc_mean  = chees_harmonic_acceptance(acc_vals, info.is_divergent)
 
-        # Update adaptation state
-        new_astate = update_adapt(
+        # Update adaptation state (vendored adapter: state + scalar trace)
+        new_astate, trace = update_adapt(
             astate,
             info.proposal.position,
             info.proposal.momentum,
@@ -189,7 +243,7 @@ def chees_warmup_with_progress(
 
             lax.cond(should_cb, do_cb, dont_cb, operand=None)
 
-        return (new_states, new_astate), (new_states.position, info)   # carry, (positions, info)
+        return (new_states, new_astate), (new_states.position, info, trace)   # carry, ys
 
     one_step_jit = jax.jit(one_step)
 
@@ -250,7 +304,7 @@ def chees_warmup_with_progress(
         while done < num_steps:
             n = min(block, num_steps - done)
             _t = time.perf_counter()
-            carry, (pos_blk, info_blk) = _scan_block(carry, done, n)
+            carry, (pos_blk, info_blk, trace_blk) = _scan_block(carry, done, n)
             _t_scan = time.perf_counter() - _t
             done += n
             if bar is not None:
@@ -263,29 +317,40 @@ def chees_warmup_with_progress(
                 print(f"    block {done:5d}: scan {_t_scan:6.2f} s", flush=True)
             if stopped_at is not None:
                 break
-        (last_states, last_adapt_state), (pos_hist, warm_info) = carry, (pos_blk, info_blk)
+        (last_states, last_adapt_state), (pos_hist, warm_info, trace_hist) = carry, (pos_blk, info_blk, trace_blk)
     else:
         # Default path: one scan, same key stream as before the stop rule existed.
         keys = jax.random.split(rng_key, num_steps)
-        (last_states, last_adapt_state), (pos_hist, warm_info) = jax.lax.scan(
+        (last_states, last_adapt_state), (pos_hist, warm_info, trace_hist) = jax.lax.scan(
             one_step_jit, (init_states, adaptation_state), (jnp.arange(num_steps), keys))
         stopped_at = None
 
     if bar is not None:
         bar.close()
 
-    # Assemble parameters like BJ’s run()
+    # Assemble parameters like BJ’s run(). Explicit projection: the frozen values a
+    # reader or row schema can rely on are named keys, not positions in a dict.
+    # The metric is passed through UNCHANGED -- its orientation and ordering are
+    # another task's decision (WP1); nothing here inverts or permutes it.
     traj_len_adj = jnp.exp(
         last_adapt_state.log_trajectory_length_moving_average
         - last_adapt_state.log_step_size_moving_average
     )
     parameters = {
         "step_size": jnp.exp(last_adapt_state.log_step_size_moving_average),
+        "frozen_step_size": jnp.exp(last_adapt_state.log_step_size_moving_average),
         "inverse_mass_matrix": inverse_mass_matrix,
         "next_random_arg_fn": next_random_arg_fn,
         "integration_steps_fn": lambda arg: integration_steps_fn(arg, traj_len_adj),
+        # Nominal leapfrog count L = T/eps before the Halton jitter, i.e. the
+        # frozen trajectory length in integration steps. This is the quantity the
+        # trajectory-growth literature quotes ("L 136 -> 27").
+        "frozen_L_nominal": traj_len_adj,
         # Number of warmup steps actually executed: equals num_steps unless a stop rule fired.
-        # Read by key elsewhere, never splatted into a kernel call.
         "warmup_steps_used": int(stopped_at) if stopped_at else int(num_steps),
     }
-    return (last_states, parameters), warm_info
+    # warm_info is the (info, trace) stack. The sampler's `_run_chees` returns it
+    # as `chees_info`, which sample() currently does not read -- so the added
+    # trace costs nothing downstream, and a future caller can read the whole
+    # warmup curve (step, eps, T, harmonic acceptance) without re-running.
+    return (last_states, parameters), WarmupInfo(info=warm_info, trace=trace_hist)
