@@ -6,7 +6,7 @@ Plan: `docs/review-2026-10/pf-chees-hmc-implementation-plan.md` — Part A run r
 | WP | Scope | State | Branch | Last commit | Next step |
 |---|---|---|---|---|---|
 | WP0.1 | branch, review docs + probes committed | DONE | pf-r1 | c3bdbfc | — |
-| WP0.2 | reference posteriors (CPU NUTS, 4 models) | IN-PROGRESS | wp/wp0refs | 82bb771 | **rejected on re-verification**: vector-variable stats collapsed over the parameter axis; task re-running with a shape-guard test |
+| WP0.2 | reference posteriors (CPU NUTS, 4 models) | DONE (merge queued) | wp/wp0refs | 67da0ca | stats fixed and independently verified (0 contract violations); needs 2 fast-tier reviews, no slot free |
 | WP0.3 | `tools/_common.py`, GPU lock, env banner | DONE | pf-r1 | c3bdbfc | env.json captured (arviz_stats 1.3.3, nested R̂ ok) |
 | WP0.4 | `arviz-stats`, skill update | DONE | pf-r1 | c3bdbfc | `pixi run test` 36 passed |
 | WP1 | metric orientation + ordering fix | IN-PROGRESS | wp/wp1 | c3bdbfc | task `wp1-metric-orientation` (fast-tier) running |
@@ -20,7 +20,7 @@ Plan: `docs/review-2026-10/pf-chees-hmc-implementation-plan.md` — Part A run r
 
 Wave: 1. GPU lock: `/tmp/pf-gpu.lock`. Caps: 2 × fast-tier, 3 × steady-tier (A4).
 Running now: 2/2 fast-tier (WP1, WP3) + 2/3 steady-tier (WP0.2 rework, WP8).
-References are on disk (all 4, gate PASS on R̂/ESS) but the branch is not merged until the stats fix lands.
+References verified good on disk (all 4, per-parameter stats, sha match) — WP3 unblocked. wp/wp0refs merge awaits 2 reviews.
 
 Lead verification before tasks started (not taken on faith):
 - `sampler.py:406` is `inverse_mass_matrix = jnp.linalg.inv(cov)` — inversion confirmed in source.

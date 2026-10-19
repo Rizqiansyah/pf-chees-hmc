@@ -40,3 +40,15 @@ Verified on the A2000 under the lock (`tools/gpu_run.sh`, first use): `jax.devic
 returns `None`. So a row's peak memory read at row-creation time is meaningless and a value read after a cell is the
 process high-water mark, not that cell's. `tools/_common.py` now documents this and adds `set_peak_mem(row)` to stamp
 after the cell; per-cell attribution requires one process per cell (WP3 found the same defect independently).
+
+## 2026-10-19 · WP0.2 · RE-DELIVERED and independently verified; merge held for two reviews
+Task `67da0ca`: `x.mean(axis=(0,1))` / `x.var(axis=(0,1), ddof=1)`, `_mcse` returns the full array and raises on a shape
+mismatch, an in-script guard before savez, and a permanent `tests/test_reference_npz.py` asserting
+stat shape == sample shape[2:] for every npz (plus a synthetic legacy-format file that proves the assertion goes red).
+My own re-derivation (`~/scratch_verify_refs6.py`, CPU): **0 contract violations** across all four files — every stat
+array per-parameter, stored mean/var match a fresh recomputation to 1e-8, every MCSE finite and > 0, sha256 match, all
+draws (8, 10000). Gate numbers unchanged (R̂ 1.0002 / 1.0002 / 1.0005 / 1.0005, min ESS 52,051 / 38,930 / 19,838 / 15,440),
+GEV caveat intact (18 divergences at target_accept 0.99).
+Decision: references are **usable for scoring now** (files are on disk outside git, so WP3 is unblocked), but the branch
+merge into `pf-r1` waits for the two A4 reviews (code + stats, both fast-tier), and both fast-tier slots are occupied.
+Queued as the first thing to run when a fast-tier slot frees.
