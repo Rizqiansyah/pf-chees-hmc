@@ -28,6 +28,14 @@ REAL_PM_SAMPLE is captured before the stub (tools/bench_ladder.py:50).
 
 Gate (WP0.2): max R-hat < 1.01 AND bulk ESS > 10,000 per parameter, over every
 posterior variable including the transformed ones.
+
+Single authority (2026-10-19 code review): the SAMPLE arrays (x__*/u__*) are
+the authority. The stat columns (mean__/var__/mcse_x__/mcse_x2__) are
+display-only convenience columns: consumers must recompute from the samples,
+and the shape guard below only exists so the metadata published next to the
+samples cannot drift from the samples. mcse_x2__ is the MCSE of E[x^2], NOT
+the MCSE of the variance: pairing it with var__ gives a noise floor wrong by
+Var(x^2)/Var(x).
 """
 
 import argparse
@@ -46,6 +54,58 @@ import arviz as az  # noqa: E402
 import arviz_stats  # noqa: E402
 import numpy as np  # noqa: E402
 import pymc as pm  # noqa: E402
+
+
+# Stat columns checked by the shape contract. The samples (x__/u__) are the
+# single authority; these are display-only (see the module docstring).
+STATS = ("mean", "var", "mcse_x", "mcse_x2")
+
+
+def reference_shape_problems(arr, chains, draws, names):
+    """Every shape-contract violation found in `arr`, as a list of messages.
+
+    Empty list = clean. Shared by the writer (before np.savez) and
+    tests/test_reference_npz.py, so both call the same guard:
+
+      * every sample array (x__/u__<name>) has shape (chains, draws) + param,
+        i.e. matches the metadata rather than echoing it; and
+      * every stat array has exactly the sample's parameter shape param.
+
+    The second check is the 2026-10-19 defect: x.mean()/x.var() reduce over
+    ALL axes and a scalar stat next to a vector sample scored 170 of 175 radon
+    parameters against one pooled number. The first makes the metadata
+    falsifiable: meta__chains/meta__draws used to be CLI args echoed into the
+    file that nothing checked against the arrays.
+    """
+    probs = []
+    for n in names:
+        param = None
+        for pref in ("u__", "x__"):
+            k = pref + n
+            if k not in arr:
+                continue
+            x = np.asarray(arr[k])
+            want = (chains, draws) + x.shape[2:]
+            if x.shape != want:
+                probs.append(
+                    f"{k}: sample shape {x.shape} != (chains, draws) + param = {want}"
+                )
+            param = x.shape[2:]
+        if param is None:
+            probs.append(f"{n}: no sample array (u__{n} / x__{n}) to check against")
+            continue
+        for s in STATS:
+            k = f"{s}__{n}"
+            if k not in arr:
+                probs.append(f"{k}: missing")
+                continue
+            got = np.asarray(arr[k]).shape
+            if got != param:
+                probs.append(
+                    f"{k}: stat shape {got} != parameter shape {param} "
+                    "(the 2026-10-19 collapse: the parameter axis was reduced)"
+                )
+    return probs
 
 
 def _sha256(path):
@@ -141,16 +201,16 @@ def make_reference(model_name, chains, draws, tune, target, seed, out):
         arr["mcse_x__" + n] = _mcse(x, "mean")
         arr["mcse_x2__" + n] = _mcse(x ** 2, "mean")  # MCSE of the second moment
 
-    # Permanent shape guard: every stat array must keep the parameter axis.
-    for n in names:
-        x = data[n]
-        for s in ("mean", "var", "mcse_x", "mcse_x2"):
-            v = arr[f"{s}__" + n]
-            if np.asarray(v).shape != x.shape[2:]:
-                raise ValueError(
-                    f"{s}__{n}: stat shape {np.asarray(v).shape} != sample shape "
-                    f"{x.shape[2:]} (chain/draw axes must be dropped, parameter axis kept)"
-                )
+    # Permanent shape guard (shared with tests/test_reference_npz.py): every
+    # sample array matches the metadata, every stat array keeps the parameter
+    # axis. Generation fails loudly instead of saving a file whose metadata a
+    # later consumer cannot falsify.
+    probs = reference_shape_problems(arr, chains, draws, names)
+    if probs:
+        raise ValueError(
+            "reference shape contract violated, refusing to save:\n  "
+            + "\n  ".join(probs)
+        )
 
     meta = {
         "model": model_name,
@@ -213,6 +273,11 @@ def main():
         "path": meta["path"], "sha256": meta["sha256"],
         "divs_per_1k": meta["divs_per_1k"],
         "target_accept": meta["target_accept"], "gate": meta["gate"],
+        # This is a CPU pytensor run. new_row auto-populated device and
+        # peak_mem_bytes from the first visible JAX device, which on this box
+        # is the A2000 with a 512 B placeholder -- a claim the run did not
+        # make. A None peak on CPU is correct, not a bug.
+        "device": "cpu", "peak_mem_bytes": None,
     })
     if not a.no_row:
         row_file = os.path.join(os.getcwd(), "results", "runs", "WP0__references.jsonl")

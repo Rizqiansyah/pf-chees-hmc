@@ -8,21 +8,29 @@ of a variable against one pooled number, and theta is 8 of 10 parameters in 8
 Schools and 170 of 175 in radon NC.
 
 This test fails if any stat array's shape is not equal to its sample array's
-shape minus the leading (chain, draw) axes. The same assertion runs inside
-make_reference before it saves, so generation also fails loudly; this test is
-the guard on the committed reference artifacts.
+shape minus the leading (chain, draw) axes, or if any sample array disagrees
+with the metadata chains/draws. The SAME guard, reference_shape_problems,
+runs inside make_reference before it saves, so generation also fails loudly;
+this test is the guard on the committed reference artifacts and calls the
+production function rather than re-implementing the comparison.
 
-The npz files live outside git (~/pf-runs/references/ per A8), so the test
-skips when the directory is absent. Override the directory with
-PF_REFERENCE_DIR (used here to prove the test is red on legacy files).
+The npz files live outside git (~/pf-runs/references/ per A8). The first
+review found that a missing directory made the fixture collect ZERO tests,
+so `pixi run test` went all-green with the guard doing nothing: that trap is
+closed by test_reference_files_present, which FAILS (not skips) when the
+directory is absent unless REFERENCE_FILES_OPTIONAL=1 is set explicitly. The
+teeth test builds a synthetic legacy-format file and asserts the shared guard
+reports it red.
 """
 
 import os
+import sys
 
 import numpy as np
 import pytest
 
-STATS = ("mean", "var", "mcse_x", "mcse_x2")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+from make_reference import reference_shape_problems  # noqa: E402
 
 
 def _reference_dir():
@@ -45,47 +53,64 @@ def npz_path(request):
     return request.param
 
 
+def test_reference_files_present():
+    """Close the zero-collection trap: a missing reference directory used to
+    make the guard fixture collect nothing, so the suite went all-green with
+    the guard doing nothing. This fails instead, naming the path and the
+    command that regenerates the files. Environments that genuinely cannot
+    hold the run artifacts set REFERENCE_FILES_OPTIONAL=1 -- that is an
+    explicit opt-out, not directory absence."""
+    d = _reference_dir()
+    paths = _npz_paths()
+    if not paths and os.environ.get("REFERENCE_FILES_OPTIONAL", "0") != "1":
+        pytest.fail(
+            f"no .npz files under {d}; the reference shape guard collected nothing. "
+            "Regenerate with `pixi run --manifest-path <main checkout>/pixi.toml "
+            "env PYTHONPATH=<this checkout> python tools/make_reference.py <model>` "
+            "(models: 8schools, gev, logit_1000x25, radon_noncentered), or set "
+            "REFERENCE_FILES_OPTIONAL=1 in environments without the run artifacts."
+        )
+
+
 def test_reference_npz_keeps_parameter_axis(npz_path):
     z = np.load(npz_path)
-    samples = [k for k in z.files if k.startswith(("x__", "u__"))]
-    assert samples, f"no sample arrays in {npz_path}"
-    for s in samples:
-        x = z[s]
-        assert x.ndim >= 2, f"{s} in {npz_path} is not (chain, draw, ...)"
-        var = s.split("__", 1)[1]
-        for st in STATS:
-            key = f"{st}__{var}"
-            assert key in z.files, f"{key} missing from {npz_path}"
-            got = np.asarray(z[key]).shape
-            want = x.shape[2:]
-            assert got == want, (
-                f"{key} in {npz_path}: stat shape {got} != sample shape {want} "
-                f"({x.shape} minus chain/draw). The parameter axis was reduced -- "
-                "see the module docstring for the 2026-10-19 incident."
-            )
+    arr = {k: z[k] for k in z.files if not k.startswith("meta__")}
+    names = [k.split("__", 1)[1] for k in z.files if k.startswith(("x__", "u__"))]
+    assert names, f"no sample arrays in {npz_path}"
+    first = arr["u__" + names[0]] if f"u__{names[0]}" in arr else arr["x__" + names[0]]
+    chains = int(z["meta__chains"]) if "meta__chains" in z.files else first.shape[0]
+    draws = int(z["meta__draws"]) if "meta__draws" in z.files else first.shape[1]
+    probs = reference_shape_problems(arr, chains, draws, names)
+    assert not probs, (
+        f"shape contract violated in {npz_path}:\n  " + "\n  ".join(probs)
+        + "\n(the 2026-10-19 incident: see tools/make_reference.py docstring)"
+    )
 
 
-def test_legacy_shape_fails_the_guard(tmp_path, monkeypatch):
-    """Proof the guard catches the legacy bug: build a small npz the old,
-    wrong way (scalar stats next to a vector sample) and assert the same
-    check fails on it."""
+def test_legacy_shape_fails_the_guard():
+    """Proof the shared guard catches the legacy bug, calling the production
+    function rather than an inline copy of it: build a small array the old,
+    wrong way (scalar stats next to a vector sample) and assert the guard
+    reports it. Renaming STATS or breaking the sample lookup in
+    reference_shape_problems makes this test red."""
     rng = np.random.default_rng(0)
     x = rng.normal(size=(8, 100, 3))  # (chain, draw, param)
-    z = {
+    arr = {
         "u__theta": x,
-        "mean__theta": np.asarray(x.mean()),        # the legacy bug: scalar
+        "mean__theta": np.asarray(x.mean()),  # the legacy bug: scalar
         "var__theta": np.asarray(x.var(ddof=1)),
         "mcse_x__theta": np.asarray(0.01),
         "mcse_x2__theta": np.asarray(0.02),
-        "meta__model": np.asarray("synthetic"),
     }
-    p = tmp_path / "synthetic_legacy.npz"
-    np.savez(p, **z)
-
-    # same assertions as test_reference_npz_keeps_parameter_axis, run directly
-    # on the synthetic file so the test does not depend on the directory being
-    # populated
-    loaded = np.load(p)
-    sx = loaded["u__theta"]
-    with pytest.raises(AssertionError):
-        assert np.asarray(loaded["mean__theta"]).shape == sx.shape[2:]
+    probs = reference_shape_problems(arr, chains=8, draws=100, names=["theta"])
+    assert probs, "the legacy collapse must be detected"
+    assert any(p.startswith("mean__theta") for p in probs), probs
+    # and a clean array passes the same function
+    clean = {
+        "u__theta": x,
+        "mean__theta": x.mean(axis=(0, 1)),
+        "var__theta": x.var(axis=(0, 1), ddof=1),
+        "mcse_x__theta": np.ones(x.shape[2:]),
+        "mcse_x2__theta": np.ones(x.shape[2:]),
+    }
+    assert reference_shape_problems(clean, chains=8, draws=100, names=["theta"]) == []

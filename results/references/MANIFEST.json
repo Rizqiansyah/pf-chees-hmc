@@ -4,6 +4,7 @@
   "created": "2026-10-19T15:00:44+1100",
   "gate": "max R-hat < 1.01 AND bulk ESS > 10,000 per parameter (incl. transformed vars)",
   "stat_shape_contract": "mean__/var__/mcse_x__/mcse_x2__ have the sample shape minus the (chain, draw) axes",
+  "single_authority": "The sample arrays (x__/u__) are the single authority. mean__/var__/mcse_x__/mcse_x2__ are display-only convenience columns: consumers must recompute from the samples. mcse_x2__ is the MCSE of E[x^2], NOT the MCSE of the variance -- pairing it with var__ gives a noise floor wrong by Var(x^2)/Var(x). The shape contract is enforced by reference_shape_problems in tools/make_reference.py at generation time and by tests/test_reference_npz.py on the artifacts.",
   "models": {
     "8schools": {
       "path": "/home/akbar/pf-runs/references/8schools.npz",
