@@ -111,6 +111,13 @@ class PfCheesHMC:
         tuple order is applied to the wrong coordinates, and nothing raises. This returns the
         permutation that fixes it; identity when the orders already agree.
         """
+        if isinstance(ref_tree, dict):
+            # The tuple/dict distinction is the whole point of this function: leaves() of a dict is
+            # already sorted-key order, so passing a dict would compute a plausible-looking but
+            # wrong permutation. Only the Pathfinder tuple is a valid argument.
+            raise ValueError(
+                "_kernel_permutation expects Pathfinder's tuple in model.value_vars order; a dict "
+                "is already kernel-ordered and would silently yield a wrong permutation")
         leaves0 = jax.tree_util.tree_leaves(jax.tree_util.tree_map(lambda x: x[0], ref_tree))
         if len(leaves0) != len(self.rvs):
             raise ValueError(

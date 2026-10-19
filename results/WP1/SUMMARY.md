@@ -66,7 +66,7 @@ orientations, `test_permutation_is_tuple_to_dict_index`, `..._identity_when_name
 `..._rejects_a_tree_that_does_not_match_the_model`, `test_kernel_flat_...`), orientation
 (`test_covariance_orientation_mixes_the_anisotropic_target`,
 `test_precision_orientation_does_not_mix_the_anisotropic_target`,
-`test_ordering_error_collapses_one_coordinate`, `test_default_is_still_precision_orientation`),
+`test_ordering_error_collapses_one_coordinate`, `test_default_orientation_is_covariance_and_mixes`),
 contract (`test_unknown_orientation_raises`, `test_permuting_factors_equals_permuting_the_expansion`).
 
 Full suite on the branch: **55 passed in 123 s**, CPU-forced, at `4460dc7` (53 from this branch + 2 merged from `pf-r1`'s stub-restore test).
@@ -119,7 +119,7 @@ init test must include a mixing statistic (R̂, ESS), never moments alone.
 Arms, labelled by the two factors so no label can hide a confound:
 
 * `legacy:mc` = unpermuted + precision — what `ecd9ba1` ships.
-* `wp1:mc` = **permuted + precision** — the permutation fix alone, i.e. what this branch defaults to.
+* `wp1:mc` = **permuted + precision** — the permutation fix alone. Non-default since `08357db`: the branch's default is now permuted + covariance.
 * `wp1:mc:covariance` = permuted + covariance — Part B's combination.
 * `wp1:lbfgs_lowrank`, `wp1:fisher_lowrank` — permuted, default orientation.
 
