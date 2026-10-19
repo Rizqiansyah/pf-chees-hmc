@@ -414,3 +414,17 @@ The plan's §2d reported 23–24% *gain* on a bare kernel with no adaptation. Th
 1. **Not one cell is resolvable.** The floor is `max per-parameter MCSE (in sd units) × 2·ln(2d)`, and at 32 chains the MCSE alone is 0.01–0.2 sd, so the 0.005 resolvability threshold is unreachable: CPU NUTS at 32 cores cannot demonstrate a 1% bias at 400 draws per chain, though its b² is already below 0.01. It can only be *believed*, not measured, at that shape.
 2. **Comparability caveat, stated rather than buried:** T3 scores the constrained space (PyMC 5.28 puts nothing unconstrained in the InferenceData — verified), while G-R1/T1 score the unconstrained space. The b² values are therefore not directly comparable arm-to-arm, and no CPU-versus-GPU number in this run should be read as a same-space comparison. A same-space comparison needs the transform applied to the CPU draws, which is not built.
 3. Cost side is directly comparable and is the useful part: reaching b² < 0.01 on the big models costs **760–1,082 core-seconds** of CPU for 400 draws per chain, against the GPU R1 cells' ~40–50 s cold on one card.
+
+## 2026-10-20 10:50 · the order A/B is measured, and it splits the statistical review's blocking finding in half
+
+Radon noncentered (d=175), 5 seeds, arms differ **only** in `imm_order`, orientation pinned to `covariance`, scored per parameter against the CPU NUTS reference in unconstrained space (`~/pf/int/results/runs/ORDER__radon_noncentered.jsonl`, 10 rows).
+
+| arm | worst per-param mean error (sd) | range across seeds | max R̂ | min variable ESS | gradients per ESS | ε | L |
+|---|---|---|---|---|---|---|---|
+| **permuted (kernel order)** | 0.02143 | 0.0170 – 0.0302 | 1.0063 | **4,418** | **3.92** | 0.968 | 27 |
+| unpermuted (pathfinder order) | 0.01659 | 0.0124 – 0.0211 | 1.0076 | 3,286 | **18.42** | 0.340 | 96 |
+
+1. **"2–4× efficiency regression" — REFUTED on the model the review named as decisive.** On radon the permutation is a **4.7× efficiency win** (3.92 vs 18.42 gradients per ESS) with higher worst-variable ESS. The regression is real but it is specific to GEV, whose permutation is a single swap between two similarly-scaled coordinates.
+2. **"No demonstrated accuracy benefit" — CONFIRMED, and stronger than the review stated.** No coordinate is anomalous in either arm: the worst offenders are `beta_raw`/`alpha_raw` in both (0.020/0.019 permuted, 0.015/0.013 unpermuted), and the error ranges overlap. The permutation's effect is on **conditioning and throughput**, not on posterior accuracy, on this model.
+3. **What that means for the claim being defended.** The honest description of the P0 is: the metric array is interpreted in the kernel's sorted-key order, so leaving it in tuple order is a *representation error* whose consequences depend on the model's scale heterogeneity — catastrophic on the controlled fixture where variances span 1e4 (worst-variable ESS 30,967 → 3,176, `zeta` alone), a 4.7× throughput loss on radon, and an accidental speed-up on GEV. It is not an accuracy bug on any model measured, and the report should stop implying that it is.
+4. **Decision taken:** the permutation stays unconditional. It is the only setting where the array means what the kernel thinks it means; GEV's contrary result is logged as an unresolved oddity with a mechanism candidate (near-equal scales on the swapped pair plus a boundary-constrained `xi_interval__`), not as a reason to keep mis-applying the metric. The statistical reviewer is being given this data to confirm or maintain its hold before the merge.
