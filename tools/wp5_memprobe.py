@@ -43,7 +43,9 @@ def device():
 
 
 def mem_readings(dev):
-    s = jax.device_memory_stats(dev)
+    # JAX 0.11.2: per-device .memory_stats(); the peak key is process-cumulative with no
+    # reset on this card (see tools/_common.peak_mem_bytes), which is why one process per config.
+    s = dev.memory_stats()
     return int(s["bytes_in_use"]), int(s["peak_bytes_in_use"])
 
 
