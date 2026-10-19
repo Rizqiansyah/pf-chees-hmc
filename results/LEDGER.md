@@ -210,3 +210,24 @@ Fixed at the seam on `wp/wp1` (`1cb74bf`): unwrap `chees_info` when it carries `
 **Standing rule for the rest of the run:** accept/kill decisions are re-verified on `pf-r1-int`, the merged tree of `pf-r1` + wp8 + wp0refs + wp1 + wp2 + wp3 (`b15af66`, merges clean, no conflicts). A branch that is green alone is not evidence the combination is green.
 
 **First integrated measurement** (`T1__smoke.jsonl`, 8 Schools, C=1024, D=10, W=50, seed 1, covariance + raw iterate, cold): b²_max **0.00051** against noise floor 0.00118 → **G-R1 PASS with 807 warmup gradients per chain** (+186 sampling), ε 0.247, nominal L 35, 0 divergences per 1k. Split R̂ on the same run reads 1.2217 — the reason R1 is gated on b² and not on R̂.
+
+## 2026-10-19 23:15 · RETRACTION of `699be6d` · the default metric orientation IS wrong, Part B §0.1 is confirmed, and the reason my own measurement misled me
+
+I re-ran the arbiter myself on the merged tree (`~/scratch/orientation_arbiter.py`, CPU, 32 chains, 500 warmup, 1,000 draws, seed 5, four conjugate-Normal scalars with posterior variances 1e2 / 3 / 1 / 1e-2, `value_vars` order `[delta, beta, zeta, alpha]` against kernel order `[alpha, beta, delta, zeta]`). Reproduced WP1's table to the digit:
+
+| cell | max R̂ | min bulk ESS | ESS/gradient | worst mean error | ε | nominal L |
+|---|---|---|---|---|---|---|
+| permuted + **covariance** (Part B's fix) | **1.0021** ✅ | 30,967 | 12.45 | 0.010 sd | 1.213 | 4 |
+| permuted + precision (**shipped default**) | **12.1019** ❌ | **32** | 0.014 | 0.232 sd | 0.0140 | 4 |
+| unpermuted + covariance (ordering alone) | 1.0069 | 3,176 (zeta) | 0.140 | 0.020 sd | 0.243 | 45 |
+
+Per-variable ESS in the shipped cell: `{delta: 33, beta: 33,052, zeta: 32, alpha: 35}` — three of four coordinates do not move at all, and the mean is 0.23 posterior sd off. That is not a tuning difference; it fails the project's own G-A bar by three orders of magnitude in ESS.
+
+**Where my `699be6d` reasoning went wrong, stated precisely so nobody repeats it.** The momentum-draw measurement itself was right: the array in BlackJAX's `inverse_mass_matrix` slot is used as `M⁻¹` in `KE = ½ pᵀ A p`, and passing `inv(Σ)` gave momentum variance `Σ`. The false premise was the next sentence — *"so the mass matrix should be the posterior covariance, hence `A = inv(cov)` is correct"*. Leapfrog's frequency is `ω² = eig(M⁻¹ H)` with `H = Σ⁻¹` the target Hessian, so the well-conditioned choice is `M⁻¹ = Σ`, i.e. **the array in the slot must be the covariance**, and the momentum variance is then `Σ⁻¹` (which is what makes positions move at the posterior's own scale `Σ^{1/2}`). Stan's docs call the inverse mass matrix "the covariance" for exactly this reason. A mass matrix equal to the covariance is the *opposite* of optimal here.
+
+**Consequences, in order of importance.**
+1. **Part B §0.1 is CONFIRMED.** `pfcheeshmc/sampler.py:406`'s `inverse_mass_matrix = jnp.linalg.inv(cov)` is wrong; the fix is to pass `cov` (with the ridge), and the ordering permutation is a separate, additional P0.
+2. **`9f892b2` keeps its finding but reverses its direction.** The three `imm_source` arms never shared an orientation — true. But it was the **`mc` arm that was broken** (`inv(cov)`), while `lbfgs_lowrank`/`fisher_lowrank` expand `D(I+U(Λ−I)Uᵀ)D`, which *is* the covariance, i.e. accidentally correct. Every published `mc`-versus-low-rank ratio therefore compares a correctly-conditioned arm against a badly-conditioned one, in the opposite direction from what the docs claim. The numbers stay void; the story changes.
+3. **The real-model sweep now reads as a prediction confirmed, not a surprise:** `wp1:mc` (permuted + precision) was the worst arm on gradients/ESS everywhere, and the covariance arm was best on 4 of 4.
+4. **GEV's oddity is no longer a paradox but is still unresolved:** there, wrongly-ordered-covariance (1,310 ESS/s) beats correctly-ordered-covariance (343), and the shipped double-wrong cell scored 403 with R̂ 1.0023. Two wrongs partially cancelling, plus a boundary-constrained `xi_interval__` that may prefer the fatter scale it receives by mistake. WP4's problem, logged not explained.
+5. **Default flip:** the case is now strong — the correct arm passes R̂ ≤ 1.01 on all four models and beats the shipped arm on gradients/ESS on all four; the only counter-evidence is GEV's divergence rate rising 0.225 → 0.475 per 1k, which cannot justify keeping a metric that produces R̂ 12.1 on a 4-parameter Gaussian. `tests/test_metric_orientation.py::test_default_is_still_precision_orientation` is the test that flips with the default, and the plan wants it flipped with G3 evidence and owner sign-off.
