@@ -334,3 +334,22 @@ Computed by the lead from `~/pf/wp4/results/runs/WP4__r1.jsonl` (32 rows), score
 3. **Kill clause applied.** Plan: kill any estimator that does not beat the plain sample-diagonal by 1.2× on the correlated models (logistic, radon NC). Computed: dense-with-shrinkage 2,323 vs diagonal 2,386 on logistic (1.03×), 5,469 vs 5,612 on radon (1.03×); low-rank 4,934 and Fisher 1,352 on logistic are worse or within noise. **No estimator clears 1.2× → kill `dense_shrunk`, `diag_lowrank`, `fisher_diag`; keep `sample_diag` as the refresh estimator.** Fisher-diagonal is the worst on GEV (6,673 gradients) and buys nothing.
 4. **Consequence for the default.** The refresh should be **opt-in, keyed on metric quality**, not on by default: it pays where Pathfinder is under-dispersed (radon NC's variance ratio against the posterior is 0.011 — plan §2d) and costs where it is not (8 Schools 0.56). A cheap gate for "is the Pathfinder metric bad enough" is the natural follow-up, and it belongs to WP4's interface, not to WP1.
 5. Verified while here: `wp/wp5` suite **108 passed**, and the merged tree **after the orientation flip** is **99 passed** — the flip breaks nothing the suite covers.
+
+## 2026-10-20 10:05 · disagreement with WP4's own reading of its result, resolved on the rows
+
+WP4's task reports the metric refresh as a clear negative: it costs 3–12× more gradients per chain, and argues "the one apparent benefit (radon passes at W=50) is cheaper to get by just running the baseline at W=200." The second half is **refuted by the T1 rows**, read directly from `T1__r1_sweep.jsonl`, radon NC, `int:covraw` (no refresh):
+
+| seed | W | b² | floor | verdict | gradients/chain |
+|---|---|---|---|---|---|
+| 1 | 100 | 0.42792 | 0.00528 | `unresolvable` | 458 |
+| 2 | 100 | 0.03272 | 0.00505 | `unresolvable` | 842 |
+| 1 | 200 | **0.02339** | 0.00477 | **fail** | 954 |
+| 2 | 200 | 0.00709 | 0.00413 | pass | 1,521 |
+
+So the baseline at W=200 does **not** pass — it fails on one of two seeds and is unresolvable at W=100 (floors 0.00528 and 0.00505, failing the `floor > 0.005` test by a hair). The refresh at W=50 passes on **both** seeds. Within everything measured so far, the refresh is the only configuration that clears G-R1 on radon NC at C=1,024, so the correct verdict is:
+
+1. **Keep the refresh, opt-in, for models where the Pathfinder metric is bad** — it is the only measured path to a passing R1 run on radon NC. It is not a default: on 8 Schools, GEV and logistic it costs 1.4–8× more gradients for a bias change inside seed noise.
+2. **The cost is a fixable implementation detail, not the mechanism.** WP4's own diagnosis is the reason: the re-seed `T = (π/2)·√λ_max` lands at L = 109–231 against the baseline's converged L = 10–27, because λ_max of a 50-step ensemble estimate is dominated by noise. Cheapest decisive follow-up: refresh the metric but **do not** re-seed T (let ChEES adapt from the existing length), 3 seeds × 4 models at W=50 — about 15 GPU minutes. If that removes most of the 3–12×, the refresh becomes cheap enough to consider as a default for hard models.
+3. Two of the four cells that decide this are borderline on the resolution rule (floors 0.00505 and 0.00528 against a 0.005 threshold). The verdict should not rest on those; the pass/fail at W=200 does not depend on them.
+
+WP4's measurement job is still running (`fisher_diag` re-run after its gradient-path fix at `2430ae8`); its own estimator-comparison verdict is not final, and I have not treated it as such.
