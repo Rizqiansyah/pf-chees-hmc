@@ -122,12 +122,27 @@ def gpu_other_procs():
 
 
 def peak_mem_bytes():
+    """Peak device bytes. CPU returns None (memory_stats() is None there).
+
+    IMPORTANT: this peak is CUMULATIVE FOR THE PROCESS — JAX 0.11.2 exposes no
+    reset_memory_stats() on this device (verified on the A2000), so reading it after
+    a cell reports the highest the process ever reached, not that cell's high-water
+    mark. Stamp it with `set_peak_mem(row)` AFTER the cell, and for per-cell
+    attribution run one process per cell (which A5 already wants for cold/warm
+    separation). Never rely on the value `new_row()` auto-fills for a cell decision.
+    """
     import jax
 
     try:
         return int(jax.devices()[0].memory_stats()["peak_bytes_in_use"])
     except Exception:
         return None
+
+
+def set_peak_mem(row):
+    """Stamp row['peak_mem_bytes'] with the device peak measured NOW (call after the cell)."""
+    row["peak_mem_bytes"] = peak_mem_bytes()
+    return row
 
 
 def require_gpu_lock(what="timed GPU run"):
