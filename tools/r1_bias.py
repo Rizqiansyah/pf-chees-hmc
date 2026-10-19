@@ -463,8 +463,13 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
             steps_mean=float(steps.mean()) if steps.size else None,
             grads_per_chain_warmup=attrs.get(
                 "warmup_grad_evals_per_chain",
-                float(np.median(ch["grads_warmup_per_chain"])) if ch else None),
-            grads_per_chain_sampling=float(np.median(steps.sum(1))) if steps.size else None,
+                float(np.mean(ch["grads_warmup_per_chain"])) if ch else None),
+            grads_per_chain_sampling=float(steps.sum(1).mean()) if steps.size else None,
+            # A8: gradient counts must be EXACT (the sum of num_integration_steps). The scalar
+            # fields above are the mean of exact per-chain sums; the lists are the audit trail,
+            # so a task can see chain-to-chain spread instead of a silently collapsed median.
+            grads_per_chain_warmup_list=ch["grads_warmup_per_chain"] if ch else None,
+            grads_per_chain_sampling_list=(steps.sum(1).tolist() if steps.size else None),
             warmup_steps_used=attrs.get("warmup_steps_used", ch.get("warmup_steps_used")),
             warmup_divs=ch.get("warmup_divs"),
             divs_per_1k=float(divs.sum() / max(divs.size, 1) * 1000.0),

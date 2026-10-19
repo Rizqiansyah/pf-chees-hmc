@@ -62,3 +62,34 @@ def test_superchain_ids_must_be_equal_sized():
     x = rng.normal(size=(6, 20, 1))
     with pytest.raises(Exception):
         _nested(x, [0, 0, 0, 1, 1, 2])
+
+
+@pytest.mark.parametrize("C,D", [(1024, 10)])
+def test_nested_rhat_is_blind_to_common_mode_bias_not_to_few_draws(C, D):
+    """Why G-R1-diag read 1.0040 at b2 0.4100. Measured, not asserted from a formula.
+
+    The code review claimed the estimator is precision-limited at R1 chain counts because the
+    between-superchain term scales as B/n with n = draws per superchain (1,280 at K=8). That is
+    refuted: at K=8 with 1,280 draws per superchain, offsetting every other superchain by 1 sd
+    reads 1.1135 — the same as at K=256 (1.1089). What nested R-hat cannot see is a shift shared
+    by *all* chains: 1.0004, identical to the clean control. Pathfinder-start bias in R1 IS
+    common-mode (one start pool, one warmup deficit for the whole ensemble), so no R-hat variant
+    can gate on it and b2 against a reference is the only instrument that can.
+    """
+    rng = np.random.default_rng(11)
+    ids = lambda K: [i // (C // K) for i in range(C)]
+
+    base = rng.normal(size=(C, D, 1))
+    diff = base.copy()
+    for j in range(0, 8, 2):                       # K=8, offset superchains 0,2,4,6 by 1 sd
+        diff[j * (C // 8):(j + 1) * (C // 8)] += 1.0
+    common = base + 1.0                             # every chain shifted: pure common mode
+
+    clean = _nested(base, ids(8))
+    assert clean < 1.005, clean
+    assert _nested(diff, ids(8)) > 1.05, "differential superchain offset must be detected at K=8"
+    assert abs(_nested(common, ids(8)) - clean) < 5e-3, "common-mode shift must be invisible"
+
+    # The real ceiling is the statistic's own noise at many superchains, not n:
+    # clean baseline 1.0004 at K=8, 1.0028 at K=64, 1.0112 at K=256 (2 chains x 10 draws).
+    assert _nested(rng.normal(size=(C, D, 1)), ids(256)) < 1.02
