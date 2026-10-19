@@ -57,12 +57,14 @@ Readings that matter:
 
 | model | shipped orientation | corrected (covariance + raw iterate) |
 |---|---|---|
-| 8 Schools | passes at W=100, 1,283 gradients/chain | **passes at W=50, 955** |
-| logistic 1000×25 | **never** (b² 0.193 / 0.158 / 0.0498 at W=50 / 100 / 200) | **passes at W=50, 335 gradients/chain** |
-| GEV | passes at W=100, fails at W=50 (b² 0.087) | no failing W; W=50/100 below the resolution floor, W=200 resolvable |
-| radon NC | **never** (b² 106 / 64 / 12.1) | **passes at W=200, 1,521 gradients/chain** |
+| 8 Schools | fails W=50 (b² 0.0139), passes W=100 (1,283 gradients/chain) | **passes W=50 on both seeds, 955 gradients/chain** |
+| logistic 1000×25 | **never** — b² 0.177/0.193, 0.130/0.158, 0.039/0.050 at W=50/100/200, both seeds | **passes W=50 on both seeds, 335 gradients/chain** |
+| GEV | fails W=50 on one seed (b² 0.087), passes W=100 | **passes W=50 on both seeds** (b² 0.0016 / 0.0001) |
+| radon NC | **never** — b² 105/106 at W=50, `unresolvable` at W=100 and W=200 (b² 12.1) | **no W passes on both seeds**: W=200 gives 0.0234 (fail) and 0.0071 (pass); W=100 is `unresolvable` |
 
-The plan's project target (R1 passing G-R1 with warmup ≤ 300 steps on all four models) is met by the corrected arm and unreachable by the shipped one. Split R̂ across the same cells reads 1.12–8.87, including in cells whose bias is below the noise floor — direct confirmation that R̂ cannot arbitrate at 10 draws per chain.
+Verdicts are **per seed** under the harness's own gate (`tools/r1_bias.py:g_r1`: eligible when C·D ≥ 2,000; `unresolvable` when floor > 0.005; otherwise pass iff b² < 0.01). An earlier version of this table averaged two seeds and reported radon NC as passing at W=200 — the seeds disagree, so the honest statement is that radon NC does not pass on every seed at any warmup tested. The project target (R1 at C=1,024 × D=10 passing G-R1 with warmup ≤ 300 on all four models) is therefore **met on three of four** by the corrected arm, two of four by the shipped one. Split R̂ across the same cells reads 1.12–8.87, including in cells that pass on bias — direct confirmation that R̂ cannot arbitrate at 10 draws per chain.
+
+Two limits on this table: the arms move **two** factors at once (orientation and adapter iterate), so the R1 gain is not attributable to either alone; and all 48 rows are cold with 2 seeds, so no wall-clock claim comes from them.
 
 ## 4. Decisions taken in this run
 
@@ -76,12 +78,12 @@ The plan's project target (R1 passing G-R1 with warmup ≤ 300 steps on all four
 | gate | status | basis |
 |---|---|---|
 | G-ORDER (permanent metric tests) | PASS | 17 tests in `tests/test_metric_orientation.py`; 12 fail on `ecd9ba1` |
-| G-A R̂ ≤ 1.01 (permuted + covariance) | PASS 4/4 | §3 |
+| G-A R̂ ≤ 1.01 (permuted + covariance) | PASS on 5-seed **medians**; per seed on GEV it is **3/5** (1.0065, 1.0017, 1.0054, 1.0141, 1.0117) | §3, §3c |
 | G-B tail ESS / E-BFMI | PASS | min tail 1,207; E-BFMI 0.60–0.99 |
-| G-R1 b² < 0.01 at C·D ≥ 2,000 | **PASS at W=50** on 8 Schools (955 gradients/chain) and logistic (335); GEV never fails; radon NC needs W=200 (1,521) | T1 sweep, 48 rows, `results/runs/T1__r1_sweep.jsonl`. Shipped orientation: **never** passes on logistic or radon at W=50/100/200 |
+| G-R1 b² < 0.01 at C·D ≥ 2,000 | corrected arm passes at W=50 on 8 Schools (955 gradients/chain), GEV and logistic; **radon NC passes on no W for both seeds**. Shipped arm: never on logistic | T1, 48 rows, per-seed verdicts under `g_r1` |
 | G-R1-diag | REDEFINED | §4.2 |
 | G-MEM peak ≤ 5.0 GB | PENDING | WP5 stage-memory table |
-| G3 (default change: ≥5 seeds, no divergence increase, means within 1σ) | NOT MET on GEV, with the terms now separated | shipped arm fails R̂ ≤ 1.01 on **5/5 seeds** (to 1.0688); candidate passes 4/5 and halves mean error, but divergences rise seed-stably 0.025 → 0.400 per 1k. The "means within 1σ" clause is unsatisfiable as written (worst z 3.4 on a 0.026 sd shift) and should be restated in sd units |
+| G3 (default change: ≥5 seeds, no divergence increase, means within 1σ) | NOT MET on GEV, with the terms now separated | shipped arm fails R̂ ≤ 1.01 on **5/5 seeds** (to 1.0688); candidate passes **3/5** and halves mean error, but divergences rise seed-stably 0.025 → 0.400 per 1k. The "means within 1σ" clause is unsatisfiable as written (worst z 3.4 on a 0.026 sd shift) and should be restated in sd units |
 
 ## 6. Reference artifacts
 
@@ -93,4 +95,4 @@ The plan's project target (R1 passing G-R1 with warmup ≤ 300 steps on all four
 2. T1 R1 sweep (48 cells, running) and WP5 capacity: radon NC has never run above 64 chains on this card and the memory source is still NOT ESTABLISHED.
 3. WP4 (ensemble metric) and WP6 (per-step efficiency) have not started; both depend on the merged metric fix.
 4. ~~GEV divergence diagnosis~~ — done: the rise is real and seed-stable (0.875, 0.350, 0.400, 0.200, 0.575 per 1k on the candidate; ≤ 0.100 on every shipped seed). What is still missing is *which coordinate* diverges, which needs one instrumented run reporting the divergence position's implied velocity.
-5. Recommendation on the default: flip to `covariance`. The counter-evidence is a divergence-rate rise on one model; keeping a metric that yields R̂ 12.1 on a four-parameter Gaussian is not defensible. `tests/test_metric_orientation.py::test_default_is_still_precision_orientation` is the test that flips with it.
+5. **Recommendation on the default: flip to `covariance`, in the same merge as the permutation.** The static review killed my earlier hedge: the permutation in `wp/wp1` is unconditional, so merging it while holding `precision` does not preserve the status quo — it ships permuted+precision, which fails R̂ ≤ 1.01 on GEV in 5/5 seeds where today's code passes. **There is no neutral interim state.** Remaining gaps for G3: the GEV divergence rise (0.025 → 0.400 per 1k, seed-stable) with no mechanism, and one attributable arm pair (orientation alone at C=1,024) so the R1 gain is not confounded with the iterate change. `tests/test_metric_orientation.py::test_default_is_still_precision_orientation` is the test that flips with the default.
