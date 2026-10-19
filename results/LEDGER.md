@@ -304,3 +304,16 @@ Three things settle here.
 Two bugs the tests caught while writing this: `ravel_pytree` concatenates **all** leaves into one flat vector (losing the (steps, C, d) structure) — the correct flatten is per-leaf in sorted-key order; and the ChEES `trace` is a `ChEESTrace` named tuple (one (steps,) array per field), not a 2-D array, so it must be concatenated field-wise through the pytree.
 
 **Remaining:** the R1 estimator grid (4 models × 4 estimators × W × seeds, `~/scratch/wp4_r1.sh`, rows `~/pf/wp4/results/runs/WP4__r1.jsonl`), queued to run the moment WP5's acceptance sequence releases the GPU lock. The baseline is the already-measured T1 `int:covraw` rows, so no control cell is re-run.
+
+## 2026-10-20 01:12 · WP5 acceptance — radon noncentered runs at C=1,024 × D=10 on the 6 GB card (peak 653 MiB); the R1 regime is now feasible where it died at C≥128
+
+First two rows of `~/pf/wp5/results/runs/WP5__accept.jsonl` (the task's fixed harness; my earlier driver had two bugs — a 3-tuple unpack and an undefined `wrap(nm)` — and wrote 0 rows, which the task itself diagnosed and repaired at `7f1396c`):
+
+| model | C | rep | init (warm) | total (warm) | peak | divs/1k | knobs |
+|---|---|---|---|---|---|---|---|
+| radon_noncentered | 1,024 | 0 (cold) | 45.1 s | 528.8 s | **653 MiB** | — | pool_cap=4096, pm_chains=1 |
+| radon_noncentered | 1,024 | 1 (warm) | **4.1 s** | 42.9 s | 653 MiB | 0.00 | pool_cap=4096, pm_chains=1 |
+
+**Where the memory went — the long-open question is answered** (the task's BEFORE attribution, `1dcb33e`): the R1 wall is the `chains × pf_draws` Pathfinder **pool chain** — radon died at the pool-draw stage for C≥128, logistic at C=1024 — while pathfinder's L-BFGS solve itself is ~685 MB and flat in C. Bounding the pool (`pf_pool_cap=4096` ≈ 4C) and dropping the per-chain PyMC init (`pm_chains=1`) is what lets C=1,024 fit in 653 MiB. The two earlier retracted explanations (total stacked draws, warmup stack) stay dead; this is the confirmed mechanism.
+
+**Gate verdict:** the primary acceptance (radon NC runs at C=1,024 × D=10 on the 6 GB card) is **MET** — 653 MiB is an order of magnitude under the 5.0 GB G-MEM gate and under the card. The secondary stretch (init stages < 2 s warm) is **NOT met**: 4.1 s warm, dominated by the Pathfinder solve + step-size tune at C=1,024. That gap is the remainder of WP5, not a blocker for the R1 regime being usable. GEV and 8 Schools fit at C=1,024 in the BEFORE data (0.9 / 2.3 GB peaks) and their acceptance rows are still pending.
