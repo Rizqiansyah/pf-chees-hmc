@@ -28,3 +28,22 @@ Lead verification before tasks started (not taken on faith):
   [μ, ξ_interval__, σ_log__] → DIFFERENT; radon NC DIFFERENT; 8 Schools SAME. Kinetic energy with an
   `imm` intended to give `z_b` variance 100 returned 0.5, not 50. The ordering bug is real.
 - Consequence recorded: every GEV and radon metric verdict in `docs/` is confounded (WP9 retracts).
+
+## PAUSED 2026-10-19 18:38 — box yielded to another user
+
+All five tasks stopped (sessions retained, resumable). No process of ours holds the GPU (99 MiB used, 0% util). Nothing pushed; `main` untouched at `ecd9ba1`.
+
+Committed state on `pf-r1`: WP0 + probes + lock, WP0.2 rejection and verification records, `_common` peak-mem fix, the §0.1 CONTRADICTION and its RETRACTION (`a03dc0f`), the G-R1-diag gate finding (`d4779fa`), the claim inventory with corrected citations (`7033037`, `e660578`).
+
+Branch heads: `wp/wp1` f7aa1ca · `wp/wp3` d080195 · `wp/wp0refs` 67da0ca · `wp/wp8` 8931a71 · `wp/wp9docs` (created, no edits yet) · `wp/wp2` (created or not, no edits).
+
+Verified data banked: references 4/4 sha256 match and per-parameter shapes confirmed by the lead; WP3 suite 65 passed on forced CPU; §2e reproduces; the 2×2 reproduces all 12 cells independently; radon and Fisher arms in `WP1__rebaseline.jsonl` (Fisher cut mid-block, partial rows only).
+
+## Resume commands (in this order)
+
+1. Covariance-orientation arm — the number that gates the default decision:
+   `MODEL=<one of 8schools gev logit_1000x25 radon_noncentered> IMM=mc IMM_ORIENT=covariance ARM=wp1 SEEDS=43,44,45,46,47 REPEAT=2 OUT=$HOME/pf/wp1/results/runs/WP1__covarm.jsonl $HOME/pf/wp1/tools/gpu_run.sh pixi run --manifest-path "<MAIN>/pixi.toml" env PYTHONPATH=$HOME/pf/wp1 python $HOME/pf/wp1/tools/wp1_rebaseline.py`
+2. Reviews still owed (two per branch, both fast-tier): `wp/wp3` stats review (code review stopped mid-pass), `wp/wp0refs` stats review, `wp/wp8` code + stats.
+3. Then merges in dependency order: `wp0refs`, `wp8`, `wp3`, `wp1`, then branch `wp/wp2` (vendored ChEES) and `wp5` (capacity at C=1024, needs wp1 merged).
+4. WP3's unfinished positive control: `K=8 SEEDS=1,2 WS_8S=25,100 WS_LOGIT=25,400 ARM=legacy_k8 OUT=$HOME/pf/wp3/results/runs/WP3__nested_k8.jsonl sh $HOME/pf/wp3/tools/wp3_selftest.sh`
+5. Open gate question to resolve before any accept/kill cites nested R̂: nR̂ reads ~1.004 at both b²=0.00063 and b²=0.4100 (LEDGER `d4779fa`).
