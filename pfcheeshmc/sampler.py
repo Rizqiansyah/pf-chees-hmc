@@ -670,6 +670,14 @@ class PfCheesHMC:
             # Absent by default: warmup then runs exactly num_steps as before.
             stop_rule=kwargs.get("warmup_stop", None),
         )
+        if hasattr(chees_info, "info"):
+            # utils.WarmupInfo (the vendored-adapter path) wraps the stacked HMCInfo together with
+            # the per-step scalar trace. Everything downstream reads HMCInfo fields
+            # (num_integration_steps, is_divergent), so unwrap once at the seam and keep the trace
+            # for whoever wants the growth curve. Found by the integration smoke cell on
+            # pf-r1-int: 'WarmupInfo' object has no attribute 'num_integration_steps'.
+            self._warmup_trace = getattr(chees_info, "trace", None)
+            chees_info = chees_info.info
 
         return (
             chees_states,
