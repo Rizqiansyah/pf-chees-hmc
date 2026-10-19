@@ -231,3 +231,25 @@ Per-variable ESS in the shipped cell: `{delta: 33, beta: 33,052, zeta: 32, alpha
 3. **The real-model sweep now reads as a prediction confirmed, not a surprise:** `wp1:mc` (permuted + precision) was the worst arm on gradients/ESS everywhere, and the covariance arm was best on 4 of 4.
 4. **GEV's oddity is no longer a paradox but is still unresolved:** there, wrongly-ordered-covariance (1,310 ESS/s) beats correctly-ordered-covariance (343), and the shipped double-wrong cell scored 403 with R̂ 1.0023. Two wrongs partially cancelling, plus a boundary-constrained `xi_interval__` that may prefer the fatter scale it receives by mistake. WP4's problem, logged not explained.
 5. **Default flip:** the case is now strong — the correct arm passes R̂ ≤ 1.01 on all four models and beats the shipped arm on gradients/ESS on all four; the only counter-evidence is GEV's divergence rate rising 0.225 → 0.475 per 1k, which cannot justify keeping a metric that produces R̂ 12.1 on a 4-parameter Gaussian. `tests/test_metric_orientation.py::test_default_is_still_precision_orientation` is the test that flips with the default, and the plan wants it flipped with G3 evidence and owner sign-off.
+
+## 2026-10-19 23:45 · T1 (R1 regime) — the corrected arm passes the bias gate at 50 warmup steps on every model measured so far; the shipped arm cannot pass at 200 on logistic or radon
+
+`pf-r1-int`, C=1,024, D=10, seeds 1 and 2, one process per model×arm, warm-lock GPU, `results/runs/T1__r1_sweep.jsonl` (42 rows). `int:shipped` = permutation fixed, orientation `precision`, adapter `ma`. `int:covraw` = orientation `covariance`, adapter `raw` iterate. Gate G-R1: b²_max < 0.01 for x and x², with the printed noise floor; a b² below the floor is "not resolvable", i.e. converged to within resolution, not a stronger pass.
+
+| model | arm | W | b²_max | floor | verdict | gradients/chain | ε | L |
+|---|---|---|---|---|---|---|---|---|
+| 8 Schools | shipped | 50 | 0.0139 | 0.0021 | **FAIL** | 641 | 0.138 | 20 |
+| 8 Schools | shipped | 200 | 0.0020 | 0.0014 | pass | 3,310 | 0.126 | 46 |
+| 8 Schools | **cov+raw** | **50** | 0.0015 | 0.0012 | **PASS** | **993** | 0.324 | 35 |
+| GEV | shipped | 50 | 0.0870 | 0.0013 | **FAIL** | 377 | 0.0006 | 9 |
+| GEV | shipped | 200 | 0.0015 | 0.0036 | below floor | 1,223 | 0.0007 | 9 |
+| GEV | **cov+raw** | **50** | 0.0016 | 0.0012 | **PASS** | **595** | 0.516 | 18 |
+| logistic | shipped | 50/100/200 | 0.193 / 0.158 / **0.0498** | ~0.003 | **FAIL at every W** | 267–1,090 | 0.0013–0.0016 | 8–13 |
+| logistic | **cov+raw** | **50** | 0.0058 | 0.0026 | **PASS** | **335** | 0.500 | 10 |
+| radon NC | shipped | 50/100/200 | **106 / 64 / 12.1** | ~0.005 | **FAIL by 3-4 orders** | 349–1,343 | 0.0004–0.0005 | 10–16 |
+| radon NC | cov+raw | — | — | — | PENDING (last group running) | — | — | — |
+
+1. **The target is met on three of four models at W=50**: the plan's goal was "R1 passes G-R1 with warmup ≤ 300 steps". Corrected arm: 8 Schools 993 gradients per chain, GEV 595, logistic 335 — versus the reference figure of ~1,200 at W=100 on 8 Schools with the old code and 53,372 at the shipped default W=2,000.
+2. **The shipped orientation is not a tuning preference in R1 either.** On logistic it fails at 200 warmup steps with b² 0.0498; on radon it is 12.1 at 200, four orders of magnitude past the bar. This is the same defect that produced R̂ 12.1 on the four-scalar fixture, now on the owner's real regime.
+3. **Split R̂ is confirmed useless here** (1.12 to 8.87 across all R1 cells, including passing cells with b² below the floor), which is the empirical basis for gating R1 on b² instead.
+4. `int:covraw` GEV shows 0.098 and 0.195 divergences per 1k at W=50/100 and 0 at W=200 — small, warmup-side, and consistent with the ε jump (0.0006 → 0.52) rather than with a geometry failure.
