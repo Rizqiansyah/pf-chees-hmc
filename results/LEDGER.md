@@ -33,3 +33,10 @@ Standing rule reconfirmed: a task number that gates work is re-derived from the 
 `utils.py` explicitly off-limits, because WP1 (metric block) and WP3 (start selection) are editing `sampler.py` and WP2
 will own `utils.py`. The remaining WP8 items (stage-kwarg whitelist, mutable defaults, dead xmap branch, Halton bits)
 are held until those tasks merge. Running: 2/2 fast-tier (WP1, WP3), 2/3 steady-tier (WP0.2 rework, WP8).
+
+## 2026-10-19 · tools · peak device memory is process-cumulative, not per cell
+Verified on the A2000 under the lock (`tools/gpu_run.sh`, first use): `jax.devices()[0].memory_stats()` exposes
+`peak_bytes_in_use` but the device has **no `reset_memory_stats()`** in JAX 0.11.2, and on CPU `memory_stats()`
+returns `None`. So a row's peak memory read at row-creation time is meaningless and a value read after a cell is the
+process high-water mark, not that cell's. `tools/_common.py` now documents this and adds `set_peak_mem(row)` to stamp
+after the cell; per-cell attribution requires one process per cell (WP3 found the same defect independently).
