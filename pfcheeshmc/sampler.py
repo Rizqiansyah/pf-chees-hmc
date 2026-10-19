@@ -566,8 +566,25 @@ class PfCheesHMC:
                 pick_global = jnp.repeat(pick_global[:K], chains // K)
             pf_inits_tree = jax.tree_util.tree_map(lambda x: x[pick_global], samples_flat)
         elif init_source == "adapt_diag":
-            # use the repaired adapt_diag starts as chain inits
+            # use the repaired adapt_diag starts as chain inits. With a shared base point
+            # (pm_chains < chains) add a tiny per-chain relative jitter so the option does not
+            # degenerate to C identical starts -- identical starts read R-hat 1.000 while
+            # stuck, which no diagnostic flags. The base point is guard-validated; a 1e-3
+            # relative move of a finite-gradient point stays finite in practice.
             pf_inits_tree = init_stack
+            if pm_chains < chains:
+                jkey = jax.random.split(key_choose, len(self.rvs))
+                # Relative AND absolute jitter: a purely relative move cannot budge a
+                # coordinate that is exactly 0.0 (common in initial points), and zero
+                # coordinates would keep those chains tied together.
+                pf_inits_tree = {
+                    n: init_stack[n] * (1.0 + 1e-3 * jax.random.normal(
+                            jkey[i], init_stack[n].shape, dtype=init_stack[n].dtype))
+                        + 1e-6 * jax.random.normal(
+                            jax.random.fold_in(jkey[i], 1), init_stack[n].shape,
+                            dtype=init_stack[n].dtype)
+                    for i, n in enumerate(self.rvs)
+                }
         else:
             raise ValueError("init_source must be 'pf' or 'adapt_diag'")
 

@@ -138,9 +138,11 @@ def test_shared_init_point_repairs_a_nan_gradient_base(monkeypatch):
     assert starts.shape == (4, 4)
     assert np.isfinite(starts).all(), "NaN start leaked past the guard"
     # The repair moved the shared base off the singular point, and every chain got
-    # that same repaired point.
+    # that repaired base plus the tiny per-chain fallback jitter (<= ~2e-3 relative).
     assert (np.abs(starts) > 0).all()
-    np.testing.assert_array_equal(starts, np.tile(starts[0], (4, 1)))
+    base = starts[0]
+    bound = 2e-3 * np.abs(base) + 5e-6     # the fallback jitter scale
+    assert (np.abs(starts - base) <= bound).all(), "starts drifted off the shared repaired base"
     # And the default init_source still completes with finite starts.
     pf_samples2, _ = s._run_pathfinder(chains=4, draws=60, seed=7, pm_chains=1)
     assert np.isfinite(np.asarray(pf_samples2["x"])).all()
@@ -220,3 +222,23 @@ if __name__ == "__main__":
             else:
                 fn()
             print(f"{name} PASS")
+
+
+def test_adapt_diag_fallback_keeps_distinct_starts_with_a_shared_base():
+    """With pm_chains=1 the adapt_diag fallback must not give every chain the same start:
+    identical starts read R-hat 1.000 while stuck, which no diagnostic flags."""
+    model = _tiny_model()
+    s = PfCheesHMC(model, seed=13)
+    # jitter+adapt_diag: plain adapt_diag returns the SAME zero point per chain for this
+    # model even pre-WP5, so it cannot demonstrate distinctness; the jittered variant can.
+    a, _ = s._run_pathfinder(chains=6, draws=40, seed=13, pm_chains=1,
+                             init_source="adapt_diag", pm_init="jitter+adapt_diag")
+    starts = np.asarray(a["x"])
+    assert starts.shape == (6, 4)
+    assert np.isfinite(starts).all()
+    assert len({tuple(r) for r in starts.tolist()}) == 6, (
+        f"adapt_diag fallback collapsed to identical starts: {starts[:3]}")
+    # And the same call with per-chain PyMC inits is untouched by the jitter path.
+    b, _ = s._run_pathfinder(chains=6, draws=40, seed=13, pm_chains=6,
+                             init_source="adapt_diag", pm_init="jitter+adapt_diag")
+    assert len({tuple(r) for r in np.asarray(b["x"]).tolist()}) == 6
