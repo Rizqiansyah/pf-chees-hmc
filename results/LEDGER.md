@@ -200,3 +200,13 @@ The review (`results/reviews/WP3-code.md`, item 7) attributed G-R1-diag's failur
 At K=8 the estimator detects a 1-sd differential offset as strongly as at K=256, so the `B/n` argument does not hold at this shape and a "K ceiling" is the wrong remedy. What it cannot see is a shift shared by every chain: identical to the clean control.
 
 **Mechanism adopted instead.** In the R1 regime the Pathfinder-start deficit is common-mode — one start pool, one warmup budget, the same bias in all 1,024 chains. Any R̂ family statistic (split, nested, or otherwise) is invariant to that by construction. So: **G-R1 (b² against the CPU NUTS reference) remains the only convergence gate for R1**, and G-R1-diag is retained as a differential-drift / multimodality alarm, not downgraded by a K ceiling and never usable as convergence evidence. The genuine K limit that was measured is the statistic's own noise floor rising with superchain count (clean 1.0004 → 1.0112 from K=8 to K=256), which is a reason to keep K modest, not a reason to distrust K=8.
+
+## 2026-10-19 22:58 · integration seam defect found only by merging branches · WP1 + WP2 together crashed every run
+
+No task could have caught this: each task tests its own tree. Merging `wp/wp1` (which added `warmup_grad_evals_per_chain`, reading `chees_info.num_integration_steps`) with `wp/wp2` (whose vendored warmup returns `WarmupInfo(info=<HMCInfo stack>, trace=...)` instead of the bare HMCInfo) makes **every** call raise `AttributeError: 'WarmupInfo' object has no attribute 'num_integration_steps'` at `sampler.py:1089`. The failure is total, not silent — which is the only good news.
+
+Fixed at the seam on `wp/wp1` (`1cb74bf`): unwrap `chees_info` when it carries `.info`, keep the trace on the instance. Inert without the vendored adapter. The bias harness got the same tolerance (`fa8ca79` lineage) so one harness spans pre- and post-vendoring trees.
+
+**Standing rule for the rest of the run:** accept/kill decisions are re-verified on `pf-r1-int`, the merged tree of `pf-r1` + wp8 + wp0refs + wp1 + wp2 + wp3 (`b15af66`, merges clean, no conflicts). A branch that is green alone is not evidence the combination is green.
+
+**First integrated measurement** (`T1__smoke.jsonl`, 8 Schools, C=1024, D=10, W=50, seed 1, covariance + raw iterate, cold): b²_max **0.00051** against noise floor 0.00118 → **G-R1 PASS with 807 warmup gradients per chain** (+186 sampling), ε 0.247, nominal L 35, 0 divergences per 1k. Split R̂ on the same run reads 1.2217 — the reason R1 is gated on b² and not on R̂.
