@@ -127,3 +127,42 @@ What is **not** justified as shipped: (a) the "improves on 4 of 4" efficiency cl
 **RECOMMEND: hold** — merge the orientation flip (justified), but gate the unconditional permutation on a correctness (posterior-accuracy) demonstration; as shipped it bundles a measured GEV efficiency regression behind an unproven correctness claim and a refuted "no neutral interim" rationale.
 
 **Was the flip decision statistically justified?** Yes for the orientation flip (precision→covariance); no for the bundled unconditional permutation. The single measurement that would most change my answer: **a posterior-accuracy comparison on radon (d=175), permuted vs unpermuted, both with the covariance orientation, scoring worst mean and variance error against the CPU NUTS reference** — if the permuted arm is more accurate there, the permutation is a justified correctness fix (accept the GEV slowdown); if it is not more accurate, the permutation is a pure regression and should be dropped or made conditional.
+
+---
+
+## Re-review after the order A/B
+
+New data: `~/pf/int/results/runs/ORDER__radon_noncentered.jsonl` (10 rows; 5 seeds × 2 arms; orientation pinned to `covariance`, only `imm_order` differs: `kernel` = permuted to sorted-key order, `pathfinder` = left in value_vars order; radon noncentered, d=175, 32×1250, W=2000, scored per parameter vs the CPU NUTS reference in unconstrained space). All numbers below recomputed by me; they reproduce the lead's headlines.
+
+| arm (order) | worst mean error (sd) median (range) | max R̂ median (range) | min-variable ESS median | grads per min-ESS median (range) |
+|---|---|---|---|---|
+| pathfinder (unpermuted) | 0.01659 (0.0124–0.0211) | 1.0076 (1.0073–1.0124) | 3,286 | **18.42** (17.14–21.38) |
+| kernel (permuted) | 0.02143 (0.0170–0.0302) | 1.0063 (1.0051–1.0084) | 4,418 | **3.92** (3.58–4.32) |
+
+Per-seed throughput (pathfinder ÷ kernel grads/min-ESS): 5.03 / 4.43 / 5.97 / 4.37 / 3.99 → **the permutation is 4.0–6.0× faster on radon (median 4.7×), on all 5 seeds.** Per-seed worst-mean-error (kernel − pathfinder): +0.0113 / +0.0091 / +0.0045 / +0.0048 / +0.0035 sd → **the permutation is slightly less accurate on radon, on all 5 seeds** (reference-sigma maxima 3.80 vs 3.25, same direction). Min-variable ESS is higher for the permuted arm (4,418 vs 3,286 median), consistent with the throughput.
+
+I also re-isolated the permutation on GEV from the 2×2 (orientation=covariance): pathfinder 21.3/21.5/26.8 g/e (R̂ 3/3) vs kernel 96.5/56.4/103.6 g/e (R̂ 3/3) → **the permutation is a 2.6–4.5× SLOWDOWN on GEV, on all 3 seeds.** This is the reverse of "accidental speed-up on GEV."
+
+### (1) Does the permutation stay BLOCKING?
+No — I withdraw the BLOCKING status, on two grounds now established:
+- The "efficiency regression" that motivated the block was **GEV-specific** and is **reversed on the decisive high-d model**: the permutation is a 4.7× throughput *gain* on radon (all 5 seeds), a 2.6–4.5× *loss* on GEV (all 3 seeds). It is not a general regression.
+- The "no demonstrated accuracy benefit" is **confirmed and slightly strengthened**: on radon the permutation is not neutral but *consistently* marginally less accurate (all 5 seeds, +0.0035–0.0113 sd worst-mean-error). So it is not an accuracy fix anywhere I measured.
+
+What is **not** refuted, and is the reason it stays default-on: on scale-heterogeneous geometry the ordering is correctness-critical (the 1e4-spread fixture: unpermuted orientation-arm reads R̂ 12 / ESS 32 vs 1.002 / 30,967 permuted). That is a safety property, independent of the radon/GEV throughput side effects.
+
+### (2) Is the proposed framing a defensible basis to merge unconditional?
+Mostly yes, with **two factual corrections**:
+- GEV: the permutation is an accidental **slowdown** (2.6–4.5×), not a speed-up. I measured kernel 56–104 g/e vs pathfinder 21–27 g/e, all 3 seeds.
+- radon: it is not pure throughput — it carries a small but seed-consistent **accuracy cost** (worst-mean-error 0.017 → 0.021 sd; reference-sigma max 3.25 → 3.80).
+
+Defensible one-line characterization: *a representation-ordering (coordinate-coupling) correction — correctness-critical on scale-heterogeneous geometry, with geometry-dependent throughput side effects (4.7× faster on radon d=175; 2.6–4.5× slower on GEV) and a small radon accuracy cost; not an accuracy improvement.*
+
+**I do not want `imm_order` defaulted to `pathfinder`.** That would ship the catastrophic ordering on scale-heterogeneous models (the fixture is the existence proof). The GEV slowdown is the price of that safety and is one model's side effect. Keep the default `kernel` (permuted); the unpermuted order is a diagnostic/measurement knob, not a safe default.
+
+### (3) What the report must add so this is not mistaken for an accuracy fix
+1. State plainly that the permutation is a **coordinate-coupling correction, not a posterior-accuracy improvement**. Cite the fixture (R̂ 12.1 / ESS 32 unpermuted-precision vs 1.002 / 30,967 permuted-covariance) as the reason it is default-on, and cite the radon order A/B (accuracy 0.0166 → 0.0214 sd, all 5 seeds) as the reason it is *not* an accuracy win.
+2. Report the geometry-dependent throughput explicitly: radon 18.42 → 3.92 grads/min-ESS (4.7×, all 5 seeds) vs GEV 21.5 → 96.5 g/e (2.6–4.5× slower, all 3 seeds). A reader must see that the sign of the efficiency effect depends on the model.
+3. Attribute the GEV posterior-mean-error halving (0.0366 → 0.0205 sd) to the **orientation flip**, not the permutation — the order A/B shows the permutation does not improve (and slightly worsens) accuracy.
+4. Note the radon accuracy cost so it is not rediscovered as a regression later: worst-mean-error and reference-sigma both slightly worse for the permuted arm, consistent across all 5 seeds, small in magnitude (max over d=175, so indicative not precise).
+
+**RECOMMEND: merge** (moved from hold). The orientation flip is justified and the permutation is the correct, safe default (correctness on heterogeneous geometry) — both should ship. The change from my first review is that the permutation is no longer a blocker: it is a default-on coordinate-coupling correction whose efficiency effect is model-dependent and whose accuracy effect is null-to-slightly-negative, and it must be documented as such, not as "the metric is now accurate."
