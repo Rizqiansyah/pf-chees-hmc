@@ -66,6 +66,19 @@ Verdicts are **per seed** under the harness's own gate (`tools/r1_bias.py:g_r1`:
 
 Two limits on this table: the arms move **two** factors at once (orientation and adapter iterate), so the R1 gain is not attributable to either alone; and all 48 rows are cold with 2 seeds, so no wall-clock claim comes from them.
 
+### 3d. T4 — capacity at the R1 shape (C=1,024 × D=10, W=2,000, public-default `pf_draws=4,000`, 6 GB card)
+
+Verified from `wp/wp5`'s row files (`WP5__memprobe_before.jsonl` 80 rows, `WP5__accept.jsonl` 5 rows). The before-table's "stage" is the last row written before the process died, so the stage attribution comes from the rows and the failed-allocation size from the crash text — stated because it is a weaker provenance than a row field.
+
+| model | d | largest C before | where it died before | largest C after | cold peak after | init warm after |
+|---|---|---|---|---|---|---|
+| 8 Schools | 8 | 1,024 (peak 2,314 MiB) | fits | 1,024 | 224.1 MiB | 25.9 s cold, compile-dominated |
+| GEV | 3 | 1,024 (946 MiB) | fits | 1,024 | 288.1 MiB | 35.3 s cold |
+| logistic | 25 | **OOM at 1,024** | pool draw — XLA `NOT_FOUND` profiling the 4.1M-row pool | 1,024 | 581.4 MiB | 36.4 s cold |
+| radon NC | 175 | **64** (2,575 MiB at 64) | pool draw — 699.59 MiB at C=128, 1.35 GiB at 256, 5.36 GiB at 1,024 | **1,024** | 653.5 MiB | **4.07 s warm**, 0 divergences per 1k, 42.9 s total warm |
+
+The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); the failed allocation scales with the pool size exactly. Both retracted memory explanations stay dead. **Accept criteria: capacity PASS on all four models; the "init under 2 s" bar is NOT met** — warm init is 4.07 s, of which 2.47 s is WP5's pathfinder/pool/scoring chain and **1.59 s is the step-size tuning stage owned by WP7**. The bar as written adds two tasks' budgets together; it needs restating as per-owner budgets, and neither reading passes today. Cold init at C=1,024 is 25.9–45.1 s (compile), which is the run-once cost no cache can serve on the owner's run-once workflow.
+
 ## 4. Decisions taken in this run
 
 1. `imm_orientation` is an explicit, tested parameter (default unchanged for now); `imm_order` likewise. The default flip is owner-gated (G3) — recommendation and remaining evidence in §7.
