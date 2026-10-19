@@ -253,3 +253,30 @@ Per-variable ESS in the shipped cell: `{delta: 33, beta: 33,052, zeta: 32, alpha
 2. **The shipped orientation is not a tuning preference in R1 either.** On logistic it fails at 200 warmup steps with b² 0.0498; on radon it is 12.1 at 200, four orders of magnitude past the bar. This is the same defect that produced R̂ 12.1 on the four-scalar fixture, now on the owner's real regime.
 3. **Split R̂ is confirmed useless here** (1.12 to 8.87 across all R1 cells, including passing cells with b² below the floor), which is the empirical basis for gating R1 on b² instead.
 4. `int:covraw` GEV shows 0.098 and 0.195 divergences per 1k at W=50/100 and 0 at W=200 — small, warmup-side, and consistent with the ε jump (0.0006 → 0.52) rather than with a geometry failure.
+
+## 2026-10-20 00:10 · T1 complete (48 rows) and the GEV G3 probe — the flip passes the convergence gate on every seed and costs a seed-stable divergence rise
+
+**T1, C=1,024, D=10, seeds 1–2, `pf-r1-int`.** Smallest warmup with a *resolvable* G-R1 pass (b² above the printed floor and below 0.01):
+
+| model | shipped orientation | covariance orientation |
+|---|---|---|
+| 8 Schools | W=100, 1,283 gradients/chain | **W=50, 955** |
+| logistic 1000×25 | **never** — b² 0.193 / 0.158 / 0.0498 at W=50/100/200 | **W=50, 335 gradients/chain** |
+| GEV | W=100, 381 (W=50 fails at b² 0.087) | W=50 and 100 below the resolution floor, W=200 resolvable at b² 0.0010 / 1,946; fails at no W |
+| radon NC | **never** — b² 106 / 64 / 12.1 | **W=200, 1,521** (W=50 and 100 fail) |
+
+The plan's project target — R1 at C=1,024 × D=10 passing G-R1 with warmup ≤ 300 steps on all four models — is met by the corrected arm and not met by the shipped arm on two of four models at any warmup tested.
+
+**GEV G3 probe** (`G3__gev_meanshift.jsonl`, 32 chains × 1,250 draws, W=2,000, seeds 43–47, arms differing only in `imm_orientation`, scored against the CPU NUTS reference in constrained space):
+
+| | max R̂ per seed (5 seeds) | worst mean shift | divergences per 1k per seed | median divs/1k | frozen ε |
+|---|---|---|---|---|---|
+| precision (shipped) | 1.0465, 1.0471, 1.0294, **1.0688**, 1.0380 — **fails G-A on 5/5** | 0.033–0.059 sd | 0.100, 0.025, 0.000, 0.025, 0.000 | 0.025 | 0.0009–0.0010 |
+| covariance (candidate) | 1.0065, 1.0017, 1.0054, 1.0141, 1.0117 — passes on 4/5 | 0.015–0.028 sd | 0.875, 0.350, 0.400, 0.200, 0.575 | 0.400 | 0.749–0.866 |
+
+Three things settle here.
+1. **The divergence rise is real and seed-stable**, not a one-seed artifact: every covariance seed is ≥ 0.2 per 1k and every precision seed is ≤ 0.1. In absolute terms it is ~32 divergences in 80,000 draws against ~2, but G3's clause is written as a rate and this fails it.
+2. **The shipped orientation fails the project's own convergence bar on GEV at every seed** (max R̂ up to 1.0688), so "the shipped arm looks fine on GEV" from the earlier R2 medians was a median across seeds hiding a per-seed failure.
+3. **G3's "means within 1 sigma" clause is not met by either arm** — worst z reaches 2.7 (precision) and 3.4 (covariance) while the underlying shift is 0.015–0.059 posterior sd. At 40,000 draws the reference MCSE is so small that z > 2 is not evidence of a practical bias; the clause needs restating in sd units (e.g. ≤ 0.05 sd) or it can never be satisfied. That is a plan defect, recorded as such.
+
+**Net recommendation.** Ship the permutation plus the explicit knob now (already reviewed on-disk), and treat the default flip as an owner decision with a stated trade: the flip turns five failing R̂ cells into four passing ones and halves the posterior-mean error, at the cost of a ~16× divergence-rate rise that is still ~0.04% of draws. What would change the trade: locating which coordinate diverges, which needs one instrumented GEV run reporting the divergence position's implied velocity.
