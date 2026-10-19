@@ -33,26 +33,48 @@ The allocation size scales with C exactly like the pool does (699.59 MiB at 64k 
 
 ## 3. After (acceptance)
 
-Rows: `results/runs/WP5__accept.jsonl` (cold fit, warm init wall).
-Before/after, largest C that fits at the R1 shape (D=10, W=2,000, public-default pf_draws=4,000): radon NC 64 → (after); logistic (after, OOM before); GEV 1,024 → 1,024; 8 Schools 1,024 → 1,024.
+Rows: `results/runs/WP5__accept.jsonl` (rep 0 = cold fit, rep 1 = warm init wall).
+All runs at C=1,024, D=10, W=2,000, pf_pool_cap=4,096 (=4C), pm_chains=1, score_chunk=1,024.
 
-| model | C | D | W | fits? | init stages warm | peak (cold) |
+| model | fits? | peak (cold) | init warm | warmup warm | sampling warm | divs/1k |
 |---|---|---|---|---|---|---|
-| radon NC | 1,024 | 10 | 2,000 | | | |
-| logistic | 1,024 | 10 | 2,000 | | | |
-| GEV | 1,024 | 10 | 2,000 | | | |
-| 8 Schools | 1,024 | 10 | 2,000 | | | |
+| radon NC (d=175) | **yes** | 653 MiB | 4.07 s | 35.87 s | 2.95 s | 0.0 |
+| logistic 1000×25 | **yes** | 581 MiB | (cold init 36.4 s) | 313 s (cold) | 10.1 s (cold) | — |
+| GEV (d=3) | **yes** | 288 MiB | (cold init 35.3 s) | 9.0 s (cold) | 6.1 s (cold) | — |
+| 8 Schools (d=8) | **yes** | 224 MiB | (cold init 25.9 s) | 6.8 s (cold) | 6.1 s (cold) | — |
 
-(To be filled from the rows when the GPU queue completes.)
+Largest C that fits at the R1 shape (D=10, W=2,000, public-default pf_draws=4,000), before → after:
+radon NC **64 → 1,024**; logistic **<1,024 (pool OOM) → 1,024**; GEV 1,024 → 1,024; 8 Schools 1,024 → 1,024.
+
+Warm init breakdown, radon NC C=1,024 (the acceptance cell):
+
+| stage | s |
+|---|---|
+| `_pymc_adapt_diag_start` (one point, tune 500) | 0.666 |
+| `_ensure_finite_inits` (one point) | 0.259 |
+| PF solve + pool (4,096 rows) + stratified scoring + covariance | 1.549 |
+| `_run_pathfinder` total | 2.474 |
+| `_run_step_size_tune` (eps0, 32 probes) | 1.592 |
+| **init total** | **4.067** |
+
+The C-dependent cost is gone from the init path: BEFORE, at C=1,024 the same stages cost
+(best_chain_score 11.30 s on 8 Schools, 27.12 s on radon; `_pymc_adapt_diag_start` 4.83–5.88 s;
+`_ensure_finite_inits` 1.95–3.91 s — and 126.8 s of cold compilation on GEV), from the cold
+stage walls in `WP5__memprobe_before.jsonl`.
 
 ## 4. Gate verdicts
 
-- G-MEM (peak ≤ 5.0 GB): (pending after rows)
-- WP5 acceptance (radon NC C=1,024 × D=10 fits; init < 2 s warm): (pending)
+- G-MEM (peak ≤ 5.0 GB) at radon NC C=1,024: **PASS** — 653 MiB cold peak (rep 0).
+- WP5 acceptance part 1 — radon NC runs at C=1,024 × D=10 on the 6 GB card: **PASS** (528.8 s cold wall, 42.9 s warm wall, 0 divergences per 1k, rep 1).
+- WP5 acceptance part 2 — init stages < 2 s warm: **NOT MET as a full-init number — 4.07 s** — and the excess is not in the stages this WP changed. The WP5-owned init work (PF solve + capped pool + chunked stratified scoring + covariance + one PyMC init + one guard pass) is 2.47 s warm, of which 0.93 s is the single PyMC init point and guard; the residual over a 2 s full-init bar is the step-size stage (eps0, 1.59 s, 32 probes — documented as quality-load-bearing on GEV, and owned by the step-size work, not this WP) plus 0.93 s of pm init. Per A7 this is reported, not tuned away: cutting `eps0_probes` or `pm_tune` to force the number under 2 s would trade documented quality for a bar, and the plan assigns the step-size stage to WP7.
+  - If the bar is read as the WP5-owned init stages only (everything up to the metric, excluding eps0), the number is 2.47 s — still above 2 s, dominated by the single 500-step PyMC adapt_diag init (0.67 s) and the C-independent L-BFGS solve (~0.9 s).
 
 ## 5. Contradictions / surprises
 
-- (filled below)
+1. **The 64-chain radon ceiling was the pool, not the warmup** — at the R1 shape (D=10, W=2,000, pf_draws=4,000) radon NC dies at `pf_pool_draw` for every C ≥ 128 (699.59 MiB / 1.35 GiB / 5.36 GiB allocation failures), and logistic at C=1,024 dies at the same stage (XLA `NOT_FOUND` profiling the 4.1M-row pool). At C=64 the whole run fits in 2.58 GB with the pool chain (draw + flatten + X + XᵀX) as the dominant user, the old full-info warmup stack adding ~0.7 GB on top. Both previously-retracted memory explanations were wrong for this shape, and the third candidate (init-stage memory, plan §0.6) is confirmed: the cap at 4C (pool 4,096 rows = 2.8 MB at d=175) removes it.
+2. **Cold compile is the other wall**: at C=1,024 the first process spends 26–45 s of init just tracing (radon 45.15 s cold vs 4.07 s warm), and GEV's cold `_ensure_finite_inits` compiled for 126.8 s BEFORE (the vmapped mask over 1,024 rows) against 0.26 s warm with one shared point. The run-once workflow the owner stated means cold is the number — WP6 (per-step efficiency) and the in-trace stop-rule rewrite are the levers there; this WP's fixes do not reduce cold compile time, only memory and the C-dependent warm cost.
+3. **`init_source="adapt_diag"` with a shared base needed an absolute jitter term**: a purely relative jitter cannot move a coordinate that is exactly 0.0 (initial points are often exactly zero), which would have left those chains tied. Pinned in `test_adapt_diag_fallback_keeps_distinct_starts_with_a_shared_base`.
+4. **Plain `init="adapt_diag"` was never a per-chain diversity source**: PyMC returns the identical point for every chain of a trivial model (all-zero for a Normal); only `jitter+adapt_diag` varies per chain. The per-chain loop being replaced was buying wall time, not starts.
 
 ## 6. Library-first exceptions
 
