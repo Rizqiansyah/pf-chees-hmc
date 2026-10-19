@@ -317,3 +317,20 @@ First two rows of `~/pf/wp5/results/runs/WP5__accept.jsonl` (the task's fixed ha
 **Where the memory went — the long-open question is answered** (the task's BEFORE attribution, `1dcb33e`): the R1 wall is the `chains × pf_draws` Pathfinder **pool chain** — radon died at the pool-draw stage for C≥128, logistic at C=1024 — while pathfinder's L-BFGS solve itself is ~685 MB and flat in C. Bounding the pool (`pf_pool_cap=4096` ≈ 4C) and dropping the per-chain PyMC init (`pm_chains=1`) is what lets C=1,024 fit in 653 MiB. The two earlier retracted explanations (total stacked draws, warmup stack) stay dead; this is the confirmed mechanism.
 
 **Gate verdict:** the primary acceptance (radon NC runs at C=1,024 × D=10 on the 6 GB card) is **MET** — 653 MiB is an order of magnitude under the 5.0 GB G-MEM gate and under the card. The secondary stretch (init stages < 2 s warm) is **NOT met**: 4.1 s warm, dominated by the Pathfinder solve + step-size tune at C=1,024. That gap is the remainder of WP5, not a blocker for the R1 regime being usable. GEV and 8 Schools fit at C=1,024 in the BEFORE data (0.9 / 2.3 GB peaks) and their acceptance rows are still pending.
+
+## 2026-10-20 09:58 · WP4 estimator grid (R1, C=1,024 × D=10, W=50, 2 seeds, 16 cells) — the mid-warmup metric refresh converts radon NC from "never passes" to "passes", and the fancy estimators do not earn their cost
+
+Computed by the lead from `~/pf/wp4/results/runs/WP4__r1.jsonl` (32 rows), scored seed by seed with `g_r1`. Control = the same tree with no refresh (`T1__r1_sweep.jsonl`, `int:covraw`, W=50).
+
+| model | control b² (no refresh) | refresh b², all four estimators | control grads/chain | refresh grads/chain | control verdict | refresh verdict |
+|---|---|---|---|---|---|---|
+| 8 Schools | 0.0010 | 0.0008 – 0.0010 | 974 | 1,157 – 1,400 | pass | pass, **more expensive** |
+| GEV | 0.0008 | 0.0002 – 0.0013 | 557 | 3,778 – 6,673 | pass | pass, **more expensive** |
+| logistic | 0.0047 | 0.0006 – 0.0009 | 324 | 1,352 – 4,934 | pass (marginal) | pass, better b², more expensive |
+| radon NC | **1.6118 FAIL** | **0.0018 – 0.0020** | 372 | 3,886 – 5,612 | **fails at every W in T1** | **passes at W=50 on both seeds** |
+
+1. **The real result is radon NC.** Without a refresh it never passes G-R1 at C=1,024 (T1: b² 3.00 / 0.22 at W=50, `unresolvable` at W=100, and 0.0234/0.0071 disagreement at W=200). With one Pathfinder-then-ensemble refresh it passes at **W=50 on both seeds** at b² ≈ 0.0019. The cost is ~10–15× more gradients per chain than a run that does not actually work, which is not a fair comparison — the fair one is "no pass at any warmup" versus "pass at 50".
+2. **On models the Pathfinder metric already handles, the refresh is a pure cost**: 8 Schools 974 → 1,157-1,400 gradients/chain for a b² change inside seed noise.
+3. **Kill clause applied.** Plan: kill any estimator that does not beat the plain sample-diagonal by 1.2× on the correlated models (logistic, radon NC). Computed: dense-with-shrinkage 2,323 vs diagonal 2,386 on logistic (1.03×), 5,469 vs 5,612 on radon (1.03×); low-rank 4,934 and Fisher 1,352 on logistic are worse or within noise. **No estimator clears 1.2× → kill `dense_shrunk`, `diag_lowrank`, `fisher_diag`; keep `sample_diag` as the refresh estimator.** Fisher-diagonal is the worst on GEV (6,673 gradients) and buys nothing.
+4. **Consequence for the default.** The refresh should be **opt-in, keyed on metric quality**, not on by default: it pays where Pathfinder is under-dispersed (radon NC's variance ratio against the posterior is 0.011 — plan §2d) and costs where it is not (8 Schools 0.56). A cheap gate for "is the Pathfinder metric bad enough" is the natural follow-up, and it belongs to WP4's interface, not to WP1.
+5. Verified while here: `wp/wp5` suite **108 passed**, and the merged tree **after the orientation flip** is **99 passed** — the flip breaks nothing the suite covers.
