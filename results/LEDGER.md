@@ -14,3 +14,22 @@ fails loudly instead of producing a void number (A5).
 
 ## 2026-10-19 · Baseline check before acting on Part B
 nvidia-smi at run start: no foreign compute apps. Checkout/env recipe per A3 verified by the reviewer.
+
+## 2026-10-19 · WP0.2 · delivered, then REJECTED on re-verification; task re-tasked
+Task reported 4/4 PASS (`82bb771` on `wp/wp0refs`). I re-verified against the .npz myself (CPU, `~/scratch_verify_refs3.py`,
+`~/scratch_theta_probe.py`): max R̂ and min bulk ESS reproduce to the digit (1.00025 / 1.00017 / 1.00049 / 1.00048) and all
+four sha256 match. But the per-variable statistics are collapsed over the parameter axis: in `8schools.npz`,
+`u__theta` is (8, 10000, 8) with per-parameter means ≈ [0.28, 0.04, -0.12, 0.01, -0.22, -0.11, 0.30, 0.05], while
+`mean__theta` = 0.02917 (the grand mean over the 8 schools) and `mcse_x__theta` is the scalar 0.00298. Scalar variables
+and all of GEV are correct, so the task's own gate could not see it.
+Decision: **do not merge**. WP3 scores b² per parameter against `mean_ref`/`Var_ref`, so a scalar reference for `theta`
+would silently mis-score 8 of 10 parameters on 8 Schools and 170 of 175 on radon NC — this is the run's headline gate.
+Re-tasked the task to keep the parameter axis on mean__/var__/mcse_x__/mcse_x2__, re-run the affected models at the same
+seeds, and add a permanent shape-guard test (stat shape must equal sample shape minus the two leading axes).
+Standing rule reconfirmed: a task number that gates work is re-derived from the artifact, not accepted from a report.
+
+## 2026-10-19 · Tasks · WP8 split into conflict-free items only
+`wp/wp8` (steady-tier) given only the statistical-correctness test and the README `base()` wording, with `sampler.py` and
+`utils.py` explicitly off-limits, because WP1 (metric block) and WP3 (start selection) are editing `sampler.py` and WP2
+will own `utils.py`. The remaining WP8 items (stage-kwarg whitelist, mutable defaults, dead xmap branch, Halton bits)
+are held until those tasks merge. Running: 2/2 fast-tier (WP1, WP3), 2/3 steady-tier (WP0.2 rework, WP8).
