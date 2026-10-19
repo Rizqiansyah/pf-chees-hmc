@@ -198,11 +198,28 @@ def load_reference(model, names, require_stats=True):
     return out
 
 
+def _rows_by_leaf(a):
+    """(chains, draws, *shape) / (n, leaves) / (n,) -> (rows, leaves).
+
+    One rule for both sides of the comparison: fold the first two axes into rows when there are
+    three or more, otherwise the input is already row-by-leaf. Applied to the run ((C, D, ...)) and
+    to the reference ((n, leaves)) with the same function, because folding the *chain* axis into the
+    leaf axis on one side only is a silent, wrong-but-plausible b2 (caught by the label check, which
+    is why it must stay).
+    """
+    a = np.asarray(a)
+    if a.ndim == 1:
+        return a.reshape(-1, 1)
+    if a.ndim >= 3:
+        return a.reshape(int(np.prod(a.shape[:2])), -1)
+    return a.reshape(a.shape[0], -1)
+
+
 def flatten_by_leaf(by_name):
-    """{name: (n, ...)} -> (n, total_leaves), ['name', 'name[j]', ...] in sorted-name order."""
+    """{name: array} -> (rows, total_leaves), ['name', 'name[j]', ...] in sorted-name order."""
     cols, labels = [], []
     for name in sorted(by_name):
-        a = np.asarray(by_name[name]).reshape(len(by_name[name]), -1)
+        a = _rows_by_leaf(by_name[name])
         cols.append(a)
         labels += [name] if a.shape[1] == 1 else [f"{name}[{j}]" for j in range(a.shape[1])]
     return np.concatenate(cols, axis=1), labels
@@ -282,7 +299,10 @@ def instrument():
                 pass
             INSTR["t"][meth] = INSTR["t"].get(meth, 0.0) + (time.perf_counter() - t0)
             if meth == "_run_chees":
-                _, params, (pos_hist, winfo) = out
+                # chees_warmup_with_progress returns (states, parameters), warm_info, and
+                # _run_chees forwards that as (states, parameters, warm_info): the third element is
+                # the stacked warmup HMCInfo, NOT a (positions, info) pair.
+                _, params, winfo = out
                 steps = np.asarray(winfo.num_integration_steps, dtype="int64")
                 if steps.ndim == 1:
                     steps = steps[:, None]
@@ -325,17 +345,21 @@ def score_ensemble(unc, ref, chains, draws, superchains, nested_limit):
         raise KeyError(f"run/reference leaf mismatch: {labels[:4]} vs {rlabels[:4]} "
                        f"(wrong space or missing value var?)")
     stacked = np.concatenate([unc[n] for n in sorted(unc)], axis=2)   # (C, D, d)
+    d = stacked.shape[2]
     b2_max, k, floor, _, _ = bias(
         ens, reff,
         np.asarray(AS.mcse(stacked, method="mean", chain_axis=0, draw_axis=1)),
         np.asarray(AS.mcse(stacked ** 2, method="mean", chain_axis=0, draw_axis=1)))
+    # bias() maximises over [x_1..x_d, x^2_1..x^2_d], so the index is 2d long while labels is d long:
+    # taking labels[k] directly is an IndexError (or, worse, names the wrong parameter).
+    argmax = f"{labels[k % d]} ({'x' if k < d else 'x^2'})"
     nested = None
     if superchains and superchains > 1 and draws >= 2:
         ids = [i // (chains // superchains) for i in range(chains)]
         nested = float(np.asarray(AS.rhat_nested(stacked, superchain_ids=ids,
                                                  chain_axis=0, draw_axis=1)).max())
-    return {"labels": labels, "d": int(stacked.shape[2]), "b2_max": b2_max,
-            "b2_argmax": labels[k], "b2_floor": floor,
+    return {"labels": labels, "d": int(d), "b2_max": b2_max,
+            "b2_argmax": argmax, "b2_floor": floor,
             "nested_rhat_max": nested,
             "nested_pass": None if nested is None else bool(nested < nested_limit)}
 
@@ -345,6 +369,18 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
 
     if args.timed:
         require_gpu_lock(f"R1 timed cell {model_name} W={W}")
+    import bench_ladder as bl
+    import pfcheeshmc
+
+    # A stubbed public sampler returns a 1-draw InferenceData instantly with no divergences, which
+    # would look like an outstanding result instead of a failure. bench_ladder used to leak its
+    # notebook-loading stubs for the whole process (fixed on pf-r1); this is the per-cell assertion.
+    if pfcheeshmc.sample_pf_chees_hmc is not getattr(bl, "REAL_SAMPLE_PF", None):
+        raise RuntimeError(
+            "pfcheeshmc.sample_pf_chees_hmc is not bench_ladder.REAL_SAMPLE_PF "
+            f"(got {getattr(pfcheeshmc.sample_pf_chees_hmc, '__name__', '?')}): a stub would "
+            "produce a fake instant cell with no divergences")
+
     from pfcheeshmc import sample_pf_chees_hmc
 
     model = build_model(model_name)
@@ -352,7 +388,8 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
     row = new_row(wp=args.wp, arm=args.arm, model=model_name, chains=args.chains,
                   draws_per_chain=args.draws, warmup=W, seed=seed, rep=rep, cold=cold,
                   superchains=args.superchains,
-                  kwargs=json.dumps({"chains": args.chains, "draws": args.draws, "warmup": W,
+                  kwargs=json.dumps({"sampler_fn": "sample_pf_chees_hmc",
+                                     "chains": args.chains, "draws": args.draws, "warmup": W,
                                      "pathfinder_kwargs": {"draws": args.pf_draws,
                                                            "init_pick": args.init_pick,
                                                            "superchains": args.superchains},
@@ -413,8 +450,11 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
             warmup=t.get("_run_chees", 0.0),
             sampling=t.get("_run_dynamic_hmc", 0.0),
             postproc=t.get("_to_inference_data", 0.0)))
-    except Exception as exc:                    # a failed cell is a row, not a gap in the record
-        row.update(error=f"{type(exc).__name__}: {exc}"[:400],
+    except Exception:                    # a failed cell is a row, not a gap in the record
+        import traceback
+        tb = traceback.format_exc().strip().splitlines()
+        where = [l.strip() for l in tb if "line " in l and ("r1_bias" in l or "sampler.py" in l)]
+        row.update(error=f"{tb[-1]} | {where[-1] if where else ''}"[:400],
                    wall_s=round(time.perf_counter() - t0, 2))
     else:
         from _common import peak_mem_bytes
@@ -445,7 +485,7 @@ def run_starts(bl, model_name, args, rep, cold):
 
     model = build_model(model_name)
     names = [v.name for v in model.value_vars]
-    s = PfCheesHMC(model, seed=args.seeds.split(",")[0])
+    s = PfCheesHMC(model, seed=int(args.seeds.split(",")[0]))   # int: the CLI value is a string
     pos, imm = s._run_pathfinder(chains=args.chains, draws=args.pf_draws,
                                  init_pick=args.init_pick, superchains=args.superchains)
     ens, labels = flatten_by_leaf(

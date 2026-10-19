@@ -46,6 +46,7 @@ def test_second_moment_bias_is_caught_even_with_an_unmoved_mean():
     b2, k, _, b2m, b2v = rb.bias(ens, ref, np.zeros(2), np.zeros(2))
     assert np.max(b2m) < 0.01              # means are fine
     assert np.max(b2v) > 0.05              # x^2 is not
+    assert k >= 2                          # the argmax lives in the x^2 half of the index space
 
 
 def test_floor_is_the_mc_noise_of_b2_itself():
@@ -117,6 +118,33 @@ def test_leaves_are_ordered_by_name_and_indexed_within_a_vector():
     flat, labels = rb.flatten_by_leaf(by_name)
     assert labels == ["mu", "theta[0]", "theta[1]", "theta[2]"]
     assert flat.shape == (5, 4)
+
+
+def test_argmax_names_a_parameter_and_which_moment_failed():
+    """b2_argmax must survive the 2d-long index space: it is the only place a reader learns whether
+    the sampler got the mean wrong or the spread wrong."""
+    rng = np.random.default_rng(7)
+    unc = {"a": rng.normal(size=(6, 200, 1)), "b": rng.normal(size=(6, 200, 3))}
+    ref = {"a": rng.normal(size=(1200, 1)), "b": rng.normal(scale=1.4, size=(1200, 3))}
+    sc = rb.score_ensemble(unc, ref, chains=6, draws=200, superchains=2, nested_limit=1.01)
+    assert sc["d"] == 4
+    name, moment = sc["b2_argmax"].rsplit(" ", 1)
+    assert name in sc["labels"], (name, sc["labels"])   # vector leaves are named b[0], b[1], ...
+    assert moment == "(x^2)", sc["b2_argmax"]
+    assert sc["nested_rhat_max"] is not None
+
+
+def test_run_and_reference_are_flattened_by_the_same_rule():
+    """The run is (chains, draws, *shape) and the reference is (rows, leaves). Folding the chain
+    axis into the leaf axis on one side only gives a plausible-looking b2 with the wrong leaves, so
+    both sides go through one function and their labels must agree."""
+    run = {"mu": np.zeros((4, 3, 1)), "theta": np.zeros((4, 3, 8))}
+    ref = {"mu": np.zeros((12, 1)), "theta": np.zeros((12, 8))}
+    fr, lr = rb.flatten_by_leaf(run)
+    ff, lf = rb.flatten_by_leaf(ref)
+    assert lr == lf == ["mu", "theta[0]", "theta[1]", "theta[2]", "theta[3]", "theta[4]",
+                        "theta[5]", "theta[6]", "theta[7]"]
+    assert fr.shape == ff.shape == (12, 9)
 
 
 def test_reference_reader_accepts_grouped_or_flat_containers(tmp_path, monkeypatch):
