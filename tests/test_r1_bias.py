@@ -14,6 +14,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
 import r1_bias as rb  # noqa: E402
+import wp3_summarize as rb2  # noqa: E402
 
 
 # ---------------------------------------------------------------- bias + floor
@@ -283,3 +284,47 @@ def test_superchains_off_leaves_the_pick_unchanged():
         for n in s.rvs:
             assert np.allclose(np.asarray(a[n]), np.asarray(b[n])), \
                 "K == chains must reproduce the plain stratified pick"
+
+
+# ---------------------------------------------------------------- W-selection (the deliverable)
+
+def _row(model="m", arm="legacy", W=100, seed=1, rep=1, b2=0.001, floor=0.002,
+         chains=1024, draws=10, gw=1000.0, gs=100.0, error=None):
+    return {"model": model, "arm": arm, "warmup": W, "seed": seed, "rep": rep, "b2_max": b2,
+            "b2_floor": floor, "chains": chains, "draws_per_chain": draws,
+            "grads_per_chain_warmup": gw, "grads_per_chain_sampling": gs, "error": error}
+
+
+def test_smallest_passing_w_must_pass_on_every_seed():
+    rows = [_row(W=50, seed=1, b2=0.001), _row(W=50, seed=2, b2=0.09),      # one seed fails
+            _row(W=100, seed=1, b2=0.001), _row(W=100, seed=2, b2=0.004),
+            _row(W=200, seed=1, b2=0.001), _row(W=200, seed=2, b2=0.001)]
+    t = rb2.summarise(rows)[0]
+    assert t["smallest_passing_W"] == 100
+    assert t["grads_per_chain_at_that_W"] == [1100.0, 1100.0]
+    states = {W: st for W, st, _, _ in t["cells"]}
+    assert states[50].startswith("fail") and states[200] == "PASS"
+
+
+def test_unresolvable_and_ineligible_cells_are_never_reported_as_passes():
+    rows = [_row(W=100, seed=1, b2=0.0001, floor=0.02), _row(W=100, seed=2, b2=0.0001, floor=0.02),
+            _row(W=200, seed=1, b2=0.0001, floor=0.001, chains=128),
+            _row(W=200, seed=2, b2=0.0001, floor=0.001, chains=128)]
+    t = rb2.summarise(rows)[0]
+    states = {W: st for W, st, _, _ in t["cells"]}
+    assert states[100].startswith("not resolvable")
+    assert states[200].startswith("not eligible")
+    assert t["smallest_passing_W"] is None
+
+
+def test_cold_rows_starts_rows_and_error_rows_are_excluded():
+    rows = [_row(W=100, seed=1, rep=0, b2=0.001), _row(W=100, seed=2, rep=0, b2=0.001),
+            _row(model="m2", W=0, seed=1),                      # pf_starts
+            _row(W=300, seed=1, b2=None)]
+    # nothing left to summarise: no table entry, so no W can be claimed
+    assert rb2.summarise(rows) == []
+    # a re-run replaces the earlier row for the same cell (tagging or contention recovery)
+    dup = [_row(W=100, seed=1, b2=0.5), _row(W=100, seed=1, b2=0.001), _row(W=100, seed=2, b2=0.001)]
+    t = rb2.summarise(dup)[0]
+    assert t["cells"][0][2] == 0.001, "the later row for the same cell must win"
+    assert t["smallest_passing_W"] == 100
