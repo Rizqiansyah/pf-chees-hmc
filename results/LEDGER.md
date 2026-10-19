@@ -186,3 +186,17 @@ Review at `results/reviews/WP3-code.md`. Verdict hold. Findings I verified are a
 4. Second-order, recorded: the noise floor at `:268-270` does not propagate reference MCSE and assumes cross-chain independence, which the `superchains` arm deliberately violates, so the floor is mildly optimistic there.
 
 A positive control is running now on GPU (`WP3__nested_k8.jsonl`, C=1024, K=8, W=25 and 100): if nR̂ fails to move at K=8 and moves at larger K, the blindness is measured directly rather than inferred.
+
+## 2026-10-19 22:30 · CONTRADICTION against the WP3 code review · nested R-hat is not precision-limited at R1 chain counts; it is common-mode-limited
+
+The review (`results/reviews/WP3-code.md`, item 7) attributed G-R1-diag's failure to fire (nested R̂ 1.0040 at b² 0.4100) to a precision ceiling: the between-superchain term scaling as `B/n` with `n` = draws per superchain = 1,280 at K=8, C=1024, D=10. Measured on synthetic stacks at exactly that shape (`tests/test_nested_rhat.py`, and the same construction as `~/pf/wp3/results/runs/WP3__nested_k8.jsonl`):
+
+| fixture at C=1024, D=10 | K=8 (n=1,280) | K=64 (n=160) | K=256 (n=40) |
+|---|---|---|---|
+| clean, iid normal | 1.0004 | 1.0028 | 1.0112 |
+| **every other superchain** offset +1.0 sd | **1.1135** | 1.1040 | 1.1089 |
+| **all chains** offset +1.0 sd (common mode) | **1.0004** | 1.0028 | 1.0112 |
+
+At K=8 the estimator detects a 1-sd differential offset as strongly as at K=256, so the `B/n` argument does not hold at this shape and a "K ceiling" is the wrong remedy. What it cannot see is a shift shared by every chain: identical to the clean control.
+
+**Mechanism adopted instead.** In the R1 regime the Pathfinder-start deficit is common-mode — one start pool, one warmup budget, the same bias in all 1,024 chains. Any R̂ family statistic (split, nested, or otherwise) is invariant to that by construction. So: **G-R1 (b² against the CPU NUTS reference) remains the only convergence gate for R1**, and G-R1-diag is retained as a differential-drift / multimodality alarm, not downgraded by a K ceiling and never usable as convergence evidence. The genuine K limit that was measured is the statistic's own noise floor rising with superchain count (clean 1.0004 → 1.0112 from K=8 to K=256), which is a reason to keep K modest, not a reason to distrust K=8.
