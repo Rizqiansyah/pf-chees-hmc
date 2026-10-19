@@ -12,6 +12,13 @@ Usage (always under the GPU lock, one model at a time):
   # legacy arm: point PYTHONPATH at the detached ecd9ba1 tree
   MODEL=8schools IMM=mc ARM=legacy ... env PYTHONPATH=$HOME/pf/legacy python "$WT/tools/wp1_rebaseline.py"
 
+TRAP, cost a failed cell: never call `idata.posterior.to_array()` on a model with repeated-length
+dims. radon NC has alpha_raw[85] and beta_raw[85] as *different* dims, and to_array() merges the
+85-length and scalar dims into one index, so it materialises a cross-product: measured MemoryError,
+137 TiB, shape (9, 32, 1250, 85, 85, 85, 85). Score per variable instead (bench_ladder.score already
+iterates data_vars; the removed line was a jax.block_until_ready on to_array()). Each stage wrapper
+already blocks on its own output, so nothing is lost. WP3's instrument must not repeat it.
+
 Env: MODEL (one key of bench_ladder.model_specs), IMM (mc|lbfgs_lowrank|fisher_lowrank),
 ARM (label only), SEEDS (comma list, default 43,44,45,46,47), REPEAT (default 2),
 CHAINS (32), DRAWS (1250), WARMUP (2000), OUT (jsonl path).
@@ -44,6 +51,9 @@ REPEAT = int(os.environ.get("REPEAT", "2"))
 CHAINS = int(os.environ.get("CHAINS", "32"))
 DRAWS = int(os.environ.get("DRAWS", "1250"))
 WARMUP = int(os.environ.get("WARMUP", "2000"))
+# IMM_ORIENT is only added to pathfinder_kwargs when set, so an unset env keeps the tree default and
+# the rows of the arms already in flight stay comparable.
+IMM_ORIENT = os.environ.get("IMM_ORIENT") or ""
 OUT = os.environ.get("OUT") or os.path.join(WT, "results", "runs", "WP1__rebaseline.jsonl")
 
 # ---------------------------------------------------------------- stage instrumentation
@@ -109,7 +119,7 @@ def jnp_int(v):
 
 def main():
     C.require_gpu_lock(f"WP1 re-baseline {ARM}/{MODEL}/{IMM}")
-    C.banner(model=MODEL, wp="WP1", arm=f"{ARM}:{IMM}")
+    C.banner(model=MODEL, wp="WP1", arm=f"{ARM}:{IMM}" + (f":{IMM_ORIENT}" if IMM_ORIENT else ""))
     print(f"[cfg] tree={sm.__file__} MODEL={MODEL} IMM={IMM} ARM={ARM} C={CHAINS} "
           f"D={DRAWS} W={WARMUP} seeds={SEEDS} repeat={REPEAT} out={OUT}", flush=True)
 
@@ -127,9 +137,12 @@ def main():
     for seed in SEEDS:
         for rep in range(REPEAT):
             cold = rep == 0
-            row = C.new_row(wp="WP1", arm=f"{ARM}:{IMM}", model=MODEL, d=d, chains=CHAINS,
+            arm_label = f"{ARM}:{IMM}" + (f":{IMM_ORIENT}" if IMM_ORIENT else "")
+            row = C.new_row(wp="WP1", arm=arm_label, model=MODEL, d=d, chains=CHAINS,
                             draws_per_chain=DRAWS, warmup=WARMUP, seed=seed, rep=rep, cold=cold,
-                            kwargs={"pathfinder_kwargs": {"imm_source": IMM},
+                            kwargs={"pathfinder_kwargs": dict({"imm_source": IMM},
+                                                              **({"imm_orientation": IMM_ORIENT}
+                                                                 if IMM_ORIENT else {})),
                                     "chees_kwargs": {"draws": WARMUP},
                                     "progressbar": False, "entry_point": entry_point},
                             cpu_contended=False)
@@ -140,10 +153,15 @@ def main():
                 assert pfcheeshmc.sample_pf_chees_hmc is bl.REAL_SAMPLE_PF
                 idata = sample_pf_chees_hmc(
                     model, draws=DRAWS, chains=CHAINS, random_seed=seed, progressbar=False,
-                    pathfinder_kwargs={"imm_source": IMM},
+                    pathfinder_kwargs=(dict({"imm_source": IMM},
+                                            **({"imm_orientation": IMM_ORIENT} if IMM_ORIENT else {}))),
                     chees_kwargs={"draws": WARMUP},
                 )
-                jax.block_until_ready(idata.posterior.to_array().values)
+                # Do NOT block on idata.posterior.to_array(): radon NC's posterior carries several
+                # independent 85-sized dims, and to_array() materialises their cross product
+                # (measured: MemoryError, 137 TiB for shape (9, 32, 1250, 85, 85, 85, 85)). Each stage
+                # wrapper already calls block_until_ready on its own output, so the wall clock is
+                # already gated on real device work.
                 wall = time.perf_counter() - t0
             except Exception as exc:
                 row["wall_s"] = round(time.perf_counter() - t0, 2)
