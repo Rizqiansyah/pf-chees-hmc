@@ -448,3 +448,15 @@ Kernel slot 2 is `ξ_interval__` and slot 3 is `σ_log__`, so the permuted arm p
 1. GEV is no longer a counter-example to the permutation. It is a **second piece of evidence for WP4's problem**: when Pathfinder's metric is badly under-dispersed on one coordinate, an error that fattens that coordinate can beat the correct metric. That is the same failure mode as the orientation story, one level down.
 2. The radon order A/B stands as measured (permuted 4.7× better throughput, accuracy neutral).
 3. My reporting rule for the rest of the run: compare a metric against the *estimator that produced it*, never against the posterior, or the posterior's own shape will masquerade as a code defect.
+
+## 2026-10-20 10:58 · order A/B complete (20 rows) — logistic is a null control, and `pf-r1` after the metric merge is 61 passed
+
+| model | permuted | unpermuted | reads as |
+|---|---|---|---|
+| logistic 1000×25 | err 0.01926 sd, R̂ 1.0014, min ESS 17,175, 0.99 grad/ESS | **bit-identical on every field** | identity permutation — its only variable `b` is a vector, so `value_vars` order equals sorted order. A clean negative control: where the bug cannot exist, nothing changes |
+| radon NC (d=175) | err 0.02143, R̂ 1.0063, min ESS 4,418, **3.92** grad/ESS | err 0.01659, R̂ 1.0076, min ESS 3,286, **18.42** | discriminating: permutation buys 4.7× throughput, costs 0.005 sd of mean accuracy |
+| GEV (from `WP1__gev_2x2.jsonl`) | 96.4 grad/ESS | 21.5 | discriminating in the other direction, explained above by Pathfinder's 50× under-dispersion of `ξ_interval__` |
+
+Two of the four models are identity cases (logistic, 8 Schools), so the permutation's measured effect exists only where the ordering actually differs — which is the whole point of the defect, and also why it survived the project's test suite for so long: 8 Schools, the repo's everyday benchmark, is one of the identity cases.
+
+**`pf-r1` after merging `wp/wp1`: 61 passed in 120.8 s, forced CPU.**
