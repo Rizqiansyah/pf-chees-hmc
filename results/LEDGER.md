@@ -97,3 +97,25 @@ the wrong line but the underlying "metric orientation is a mess" complaint is re
 Decision: WP1 makes orientation an explicit, measured choice across all three arms (permutation fix unconditional;
 arbitrated by posterior moments on a known-variance target, not by ε magnitude). WP9's retraction of the Fisher numbers
 should cite the orientation mismatch as the mechanism.
+
+## 2026-10-19 18:05 · WP1 · RETRACTION of entry 699be6d: the metric orientation IS a correctness-class failure of the shipped default
+
+**What I logged at 699be6d and why it was wrong.** I fed `inv(Sigma)` to `metrics.default_metric`, drew 20,000 momenta, and found `Var(p) = Sigma`. From that I concluded the argument really is `M^-1`, that the shipped metric was the textbook choice, and that Part B §0.1 was a tuning question. The first half is still true: the kernel does read the array as `M^-1`. The conclusion drawn from it is not. A single measurement of one consumer cannot decide a property of a pipeline where the same array is consumed twice, and the shipped default fails the project's own convergence bar by three orders of magnitude in ESS.
+
+**The measurement that settles it** (WP1 fixture `~/scratch/wp1_2x2b.py`; four scalar coordinates, posterior variances `zeta 1e2, delta 3, alpha 1, beta 1e-2`; `value_vars` order `[delta, beta, zeta, alpha]` vs kernel order `[alpha, beta, delta, zeta]`, i.e. a permutation that is not a reversal; 32 chains, 500 warmup, 1,000 draws, seeds 5/6/7, CPU, tree `/home/akbar/pf/wp1` @ `4460dc7`). The lead re-ran it independently (background task `b92a63722`); every one of the twelve cells reproduces:
+
+| order | orientation | eps | L | max R̂ | min bulk ESS | per-var ESS (alpha/beta/delta/zeta) |
+|---|---|---|---|---|---|---|
+| kernel | covariance | 1.12–1.21 | 4–5 | **1.0020–1.0022** | **30,121–33,495** | all ≈ 31,000 |
+| kernel | precision | 0.0130–0.0140 | 4–6 | **12.10–13.08** | **32–38** | 32–38 on every wide coord |
+| pathfinder | covariance | 0.236–0.246 | 12–45 | 1.0069–1.1451 | 166–3,176 | one coord collapses |
+| pathfinder | precision | 0.0132–0.0142 | 4–6 | 10.37–11.71 | 33 | 33 everywhere |
+
+**Two factors, two signatures.** An ordering error collapses a *specific* coordinate (pathfinder+covariance: ESS 166 against ~30,000 for the others). An orientation error collapses *every wide coordinate at once* (ESS 32–38 across the board). That is why the earlier 3-scalar fixture with a symmetric variance ladder and reverse-sorted names was degenerate and misread the two factors as interchangeable: reversing a symmetric ladder mimics inversion.
+
+**Mechanism: NOT ESTABLISHED.** The candidate is that the same array is also consumed by the ChEES criterion whitening (`pfcheeshmc/utils.py`), so the step-size and trajectory-length adaptation is calibrated under the assumption that it is Sigma; consistent with this, the precision arms freeze eps ≈ 0.014 and the covariance arms eps ≈ 1.2 on the identical target. I have not verified that in source and I am not asserting it. What is established is the behavioural fact, not its explanation.
+
+**Consequences.**
+1. `699be6d`'s verdict "the metric is already correct; §0.1 is tuning" is retracted. Part B §0.1's *effect* is confirmed on a controlled fixture; its *stated mechanism* (the kernel reads `imm` as Sigma) remains refuted by the momentum measurement above.
+2. The shipped default is unchanged so far (WP1 made orientation an explicit `imm_orientation` knob, default `precision`, and reordered coordinates for all three `imm_source` values). Every historical number in `docs/ladder-results.md` and `README.md` therefore comes from the failing orientation, except where a model's metric is near-isotropic or the permutation is the identity (8 Schools).
+3. Flipping the default still needs the real-model 5-seed evidence (matrix in progress: legacy unpermuted+precision, wp1 permuted+precision, wp1 permuted+covariance, plus the two low-rank arms) and the owner's decision per plan A10. Not established yet; do not flip on the fixture alone.
