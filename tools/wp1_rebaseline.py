@@ -117,6 +117,51 @@ def jnp_int(v):
     return jax.numpy.asarray(v, dtype=jax.numpy.int64)
 
 
+NL = chr(10)
+
+
+def row_key(row):
+    return (row["wp"], row["arm"], row["model"], row["seed"], row["rep"])
+
+
+def write_cell(row):
+    """A8 writer with a uniqueness guard on (wp, arm, model, seed, rep).
+
+    Chosen behaviour: RAISE. Every table in this report is a median across seeds, so one duplicated
+    cell shifts a median while looking completely normal. It happened for real on radon: the pre-patch
+    row that died in the to_array() bug and its successful refill of the same (seed, rep) both
+    survived, giving 11 rows where 10 belong. Silent overwrite would have hidden the collision, so
+    overwrite is opt-in via OVERWRITE=1 and prints what it replaced. VOID-stamped rows do not occupy
+    a key, so a failed cell can be replaced without deleting its record.
+    """
+    key = row_key(row)
+    kept, replaced = [], 0
+    if os.path.exists(OUT):
+        with open(OUT) as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                existing = json.loads(line)
+                occupied = (row_key(existing) == key
+                            and not str(existing.get("error") or "").startswith("VOID"))
+                if occupied and os.environ.get("OVERWRITE") == "1":
+                    replaced += 1
+                    continue
+                if occupied:
+                    raise RuntimeError(
+                        f"duplicate cell {key} already in {OUT}; refusing to double-count a seed "
+                        "(re-run with OVERWRITE=1 to replace the existing row)")
+                kept.append(line.rstrip())
+    with open(OUT, "w") as fh:
+        for line in kept:
+            fh.write(line + NL)
+        fh.write(json.dumps(row, default=str) + NL)
+    if replaced:
+        print(f"[row] OVERWRITE=1 replaced {replaced} row(s) for {key}", flush=True)
+    print(f"[row] {OUT} :: wp={row['wp']} arm={row['arm']} model={row['model']} "
+          f"seed={row['seed']} rep={row['rep']} wall={row['wall_s']} error={row['error']}", flush=True)
+
+
 def main():
     C.require_gpu_lock(f"WP1 re-baseline {ARM}/{MODEL}/{IMM}")
     C.banner(model=MODEL, wp="WP1", arm=f"{ARM}:{IMM}" + (f":{IMM_ORIENT}" if IMM_ORIENT else ""))
@@ -168,7 +213,7 @@ def main():
                 row["error"] = f"{type(exc).__name__}: {exc}"[:400]
                 C.set_peak_mem(row)
                 row["gpu_other_procs"] = C.gpu_other_procs()
-                C.write_row(OUT, row)
+                write_cell(row)
                 raise
 
             scored = bl.score(idata, wall, "gpu", MODEL, CHAINS, cold, draws=DRAWS, warmup=WARMUP)
@@ -197,7 +242,7 @@ def main():
             row["error"] = None
             C.set_peak_mem(row)                      # AFTER the cell: peak is per-process (A8)
             row["gpu_other_procs"] = C.gpu_other_procs()
-            C.write_row(OUT, row)
+            write_cell(row)
 
 
 if __name__ == "__main__":

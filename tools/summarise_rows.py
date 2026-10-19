@@ -13,6 +13,18 @@ import sys
 
 def main(path, want_cold=False, models=()):
     rows = [json.loads(l) for l in open(path) if l.strip()]
+    voided = [r for r in rows if str(r.get("error") or "").startswith("VOID")]
+    rows = [r for r in rows if not str(r.get("error") or "").startswith("VOID")]
+    if voided:
+        print(f"[audit] {len(voided)} VOID row(s) excluded: "
+              + ", ".join(f"{r['arm']}/{r['model']}/seed{r['seed']}/rep{r['rep']}" for r in voided))
+    seen = {}
+    for r in rows:
+        k = (r["wp"], r["arm"], r["model"], r["seed"], r["rep"])
+        seen[k] = seen.get(k, 0) + 1
+    dups = {k: v for k, v in seen.items() if v > 1}
+    print(f"[audit] duplicate (wp,arm,model,seed,rep) keys: {len(dups)}"
+          + ("" if not dups else " -> " + ", ".join(str(k) for k in dups)))
     if models:
         rows = [r for r in rows if r["model"] in models]
     groups = collections.defaultdict(list)

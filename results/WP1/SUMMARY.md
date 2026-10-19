@@ -106,11 +106,58 @@ init test must include a mixing statistic (R̂, ESS), never moments alone.
 
 ### 3c. R2 re-baseline matrix (GPU, 4 models × 32 chains × 1,250 draws × 2,000 warmup, seeds 43–47, REPEAT=2, warm rows decide)
 
-Arms: `legacy:mc` (= `ecd9ba1`, inverted + unpermuted) and `wp1:mc` (permutation fixed, default
-orientation), then `wp1:lbfgs_lowrank`, `wp1:fisher_lowrank`. Rows:
-`results/runs/WP1__rebaseline.jsonl`.
+Arms, labelled by the two factors so no label can hide a confound:
 
-<!--TABLE-->
+* `legacy:mc` = unpermuted + precision — what `ecd9ba1` ships.
+* `wp1:mc` = **permuted + precision** — the permutation fix alone, i.e. what this branch defaults to.
+* `wp1:mc:covariance` = permuted + covariance — Part B's combination.
+* `wp1:lbfgs_lowrank`, `wp1:fisher_lowrank` — permuted, default orientation.
+
+Rows: `results/runs/WP1__rebaseline.jsonl` (all arms) and `results/runs/WP1__covarm.jsonl`
+(covariance arm; kept separate because it was run as a detached job by the lead). Medians over
+5 seeds, **warm** rows; `R-hat med (max)` is the median and the worst seed. Cell id = `(arm, model,
+seed, rep)`; the two pre-patch radon rows are VOID-stamped and excluded (§7).
+
+| arm | model | n | wall s | eps | L_nom | steps | grads/ESS | ESS/s | R-hat med (max) | min tail ESS | divs/1k | warmup divs | E-BFMI |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `legacy:mc = unpermuted + precision (ecd9ba1)` | 8schools | 5 | 10.51 | 0.1852 | 42 | 21.3 | 58.23 | 2085 | 1.0017 (1.0018) | 20796 | 0.000 | 26 | 0.953 |
+| `legacy:mc = unpermuted + precision (ecd9ba1)` | gev | 5 | 20.11 | 0.0008583 | 54 | 27 | 73.44 | 403 | 1.0023 (1.0075) | 9058 | 0.225 | 16 | 0.990 |
+| `legacy:mc = unpermuted + precision (ecd9ba1)` | logit_1000x25 | 5 | 36.38 | 0.002036 | 129 | 64.7 | 151.7 | 417 | 1.0016 (1.0018) | 20161 | 0.000 | 41 | 0.943 |
+| `legacy:mc = unpermuted + precision (ecd9ba1)` | radon_noncentered | 5 | 39.64 | 0.002512 | 75 | 37.6 | 501.9 | 98 | 1.0069 (1.0078) | 4654 | 0.000 | 124 | 0.612 |
+| `wp1:mc = PERMUTED + precision (shipped default)` | 8schools | 5 | 10.13 | 0.1874 | 42 | 21.4 | 57.19 | 2166 | 1.0020 (1.0020) | 20393 | 0.000 | 26 | 0.913 |
+| `wp1:mc = PERMUTED + precision (shipped default)` | gev | 5 | 15.97 | 0.0009083 | 8 | 4.1 | 295.8 | 44 | 1.0465 (1.0688) | 1432 | 0.025 | 13 | 0.925 |
+| `wp1:mc = PERMUTED + precision (shipped default)` | logit_1000x25 | 5 | 35.86 | 0.002052 | 122 | 61 | 163.8 | 403 | 1.0021 (1.0025) | 19368 | 0.000 | 41 | 0.936 |
+| `wp1:mc = PERMUTED + precision (shipped default)` | radon_noncentered | 5 | 86.21 | 0.0006925 | 268 | 134 | 2279 | 28 | 1.0142 (1.0165) | 3335 | 0.000 | 197 | 0.629 |
+| `wp1:mc:covariance = permuted + covariance` | 8schools | 5 | 9.18 | 0.5244 | 22 | 11.5 | 35.45 | 2226 | 1.0014 (1.0017) | 19091 | 0.000 | 33 | 0.950 |
+| `wp1:mc:covariance = permuted + covariance` | gev | 5 | 16.74 | 0.8331 | 10 | 5.1 | 71.21 | 303 | 1.0074 (1.0161) | 6296 | 0.475 | 59 | 0.964 |
+| `wp1:mc:covariance = permuted + covariance` | logit_1000x25 | 5 | 16.4 | 0.6559 | 27 | 13.6 | 46.08 | 1048 | 1.0014 (1.0016) | 18750 | 0.000 | 32 | 0.986 |
+| `wp1:mc:covariance = permuted + covariance` | radon_noncentered | 5 | 26.23 | 0.9713 | 27 | 13.7 | 182.3 | 171 | 1.0066 (1.0092) | 5685 | 0.000 | 45 | 0.602 |
+| `wp1:lbfgs_lowrank (permuted)` | 8schools | 5 | 10.48 | 0.1852 | 43 | 21.5 | 57.41 | 2102 | 1.0017 (1.0023) | 20063 | 0.000 | 26 | 0.926 |
+| `wp1:lbfgs_lowrank (permuted)` | gev | 5 | 16.55 | 0.0009285 | 7 | 4 | 238.9 | 48 | 1.0400 (1.0575) | 1207 | 0.050 | 13 | 0.938 |
+| `wp1:lbfgs_lowrank (permuted)` | logit_1000x25 | 5 | 36.69 | 0.002042 | 128 | 64.1 | 161.1 | 404 | 1.0017 (1.0022) | 20006 | 0.000 | 31 | 0.935 |
+| `wp1:lbfgs_lowrank (permuted)` | radon_noncentered | 5 | 86.06 | 0.0006945 | 267 | 133.5 | 2354 | 25 | 1.0146 (1.0150) | 2863 | 0.000 | 204 | 0.612 |
+| `wp1:fisher_lowrank (permuted, 2 of 4 models)` | 8schools | 5 | 17.09 | 0.1534 | 178 | 89.3 | 221.1 | 1179 | 1.0016 (1.0025) | 17591 | 0.175 | 112 | 0.955 |
+| `wp1:fisher_lowrank (permuted, 2 of 4 models)` | gev | 5 | 44.09 | 0.0006724 | 116 | 58.2 | 362.3 | 108 | 1.0076 (1.0222) | 5603 | 0.900 | 195 | 1.053 |
+| `wp1:fisher_lowrank (permuted, 2 of 4 models)` | logit_1000x25 | 0 | NOT RUN | | | | | | | | | | |
+| `wp1:fisher_lowrank (permuted, 2 of 4 models)` | radon_noncentered | 0 | NOT RUN | | | | | | | | | | |
+
+Head-to-head on the plan's own acceptance metric (gradients per worst-variable bulk ESS, lower is
+better):
+
+| model | `legacy:mc` | `wp1:mc` (perm-only) | `wp1:mc:covariance` (perm+cov) |
+|---|---|---|---|
+| 8 Schools | 58.23 | 57.19 **better** | 35.45 **better** |
+| GEV | 73.44 | 295.8 **WORSE (4.0x)** | 71.21 better |
+| logistic | 151.7 | 163.8 **WORSE (+8%)** | 46.08 **better (3.3x)** |
+| radon NC | 501.9 | 2279 **WORSE (4.5x)** | 182.3 **better (2.8x)** |
+
+**The permutation on its own is not shippable**: it is better on 1 of 4 models and it breaks R-hat on
+the two models whose coordinate order actually differs (GEV median 1.0465 / worst seed 1.0688; radon
+1.0142 / 1.0165) where the shipped code passes at 1.0023 / 1.0069. Permutation plus covariance
+orientation is better on 4 of 4 and is the combination the acceptance criterion was written against.
+Mechanism: with `precision`, the wrongly-ordered metric was accidentally partially compensating the
+orientation error; correcting one factor without the other removes the compensation. That is exactly
+what fixture A of `results/WP1/2x2.md` predicts, and the GEV cells below show it on a ladder model.
 
 ### 3d. Spot checks already in hand
 
@@ -135,42 +182,37 @@ orientations (§3a reading 3). Recovery detail and its `2**b − 2` trap: `60c1b
 
 ## 5. Gate verdicts
 
-| gate | verdict | evidence |
+| gate | verdict | evidence (cell ids are arm/model/seed/rep) |
 |---|---|---|
-| **G-ORDER** (WP1 tests permanent; any new metric code passes the non-sorted-name model) | **PASS** | 17/17 here, 12 fail on `ecd9ba1`; all three `imm_source` values covered |
-| Suite green | **PASS** | 55 passed in 123 s, CPU-forced, at `4460dc7` |
-| Gradients/ESS not worse on ≥ 3 of 4 models | **PENDING 3c** (`legacy:mc` vs `wp1:mc`) — NOT ESTABLISHED until those rows exist |
-| Divergence rate not higher at equal C (G3 input) | **PENDING 3c** |
-| G-A..D on the four ladder models | **PENDING 3c** |
-| Default behaviour change | permutation only; orientation default untouched, so no G3 obligation beyond the above |
-| Low-rank arms | behaviour **changed** by design (they now receive `inv(Σ_lr)` under the default, matching `mc`); their re-measurement is in 3c and is what WP9 needs to retire the 1.22×/1.96×/0.19× claims |
-| Not run in this WP | nothing else; R1/G-R1 is WP3's harness and was explicitly out of scope here |
+| **G-ORDER** — WP1 tests permanent; any new metric code passes the non-sorted-name model | **PASS** | 17/17 on `wp/wp1`, 12 fail on `ecd9ba1`; all three `imm_source` values covered |
+| Suite green | **PASS** | 55 passed in 123 s, CPU-forced |
+| **Acceptance: gradients/ESS not worse on >= 3 of 4 models** (`wp1:mc` vs `legacy:mc`) | **FAIL — 1 of 4** | better only on 8schools (57.19 vs 58.23); GEV 295.8 vs 73.44, logistic 163.8 vs 151.7, radon 2279 vs 501.9. Cells `(wp1:mc, gev, *, 1)`, `(wp1:mc, radon_noncentered, *, 1)` |
+| Same criterion for the **permuted + covariance** arm | **PASS — 4 of 4** | 35.45 / 71.21 / 46.08 / 182.3 vs 58.23 / 73.44 / 151.7 / 501.9; `WP1__covarm.jsonl`, all 20 warm cells |
+| **G-A max R-hat <= 1.01** | `legacy:mc` PASS; `wp1:mc` **FAIL** on GEV (median 1.0465, worst 1.0688) and radon (1.0142/1.0165); `wp1:mc:covariance` PASS on medians (1.0014-1.0074), GEV worst seed 1.0161 | `WP1__rebaseline.jsonl`, `WP1__covarm.jsonl` |
+| **G-B tail ESS >= 400** | PASS in every arm that ran (min 1,207, GEV `wp1:mc`) | same |
+| **E-BFMI >= 0.3** | PASS (0.60-0.99; radon is the low one in all arms, as before) | same |
+| **Divergence rate not higher at equal C** | `wp1:mc` PASS (GEV 0.225 -> 0.025 per 1k, others 0). `wp1:mc:covariance` **FAIL on GEV**: 0.225 -> 0.475 per 1k, warmup divergences 16 -> 59 | `WP1__covarm.jsonl` gev cells; LEDGER (main checkout) entry at `c2993cf` |
+| G3 for a default flip (>= 5 seeds, means within 1 sigma, no divergence increase) | **NOT MET** | 5 seeds exist for both arms; the divergence clause fails on GEV; per-variable mean-shift vs the 0.011/0.029 sd noise floors has not been computed |
+| `wp1:fisher_lowrank` | **NOT RUN (2 of 4 models)** | 8schools + gev complete (20 rows); logit and radon terminated by the lead: "deprioritised; feeds T6/WP9 retraction list only" |
+| R1 / G-R1 | out of scope for WP1 (WP3's harness) |
 
-### Recommendation on the orientation default (for the owner, at the end of the run — not applied here)
+### Recommendation on the orientation default (for the owner at the end of the run; not applied here)
 
-The measured case for flipping `imm_orientation` to `"covariance"` is `results/WP1/2x2.md` fixture A:
-with ordering correct in both cells, `precision` reads max R̂ 12.10–13.08 with min bulk ESS 32–38 and
-worst-variable mean bias 0.19–0.30 posterior sd, while `covariance` reads R̂ 1.0020–1.0022 with ESS
-30,121–33,495 — a ~1000× gap in worst-variable ESS per gradient, at 32 chains / 500 warmup / 1,000
-draws / 3 seeds. It is not a matter of taste: `precision` misses the project's own G-A bar. It also
-matches the mechanism (`frequency = 1/var`) and it reaches the metric's second consumer, the ChEES
-whitening diagonal. Against or unfinished: (1) **divergences move the wrong way** — 8 Schools warmup
-divergences are 26 per 32 chains for `legacy:mc` and for `wp1:mc` (precision) but 40–56 for the
-covariance arm in `WP1__rebaseline-pre-arbiter.jsonl` (0.8 → 1.25 per chain, consistent with the
-review's §2c note), and G3 is written on divergence rate at equal C; (2) **real-model confirmation is
-in flight** — the 4-models × 5-seeds covariance rows (`wp1:mc:covariance`) and all four GEV cells
-(`results/runs/WP1__gev_2x2.jsonl`) are not in this SUMMARY yet, and GEV already shows the interaction
-in the uncomfortable direction: fixing the ordering while keeping `precision` *degrades* GEV from
-R̂ 1.0075 / 403 ESS-per-s to 1.0688 / 44; (3) G3 also needs per-variable posterior-mean shifts against
-the same-config different-seed noise floor (0.011 sd on 8 Schools, 0.029 sd on radon NC, from the
-warmup-stop-rule work) rather than medians only, and a 5-seed divergence-rate comparison at equal C.
-Flipping also changes the two low-rank arms, which have never been measured under a consistent
-orientation. So: the default stays `precision` in this WP, the recommendation is to flip it, and the
-missing G3 evidence is named above.
-
-
-Full 2×2 with all twelve rows per fixture, cell ids and the fixture definitions:
-`results/WP1/2x2.md`.
+Merge the permutation **and** the explicit `imm_orientation` knob, keep the default at `precision`, and
+do **not** ship the permutation on its own: as measured it is worse on 3 of 4 ladder models and it
+breaks the R-hat bar on GEV and radon, which the shipped code passes. The combination that should
+eventually become the default is permuted + covariance: gradients per worst-variable ESS improve on 4
+of 4 (35.45/71.21/46.08/182.3 vs 58.23/73.44/151.7/501.9), worst-variable ESS/s on 3 of 4, R-hat within
+the bar on every median, and it reproduces the review's §2c directions (8 Schools eps 0.52 / L 22,
+logistic eps 0.66 / L 26). The one thing blocking the flip is GEV: the corrected arm there loses ESS/s
+(403 -> 303) and **raises divergences from 0.225 to 0.475 per 1k** (warmup 16 -> 59), which trips G3's
+no-divergence-increase clause, and GEV is also the model where the correctly-ordered metric scored
+*worse* than the swapped one (see §6.7). Missing G3 evidence for a flip, concretely: (a) a GEV
+divergence diagnosis at equal C over >= 5 seeds — which coordinate trips the divergence, and whether
+`xi_interval__`'s boundary is being hit because the covariance metric gives it a longer trajectory;
+(b) per-variable posterior-mean shifts against the same-config different-seed noise floor (0.011 sd on
+8 Schools, 0.029 sd on radon NC) rather than medians only; (c) confirmation on the owner's own model.
+Until (a) exists, the default stays `precision` and `imm_orientation="covariance"` is opt-in.
 
 ## 6. Surprises and contradictions with Part B
 
@@ -208,6 +250,17 @@ Full 2×2 with all twelve rows per fixture, cell ids and the fixture definitions
    reported a fast wall time, zero divergences and no exception. The harness now asserts identity with
    `bl.REAL_SAMPLE_PF` before every call and records `entry_point` in `kwargs`.
 
+7. **GEV, the real model where the orders differ, confirms the interaction and adds a counter-example
+   (`results/WP1/2x2.md`, LEDGER `c2993cf`).** All four cells at 32 chains / 1,250 draws / 2,000 warmup /
+   seeds 43-45: permuted+precision (today's default) R-hat 1.0313-1.0518 with min bulk ESS 581-839;
+   unpermuted+precision (shipped `ecd9ba1`) 1.0048-1.0142 with 2,361-5,363; permuted+covariance
+   1.0017-1.0055 with 5,825-16,627; and unpermuted+covariance 1.0011-1.0017 with 15,202-25,142 — the
+   *best* cell on GEV is the one with the wrong order. So Part B's §0.1 is CONFIRMED as a conditioning
+   defect (fixture A's deciding cell, and the 4-of-4 win on the real-model covariance arm) and the
+   ordering fix is confirmed real on fixture A, but on GEV the two factors are not independently
+   beneficial, and GEV's preference for the swapped metric is NOT ESTABLISHED. That unresolved point,
+   not the ε scale, is what should keep the default at `precision` for now.
+
 ## 7. Library-first exceptions
 
 - The permutation: uses `ravel_pytree`, no hand-written index arithmetic.
@@ -216,7 +269,16 @@ Full 2×2 with all twelve rows per fixture, cell ids and the fixture definitions
   closure.
 - No hand-written R̂/ESS/EBFMI/MCSE: `bench_ladder.score` (arviz 0.23, comparable with the committed
   ladder grid) and `arviz_stats.mcse`.
-- **Contract gap for the lead:** `pf_grads_total` is `null` in every row. BlackJAX does not
+- **Duplicate-cell guard added** (`write_cell` in `tools/wp1_rebaseline.py`): a row whose
+  `(wp, arm, model, seed, rep)` key is already live makes the harness **raise** rather than append;
+  `OVERWRITE=1` replaces and prints what it removed; `VOID`-stamped rows do not occupy a key, so a
+  failed cell can be refilled without erasing its record. Chosen over silent overwrite because every
+  table here is a median across seeds — a duplicated cell shifts a median and looks completely normal.
+  It caught a real case: radon `legacy:mc` and `wp1:mc` each had 11 rows (the pre-patch `to_array()`
+  failure plus its refill); both pre-patch rows are now VOID-stamped with the reason and the
+  superseding `git_sha`, and `tools/summarise_rows.py` prints an audit line (`VOID excluded`,
+  `duplicate keys: 0`) before every table. Final audit: 142 rows, 2 VOID, 140 live, 0 duplicate keys.
+- **Contract gap:** `pf_grads_total` is `null` in every row. BlackJAX does not
   expose a Pathfinder fit's L-BFGS gradient count; getting it means instrumenting
   `bj.optimizers.lbfgs`, outside WP1's files. A8 lists the field, so it should be specified or dropped.
 - Ownership: the A8 attrs and `keep_untransformed` are in `sample()` and the public entrypoint — not
