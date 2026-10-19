@@ -148,7 +148,7 @@ def run_cfg(model_name, C, D, W, pf_draws, seed, out_path):
     mark("eps0", stage_s=round(time.perf_counter() - t, 3), eps0=float(eps0))
 
     t = time.perf_counter()
-    (chees_states, chees_parameters), chees_info = sampler._run_chees(
+    chees_states, chees_parameters, chees_info = sampler._run_chees(
         pf_samples, inverse_mass_matrix, eps0,
         chains=C, draws=W, seed=seed, progressbar=False)
     mark("warmup_scan", stage_s=round(time.perf_counter() - t, 3))
