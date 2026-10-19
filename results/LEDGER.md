@@ -428,3 +428,23 @@ Radon noncentered (d=175), 5 seeds, arms differ **only** in `imm_order`, orienta
 2. **"No demonstrated accuracy benefit" — CONFIRMED, and stronger than the review stated.** No coordinate is anomalous in either arm: the worst offenders are `beta_raw`/`alpha_raw` in both (0.020/0.019 permuted, 0.015/0.013 unpermuted), and the error ranges overlap. The permutation's effect is on **conditioning and throughput**, not on posterior accuracy, on this model.
 3. **What that means for the claim being defended.** The honest description of the P0 is: the metric array is interpreted in the kernel's sorted-key order, so leaving it in tuple order is a *representation error* whose consequences depend on the model's scale heterogeneity — catastrophic on the controlled fixture where variances span 1e4 (worst-variable ESS 30,967 → 3,176, `zeta` alone), a 4.7× throughput loss on radon, and an accidental speed-up on GEV. It is not an accuracy bug on any model measured, and the report should stop implying that it is.
 4. **Decision taken:** the permutation stays unconditional. It is the only setting where the array means what the kernel thinks it means; GEV's contrary result is logged as an unresolved oddity with a mechanism candidate (near-equal scales on the swapped pair plus a boundary-constrained `xi_interval__`), not as a reason to keep mis-applying the metric. The statistical reviewer is being given this data to confirm or maintain its hold before the merge.
+
+## 2026-10-20 11:00 · GEV's "wrong order is better" now has a mechanism, and a probe of mine that said the permutation was inverted is retracted
+
+Chasing the statistical reviewer's objection, I first ran a probe comparing the produced metric's diagonal against the **reference posterior's** variances and concluded the two arms were inverted relative to their labels. **That conclusion was wrong and is retracted.** The reference posterior is not a proxy for Pathfinder's covariance — the two have different orderings of magnitude, so the comparison was meaningless. The direct check is unambiguous (`/tmp/gev_dir2.py`, GEV, CPU, orientation pinned to covariance):
+
+```
+value_vars (tuple order): ['μ', 'σ_log__', 'ξ_interval__']   sorted (kernel): ['μ', 'ξ_interval__', 'σ_log__']
+last_covariance diag (tuple order): [0.001112, 0.009284, 0.001844]
+imm_order = pathfinder -> imm == covariance exactly            (no permutation, as designed)
+imm_order = kernel     -> diag [0.001112, 0.001844, 0.009284]  = cov permuted by (0, 2, 1)
+```
+
+Kernel slot 2 is `ξ_interval__` and slot 3 is `σ_log__`, so the permuted arm puts ξ's 0.001844 and σ's 0.009284 in exactly the right slots. **The permutation is applied correctly; the labels mean what they say.**
+
+**The mechanism behind GEV's anomaly.** True posterior variances in kernel order are μ 0.000774, **ξ 0.092963**, σ_log__ 0.010300. Pathfinder's covariance gives ξ **0.001844** — under-dispersed by about **50×** — while σ_log__ at 0.009284 is nearly right. Swapping them hands ξ the larger value (0.009284, still ~10× too small) and gives σ_log__ a 5.6× over-inflated one. So the *mis-ordering partially repairs a Pathfinder under-dispersion error on the coordinate that matters most*, which is why it measures 3.8× better ESS/s and better R̂ on GEV. Partially supported (the 50× vs 10× numbers are direct), not established as the whole story.
+
+**Consequences.**
+1. GEV is no longer a counter-example to the permutation. It is a **second piece of evidence for WP4's problem**: when Pathfinder's metric is badly under-dispersed on one coordinate, an error that fattens that coordinate can beat the correct metric. That is the same failure mode as the orientation story, one level down.
+2. The radon order A/B stands as measured (permuted 4.7× better throughput, accuracy neutral).
+3. My reporting rule for the rest of the run: compare a metric against the *estimator that produced it*, never against the posterior, or the posterior's own shape will masquerade as a code defect.
