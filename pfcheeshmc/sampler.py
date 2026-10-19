@@ -42,7 +42,8 @@ def _frozen_nominal_L(integration_steps_fn, warmup_steps_used):
     """ceil(T/eps) at the frozen point, recovered from the kernel's own step-count function.
 
     `integration_steps_fn(arg)` returns ceil(halton(arg) * T/eps), and halton(arg) < 1 always, so a
-    direct call underestimates. arg = 2**b - 1 gives jitter = 1 - 2**-b, which is exact enough to
+    direct call underestimates. arg = 2**b - 2 (all-ones index; 2**b - 1 would give 0 because
+    (arg+1) = 2**b is divisible by every 2**k in the sequence) gives jitter = 1 - 2**-b, exact enough
     identify ceil(T/eps) for any L far below 2**b. Bit width is guessed from the warmup length and
     checked over b-1..b+1, taking the maximum, so a change to utils' `max_sampling_steps` default
     cannot make the reported number too small.
@@ -52,7 +53,7 @@ def _frozen_nominal_L(integration_steps_fn, warmup_steps_used):
     for bits in (base.bit_length() - 1, base.bit_length(), base.bit_length() + 1):
         if bits < 1:
             continue
-        arg = jnp.asarray(2 ** bits - 1, dtype=jnp.int64)
+        arg = jnp.asarray(2 ** bits - 2, dtype=jnp.int64)   # all-ones index -> jitter 1-2^-bits
         try:
             best = max(best, float(integration_steps_fn(arg)))
         except Exception:
