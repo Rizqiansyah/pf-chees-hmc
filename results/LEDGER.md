@@ -390,3 +390,27 @@ Two durable rules: (a) for untransformed RVs the constrained and unconstrained a
 **Not accepted as a blocker, but the review is probably right on efficiency:** on GEV with orientation held fixed, unpermuted beats permuted 2–4× in gradients/ESS (21–27 vs 56–104) while both converge. My own GEV 2×2 shows the same thing (1,310 vs 343 ESS/s) and I logged it unresolved. GEV's permutation is a single swap of `sigma_log__`/`xi_interval__`, so a near-symmetric pair can make the misplacement harmless there. That does not generalise: radon's unpermuted order puts the five scalar metrics onto raw-effect coordinates.
 
 **The measurement that settles it, launched:** `tools/order_ab.py` — radon NC and logistic, 5 seeds, both orders, orientation pinned to covariance, scored per parameter against the CPU NUTS reference in unconstrained space (worst mean error in sd and in reference sigmas, per-variable ESS, gradients/ESS). If permuted is more accurate on radon, the permutation is a justified correctness fix; if not, it becomes conditional or is dropped.
+
+## 2026-10-20 10:35 · T5a and T3 measured — XLA command buffers lose ~11% here, and CPU NUTS at 32 chains cannot resolve the run's bias bar at any draw count tested
+
+**T5a (command buffers, warm rows, one process per cell, `T5a__cmdbuf.jsonl`; 2 rows from the superseded first version are excluded).**
+
+| model | off (warm) | on (warm) | effect | identical gradient count |
+|---|---|---|---|---|
+| 8 Schools | 9.12 s | 10.29 s | **−11.4%** (slower) | yes (444,320 both arms) |
+| logistic | 16.34 s | 18.33 s | **−10.9%** (slower) | no (554,752 vs 547,936; ε 0.6533 vs 0.6551) |
+
+The plan's §2d reported 23–24% *gain* on a bare kernel with no adaptation. Through the production path it is a consistent ~11% **loss** on both models, and on logistic the arms are not even on identical trajectories (different gradient totals), so the comparison there carries a seed/step-size confound on top of the sign. Consequence: **do not ship the flag**, and treat any bare-kernel speedup as not transferring to this pipeline — the loop machinery the flag helps is a minority of a production step.
+
+**T3 (CPU NUTS versus the R1 bar, 32 chains, `T3__cpu_nuts.jsonl`, scored in constrained space against the reference's constrained arrays).**
+
+| model | draws/chain | wall | core-seconds | b²_max | floor | resolvable |
+|---|---|---|---|---|---|---|
+| 8 Schools | 10 / 100 / 400 | 7.0 / 7.2 / 8.3 s | 225 / 231 / 265 | 0.0288 / 0.0015 / 0.0010 | 0.339 / 0.121 / 0.074 | **no, no, no** |
+| GEV | 10 / 100 / 400 | 9.3 / 9.8 / 11.1 s | 296 / 313 / 357 | 0.0294 / 0.0024 / 0.0009 | 0.220 / 0.080 / 0.042 | no |
+| logistic | 10 / 100 / 400 | 23.7 / 25.7 / 33.8 s | 758 / 821 / 1082 | 0.0125 / 0.0037 / 0.0011 | 0.737 / 0.254 / 0.134 | no |
+| radon NC | 10 / 100 / 400 | 17.4 / 19.0 / 23.8 s | 557 / 609 / 762 | 0.0514 / 0.0077 / 0.0012 | 1.177 / 0.507 / 0.238 | no |
+
+1. **Not one cell is resolvable.** The floor is `max per-parameter MCSE (in sd units) × 2·ln(2d)`, and at 32 chains the MCSE alone is 0.01–0.2 sd, so the 0.005 resolvability threshold is unreachable: CPU NUTS at 32 cores cannot demonstrate a 1% bias at 400 draws per chain, though its b² is already below 0.01. It can only be *believed*, not measured, at that shape.
+2. **Comparability caveat, stated rather than buried:** T3 scores the constrained space (PyMC 5.28 puts nothing unconstrained in the InferenceData — verified), while G-R1/T1 score the unconstrained space. The b² values are therefore not directly comparable arm-to-arm, and no CPU-versus-GPU number in this run should be read as a same-space comparison. A same-space comparison needs the transform applied to the CPU draws, which is not built.
+3. Cost side is directly comparable and is the useful part: reaching b² < 0.01 on the big models costs **760–1,082 core-seconds** of CPU for 400 draws per chain, against the GPU R1 cells' ~40–50 s cold on one card.
