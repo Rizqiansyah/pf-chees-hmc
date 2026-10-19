@@ -32,6 +32,7 @@ import numpy as np
 
 import _common as C
 import bench_ladder as bl
+import pfcheeshmc
 import pfcheeshmc.sampler as sm
 from pfcheeshmc import sample_pf_chees_hmc
 
@@ -113,6 +114,13 @@ def main():
           f"D={DRAWS} W={WARMUP} seeds={SEEDS} repeat={REPEAT} out={OUT}", flush=True)
 
     model = bl.model_specs()[MODEL]()
+    # bench_ladder.load_notebook_model replaces pfcheeshmc.sample_pf_chees_hmc with a _tiny_idata
+    # stub while parsing the notebook. A stubbed cell would time a fake InferenceData: fast wall,
+    # zero divergences, no diagnostics, no exception. Pin the identity and record it in the row.
+    assert pfcheeshmc.sample_pf_chees_hmc is bl.REAL_SAMPLE_PF, (
+        "entry point was replaced by the notebook stub: "
+        f"{pfcheeshmc.sample_pf_chees_hmc.__name__}")
+    entry_point = pfcheeshmc.sample_pf_chees_hmc.__name__
     ip = model.initial_point()
     d = int(sum(np.size(v) for v in ip.values()))
 
@@ -123,12 +131,13 @@ def main():
                             draws_per_chain=DRAWS, warmup=WARMUP, seed=seed, rep=rep, cold=cold,
                             kwargs={"pathfinder_kwargs": {"imm_source": IMM},
                                     "chees_kwargs": {"draws": WARMUP},
-                                    "progressbar": False},
+                                    "progressbar": False, "entry_point": entry_point},
                             cpu_contended=False)
             TIMES.clear()
             CAPTURED.clear()
             t0 = time.perf_counter()
             try:
+                assert pfcheeshmc.sample_pf_chees_hmc is bl.REAL_SAMPLE_PF
                 idata = sample_pf_chees_hmc(
                     model, draws=DRAWS, chains=CHAINS, random_seed=seed, progressbar=False,
                     pathfinder_kwargs={"imm_source": IMM},

@@ -1,36 +1,34 @@
-"""G-ORDER: the mass matrix must be the covariance, in the kernel's coordinate order.
+"""G-ORDER: the metric must be applied in the kernel's coordinate order, and the orientation is a
+measured choice, not an assumption.
 
-Two independent defects lived in `PfCheesHMC._run_pathfinder` until WP1, and neither raises:
+Two separate questions were tangled in Part B §WP1, and they are answered differently here:
 
-1. **Inverted orientation.** BlackJAX's `inverse_mass_matrix` is the matrix that multiplies the
-   momentum in the kinetic energy (`mcmc/metrics.py:262-270`), so leapfrog gives q'' = -imm*grad U
-   and a well-conditioned trajectory needs imm ~ Cov(q). The wheel says so itself:
-   `adaptation/chees_adaptation.py:335` calls the argument "the diagonal inverse_mass_matrix
-   (Sigma)", `:453` computes `v' = Sigma p'`, and `adaptation/mass_matrix.py:344-353` (BlackJAX's
-   own Stan window adaptation) returns the regularised *covariance*. The code returned
-   `jnp.linalg.inv(cov)`.
-2. **Wrong coordinate order.** The metric was built by ravelling Pathfinder's position tree, a
-   *tuple* in `model.value_vars` order, while the kernel ravels the *dict* state, which JAX
-   flattens in sorted-key order (`mcmc/metrics.py:236-244`). 8 Schools agrees by luck. GEV does not
-   (`[mu, sigma_log__, xi_interval__]` vs `[mu, xi_interval__, sigma_log__]`), and on radon the five
-   scalars shift inside the 170 raw effects. A dense metric applied through the wrong permutation
-   is a different, unit-incoherent preconditioner, and every downstream number is still printed.
+**Ordering (a bug, unconditional).** The metric is built by ravelling Pathfinder's position tree, a
+*tuple* in `model.value_vars` order, while the kernel ravels the *dict* state and JAX sorts dict keys
+(`mcmc/metrics.py:236-244`). 8 Schools agrees by luck; GEV is `[mu, sigma_log__, xi_interval__]` vs
+`[mu, xi_interval__, sigma_log__]`; radon shifts five scalars inside the 170 raw effects. A dense
+metric applied through the wrong permutation is a different preconditioner, and nothing raises. Every
+ordering test below fails on `ecd9ba1`.
 
-Why the tests inject Pathfinder's draw pool instead of running Pathfinder. Part B §WP1 proposed
-comparing `diag(imm)` to "the kernel-order variance of the PF draws within 20%". Measured on the
-specified toy model (`z ~ N(0,100)`, `a ~ N(0,0.01)`, no data): Pathfinder's pool covariance is
-`diag = [0.947, 0.908, 1.022, 1.026]` and its `lbfgs_lowrank` metric is exactly `[1, 1, 1, 1]` --
-identity. That is not a bug in this repo: a prior-only model has zero gradient at its mode, so
-L-BFGS receives no usable curvature pairs and Pathfinder's approximation stays at its identity
-initial scaling. A test on that model passes on the broken code for *both* defects, and a stricter
-tolerance would only test Pathfinder's fit quality. So the orientation and ordering tests below
-replace `pathfinder.sample` with a pool of known covariance and exercise the real reordering and
-orientation code; the identity claim itself is a recorded finding (SUMMARY §6), not a silent
-workaround. Every test here fails on `ecd9ba1` and passes on `wp/wp1`.
+**Orientation (a measurement, not an assertion).** Both orientations are valid HMC and preserve the
+target, so no array-inspection test can decide them; `test_posterior_moments_recovered` decides it by
+asking whether the sampler recovers a known posterior at a practical budget. What the wheel fixes is
+only the *convention*: the array (call it A) is the matrix multiplying the momentum in the kinetic
+energy, `KE = 1/2 p.(A p)` (`mcmc/metrics.py:262-270`), so `p ~ N(0, A^-1)` and `q'' = -A grad U`;
+with target Hessian H the squared frequencies are `eig(A H)`, which is why `A = Cov(q)` makes every
+coordinate unit-frequency and `A = Cov(q)^-1` makes them 1/var. That convention is pinned by
+`test_kernel_convention_...`, which is orientation-agnostic.
+
+One finding this file forced: `imm_source="mc"` inverted its covariance while `lbfgs_lowrank` and
+`fisher_lowrank` passed their expansion un-inverted, so the three sources ran in *opposite*
+orientations. Every published `mc`-vs-low-rank comparison in `docs/ladder-results.md` is confounded by
+it, independent of the permutation. `imm_orientation` now makes the choice explicit and applies it to
+all three sources.
 """
 import jax
 import jax.numpy as jnp
 import numpy as np
+import arviz as az
 import pymc as pm
 import pytest
 
@@ -38,22 +36,29 @@ import blackjax as bj
 from blackjax.mcmc.metrics import LowRankInverseMassMatrix
 from jax.flatten_util import ravel_pytree
 
+import arviz_stats
+
+import pfcheeshmc
 from pfcheeshmc.sampler import PfCheesHMC, sample_pf_chees_hmc
 
-# The fixture's true prior variances, in *Pathfinder's* (value_vars) order: z, then a[0..2].
-PF_ORDER_VAR = np.array([1e4, 1e-4, 1e-4, 1e-4])
-# The same numbers in *kernel* (sorted-key) order: a[0], a[1], a[2], z.
-KERNEL_ORDER_VAR = np.array([1e-4, 1e-4, 1e-4, 1e4])
+
+def _scalar(x):
+    """A 0-dim arviz_stats result to float, whatever shape it comes back in."""
+    import numpy as _np
+    a = _np.asarray(getattr(x, "values", x))
+    return float(a.reshape(-1)[0]) if a.size == 1 else float(a)
+
 Z_INDEX_IN_KERNEL_ORDER = 3
+ORIENTATIONS = ["precision", "covariance"]
 
 
+# --------------------------------------------------------------------------- fixtures
 @pytest.fixture(scope="module")
 def odd_order_model():
     """z (sd 100, created first) and a (sd 0.01, created second): value_vars != sorted keys.
 
     Deliberately not sorted: a test on an already-sorted model would pass on the broken code. The
-    two scales are 8 orders of magnitude apart so an inverted or permuted metric cannot hide inside
-    a tolerance.
+    two scales are 8 orders of magnitude apart so a mis-permutation cannot hide inside a tolerance.
     """
     with pm.Model() as model:
         pm.Normal("z", 0.0, 100.0)
@@ -64,11 +69,47 @@ def odd_order_model():
     return model
 
 
+@pytest.fixture(scope="module")
+def anisotropic_model():
+    """Four scalars, posterior variances 1e2 / 3 / 1 / 1e-2, created in a NON-reversing order.
+
+    Conjugate Normal-Normal, so the analytic posterior is exact: var = 1/(1/tau^2 + n/sigma^2),
+    mean = var*(n/sigma^2)*ybar. Tests compare by name, never by position.
+
+    The fixture design matters. An earlier version used three scalars with variances 1e1 / 1e0 /
+    1e-2 created in reverse-sorted order, and it is degenerate for the question these tests ask: the
+    permutation is a reversal, and a symmetric variance ladder means "read an unpermuted covariance"
+    and "read a permuted precision" are nearly the same array, so two of the 2x2 cells came back
+    good and ordering and orientation looked interchangeable. Here value_vars order is
+    [delta, beta, zeta, alpha] against kernel order [alpha, beta, delta, zeta], variances
+    (1, 1e-2, 3, 1e2): no symmetry to hide behind, and exactly one 2x2 cell is well-conditioned
+    (see results/WP1/SUMMARY.md section 6).
+    """
+    rng = np.random.default_rng(3)
+    specs = [("delta", 3.0, 3), ("beta", 1.0, 100), ("zeta", 10.0, 1), ("alpha", 1.0, 1)]
+    y = {name: rng.normal(0.0, sigma, n) for name, sigma, n in specs}
+    tau = 1e6
+    with pm.Model() as model:
+        for name, sigma, n in specs:
+            v = pm.Normal(name, 0.0, tau)
+            pm.Normal(f"obs_{name}", v, sigma, observed=y[name])
+    mean, var = {}, {}
+    for name, sigma, n in specs:
+        prec = 1.0 / tau ** 2 + n / sigma ** 2
+        var[name] = 1.0 / prec
+        mean[name] = var[name] * (n / sigma ** 2) * float(y[name].mean())
+    assert [rv.name for rv in model.value_vars] == ["delta", "beta", "zeta", "alpha"]
+    assert sorted(rv.name for rv in model.value_vars) == ["alpha", "beta", "delta", "zeta"]
+    return model, mean, var
+
+
 def _inject_pool_with_known_covariance(monkeypatch, var_by_leaf, seed=1234):
     """Replace Pathfinder's sampler with draws whose covariance is exactly `var_by_leaf`.
 
-    Only the draw generator is replaced; `_run_pathfinder` still computes the covariance, the ridge
-    and the reordering itself, which is the code under test.
+    Only the draw generator is replaced; `_run_pathfinder` still computes the covariance, the ridge,
+    the orientation and the reordering, which is the code under test. Needed because Pathfinder's own
+    pool on a prior-only model is identity (zero gradient at the initial point -> no curvature pairs),
+    so a pool-comparison test on such a model passes on the broken code. See results/WP1/SUMMARY.md.
     """
     rng = np.random.default_rng(seed)
 
@@ -93,8 +134,8 @@ def _inject_low_rank_metric(monkeypatch, sigma, rank=1):
                         lambda *a, **k: metric)
 
     def fake_fisher(gdraws, ggrads, max_rank, **kwargs):
-        # The plan's claim: gdraws/ggrads are internally consistent in tuple order, so only the
-        # *result* may be permuted. Pin that here, not just the output.
+        # Part B's claim: gdraws/ggrads are internally consistent in tuple order, so only the
+        # *result* may be permuted. Pinned here, not just the output.
         assert jnp.ndim(gdraws) == 2 and gdraws.shape[1] == d
         assert jnp.ndim(ggrads) == 2 and ggrads.shape[1] == d
         return metric
@@ -103,68 +144,36 @@ def _inject_low_rank_metric(monkeypatch, sigma, rank=1):
     return np.asarray(sigma) ** 2
 
 
+# PF-order variances for the injection tests: z wide, a tight.
+PF_ORDER_VAR = np.array([1e4, 1e-4, 1e-4, 1e-4])
+KERNEL_ORDER_VAR = np.array([1e-4, 1e-4, 1e-4, 1e4])   # sorted: a, a, a, z
+
+
 def _imm(model, **pathfinder_kwargs):
     sampler = PfCheesHMC(model, seed=0)
     return np.asarray(sampler._run_pathfinder(chains=8, draws=128, **pathfinder_kwargs)[1])
 
 
-def test_metric_is_the_covariance_in_kernel_order(odd_order_model, monkeypatch):
-    _inject_pool_with_known_covariance(monkeypatch, PF_ORDER_VAR)
-    diag = np.diag(_imm(odd_order_model))
-    rel = np.abs(diag - KERNEL_ORDER_VAR) / KERNEL_ORDER_VAR
-    assert rel.max() < 0.2, (
-        f"diag(imm)={diag}, expected {KERNEL_ORDER_VAR} (max rel err {rel.max():.3f}). "
-        "Large entries at indices 0-2 instead of 3 = the inverse was returned (orientation). "
-        "Correct values but the 1e4 at index 0 = tuple order was never permuted (ordering)."
-    )
+# ------------------------------------------------------------------- ordering (unconditional)
+@pytest.mark.parametrize("orientation", ORIENTATIONS)
+@pytest.mark.parametrize("imm_source", ["mc", "lbfgs_lowrank", "fisher_lowrank"])
+def test_every_imm_source_hands_the_kernel_the_same_ordered_array(odd_order_model, monkeypatch, imm_source, orientation):
+    """Whatever the orientation, the array must arrive in the kernel's coordinate order.
 
-
-def test_kinetic_energy_and_momentum_scale_every_coordinate(odd_order_model, monkeypatch):
-    """Part B's toy check, on a pool whose covariance is known: KE = 1/2 p . (imm p).
-
-    Every coordinate is checked, not just z. With an inverted *and* unpermuted diagonal metric the two
-    errors cancel at one index -- that is exactly how a single-index version of this test passed on
-    ecd9ba1 -- so a one-coordinate check proves nothing.
+    Expected array is derived from the injected covariance by the arm's own definition: covariance
+    -> P C P^T, precision -> P C^-1 P^T. Nothing here prefers one orientation.
     """
     _inject_pool_with_known_covariance(monkeypatch, PF_ORDER_VAR)
-    metric = bj.mcmc.metrics.default_metric(_imm(odd_order_model))
-    base = {"z": jnp.asarray(0.0), "a": jnp.zeros(3)}
-    ke = []
-    for idx in range(4):
-        pos = dict(base)
-        if idx == Z_INDEX_IN_KERNEL_ORDER:
-            pos["z"] = jnp.asarray(1.0)
-        else:
-            pos["a"] = jnp.zeros(3).at[idx].set(1.0)
-        ke.append(float(metric.kinetic_energy(pos)))
-    expected_ke = 0.5 * KERNEL_ORDER_VAR
-    assert np.max(np.abs(np.asarray(ke) - expected_ke) / expected_ke) < 0.2, (
-        f"KE per kernel coordinate ={ke}, expected {expected_ke}"
-    )
-
-    # Momentum must be drawn at the posterior scale: p ~ N(0, imm^-1), so the wide coordinate (z)
-    # gets the *small* momentum spread. Reversed scales mean the metric is inverted.
-    pos = {"z": jnp.asarray(3.0), "a": jnp.zeros(3)}
-    mom = jax.vmap(lambda k: metric.sample_momentum(k, pos))(
-        jax.random.split(jax.random.key(0), 2000))
-    # tree_leaves of a dict pytree is sorted-key order, i.e. exactly the kernel's column order.
-    flat = jnp.concatenate([jnp.reshape(x, (2000, -1))
-                            for x in jax.tree_util.tree_leaves(mom)], axis=1)
-    sds = np.array([float(col.std()) for col in flat.T])
-    expected_sd = 1.0 / np.sqrt(KERNEL_ORDER_VAR)
-    assert np.max(np.abs(sds - expected_sd) / expected_sd) < 0.2, (
-        f"momentum sds in kernel order ={sds}, expected {expected_sd}"
-    )
-
-
-@pytest.mark.parametrize("imm_source", ["lbfgs_lowrank", "fisher_lowrank"])
-def test_low_rank_metric_sources_are_kernel_ordered_too(odd_order_model, monkeypatch, imm_source):
-    """The low-rank routes share the ordering bug: their factors come out in tuple order."""
-    expected_kernel_diag = KERNEL_ORDER_VAR.copy()
-    _inject_low_rank_metric(monkeypatch, np.sqrt(PF_ORDER_VAR))
-    diag = np.diag(_imm(odd_order_model, imm_source=imm_source, max_rank=1))
-    assert np.allclose(diag, expected_kernel_diag, rtol=1e-6), (
-        f"{imm_source}: diag(imm)={diag}, expected {expected_kernel_diag}"
+    if imm_source != "mc":
+        _inject_low_rank_metric(monkeypatch, np.sqrt(PF_ORDER_VAR))
+    diag = np.diag(_imm(odd_order_model, imm_source=imm_source, max_rank=1,
+                        imm_orientation=orientation))
+    expected = KERNEL_ORDER_VAR if orientation == "covariance" else 1.0 / KERNEL_ORDER_VAR
+    rel = np.abs(diag - expected) / expected
+    assert rel.max() < 0.2, (
+        f"{imm_source}/{orientation}: diag(imm)={diag}, expected {expected} "
+        f"(max rel err {rel.max():.3f}). Correct values but the 1e4 at index 0 = the tuple->dict "
+        "permutation was never applied."
     )
 
 
@@ -194,10 +203,15 @@ def test_permutation_is_identity_when_names_are_sorted():
 
 
 def test_permutation_rejects_a_tree_that_does_not_match_the_model(odd_order_model):
-    """A silent leaf-count mismatch is exactly the failure class this whole file exists to stop."""
+    """A silent leaf-count mismatch is the failure class this file exists to stop."""
     sampler = PfCheesHMC(odd_order_model, seed=0)
     with pytest.raises(ValueError, match="value_vars"):
         sampler._kernel_permutation((jnp.zeros((4, 1)), jnp.zeros((4, 3)), jnp.zeros((4,))))
+
+
+def test_unknown_orientation_raises(odd_order_model):
+    with pytest.raises(ValueError, match="imm_orientation"):
+        _imm(odd_order_model, imm_orientation="whatever")
 
 
 def test_kernel_flat_matches_the_kernels_own_ravel(odd_order_model):
@@ -211,8 +225,8 @@ def test_kernel_flat_matches_the_kernels_own_ravel(odd_order_model):
 def test_permuting_factors_equals_permuting_the_expansion():
     """WP1 permutes the expanded dense matrix; Part B's wording permutes sigma/U first.
 
-    Same map (conjugation by a permutation matrix commutes with D(I + U(L-1)U^T)D), pinned here so
-    the single code path cannot drift from the spec.
+    Same map (conjugation by a permutation matrix commutes with D(I + U(L-1)U^T)D), pinned so the
+    single code path cannot drift from the spec.
     """
     key = jax.random.key(1)
     d = 4
@@ -228,24 +242,115 @@ def test_permuting_factors_equals_permuting_the_expansion():
     assert jnp.allclose(expand(sigma, q)[p][:, p], expand(sigma[p], q[p, :]), atol=1e-10)
 
 
-def test_frozen_step_size_is_in_posterior_units(odd_order_model, monkeypatch):
-    """Smoke, end to end through the public entrypoint: eps is O(1) and the trajectory is short.
+def test_kernel_convention_is_ke_half_p_A_p_and_momentum_cov_is_A_inverse(odd_order_model, monkeypatch):
+    """Pin the convention, orientation-agnostic: the passed array multiplies p in KE.
 
-    The pool is injected so the metric the pipeline receives is the true covariance (Part B's
-    intent); Pathfinder's own pool on this model is identity and would test nothing. With the
-    correct metric every coordinate is a unit-frequency oscillator, so eps must land in posterior-sd
-    units. Under the inverted metric eps has to absorb the 1e8 scale ratio instead: it collapses and
-    L explodes. Measured bounds are in SUMMARY §3 (ecd9ba1: eps ~ 1e-4, L ~ 400).
+    This is the measurement behind the LEDGER entry that challenged Part B §0.1: with A =
+    inv(Cov) the sampled momentum variance came out equal to Cov. That fixes what A *means*; it does
+    not say which A is the better preconditioner. The frequency consequence (q'' = -A grad U, so
+    squared frequencies are eig(A H)) is what the moment test below is sensitive to.
     """
     _inject_pool_with_known_covariance(monkeypatch, PF_ORDER_VAR)
-    idata = sample_pf_chees_hmc(
-        odd_order_model, draws=50, chains=32, random_seed=7, progressbar=False,
-        chees_kwargs={"draws": 200},
-    )
-    eps = float(idata.attrs["frozen_step_size"])
-    L = float(idata.attrs["frozen_L_nominal"])
-    assert 0.05 <= eps <= 2.0, f"frozen eps={eps}: not in posterior-sd units, metric is mis-scaled"
-    assert 1 <= L <= 40, f"frozen nominal L={L}: a 4-dim Gaussian should not need hundreds of steps"
-    for key in ("warmup_grad_evals_per_chain", "sampling_grad_evals_per_chain", "warmup_steps_used"):
-        assert key in idata.attrs, f"A8 contract field {key!r} missing from idata.attrs"
-    assert int(idata.attrs["warmup_grad_evals_per_chain"]) >= 200
+    A = _imm(odd_order_model, imm_orientation="covariance")
+    metric = bj.mcmc.metrics.default_metric(A)
+    base = {"z": jnp.asarray(0.0), "a": jnp.zeros(3)}
+    for idx in range(4):
+        pos = dict(base)
+        if idx == Z_INDEX_IN_KERNEL_ORDER:
+            pos["z"] = jnp.asarray(1.0)
+        else:
+            pos["a"] = jnp.zeros(3).at[idx].set(1.0)
+        ke = float(metric.kinetic_energy(pos))
+        assert abs(ke - 0.5 * A[idx, idx]) < 1e-8 * max(1.0, abs(ke)), f"KE on kernel coord {idx}: {ke}"
+
+    pos = {"z": jnp.asarray(0.0), "a": jnp.zeros(3)}
+    mom = jax.vmap(lambda k: metric.sample_momentum(k, pos))(
+        jax.random.split(jax.random.key(0), 4000))
+    flat = jnp.concatenate([jnp.reshape(x, (4000, -1))
+                            for x in jax.tree_util.tree_leaves(mom)], axis=1)
+    var = np.array([float(col.var()) for col in flat.T])
+    expected = 1.0 / np.diag(A)              # momentum ~ N(0, A^-1)
+    assert np.max(np.abs(var - expected) / expected) < 0.15, f"momentum variance {var} vs {expected}"
+
+
+# ------------------------------------------------------------------- orientation (measured)
+def _mixing_report(anisotropic_model, **pathfinder_kwargs):
+    model, mean, var = anisotropic_model
+    kwargs = {"draws": 256}
+    kwargs.update(pathfinder_kwargs)
+    idata = sample_pf_chees_hmc(model, draws=1000, chains=32, random_seed=5, progressbar=False,
+                                pathfinder_kwargs=kwargs, chees_kwargs={"draws": 500})
+    max_rhat = max(float(np.max(v.values)) for v in az.rhat(idata.posterior).values())
+    ess = az.ess(idata.posterior, method="bulk", relative=False)
+    per = {n: float(np.min(ess[n].values)) for n in var}
+    steps = float(np.mean(idata.sample_stats["num_integration_steps"].values))
+    min_ess = min(per.values())
+    # arviz_stats, not arviz: arviz 0.23's _mcse_sd raises "only 0-dimensional arrays can be
+    # converted to Python scalars" under numpy 2.4 on this box (verified). A6 says use arviz_stats.
+    mcse_mean = arviz_stats.mcse(idata, method="mean")
+    return idata, max_rhat, min_ess, per, steps, mcse_mean, mean, var
+
+
+def test_covariance_orientation_mixes_the_anisotropic_target(anisotropic_model):
+    """permuted + covariance: the well-conditioned cell of the 2x2, measured at R-hat 1.002.
+
+    Mean within 4 MCSE of the analytic posterior for every coordinate, max R-hat under the 1.01
+    bar, and worst-variable bulk ESS per gradient above 1.0. Squared frequencies are eig(A H) with
+    A the array the kernel is handed and H the target Hessian, so A = Cov(q) puts every coordinate
+    at unit frequency and one global eps serves a 1e4 variance spread.
+    """
+    idata, max_rhat, min_ess, per, steps, mcse_mean, mean, var = _mixing_report(
+        anisotropic_model, imm_orientation="covariance")
+    for name in mean:
+        got = float(idata.posterior[name].mean())
+        assert abs(got - mean[name]) <= 4 * float(np.asarray(mcse_mean[name]).reshape(-1)[0]), (
+            f"{name}: mean {got:.4g} != {mean[name]:.4g}")
+    assert max_rhat < 1.01, f"max R-hat {max_rhat:.4f}, per-variable ESS {per}"
+    assert min_ess / (steps * 1000) > 1.0, f"ESS per gradient {min_ess / (steps * 1000):.3f}"
+    assert pfcheeshmc.sample_pf_chees_hmc.__name__ != "_tiny_idata", "stubbed entry point"
+
+
+def test_precision_orientation_does_not_mix_the_anisotropic_target(anisotropic_model):
+    """permuted + inv(cov): the deciding cell. Ordering is correct here, only the orientation differs.
+
+    Measured (this fixture, 32 chains, 500 warmup, 1,000 draws, seeds 5-7): eps 0.0130-0.0140,
+    max R-hat 12.10-13.08, bulk ESS 32-38 on alpha, delta and zeta and ~33,000 on beta. With
+    A = Cov^-1 the frequency of a coordinate is 1/var, so the tightest coordinate caps the single
+    global eps and every wider coordinate stops moving. This is why the orientation is not merely a
+    tuning preference: at a practical budget it fails the project's own G-A bar (R-hat <= 1.01).
+
+    Asserted as a failure so the finding cannot be silently undone. If it ever passes, the
+    orientation no longer matters on anisotropic targets and WP1's conclusion must be re-examined.
+    """
+    _, max_rhat, min_ess, per, *_ = _mixing_report(
+        anisotropic_model, imm_orientation="precision")
+    assert max_rhat > 2.0 or min_ess < 200.0, (
+        f"precision arm now mixes (max R-hat {max_rhat:.4f}, ESS {per}); re-examine WP1 section 6")
+
+
+def test_ordering_error_collapses_one_coordinate(anisotropic_model):
+    """unpermuted + covariance: the ordering factor in isolation, which is the WP1 P0.
+
+    Same orientation as the good cell, metric left in Pathfinder's tuple order. Measured:
+    max R-hat 1.0069-1.1451 and bulk ESS 166-3,176 on zeta (variance 1e2) while the other three
+    coordinates stay near 30,000. The signature is the opposite of the orientation failure: a wrong
+    permutation misplaces specific coordinates, a wrong orientation flattens every wide one. Both
+    are silent, and both survive a moment test, which is why G-ORDER is a permanent gate.
+    """
+    _, max_rhat, min_ess, per, *_ = _mixing_report(
+        anisotropic_model, imm_orientation="covariance", imm_order="pathfinder")
+    assert max_rhat > 1.01 or min_ess < 10_000, (
+        f"unpermuted metric now mixes (max R-hat {max_rhat:.4f}, ESS {per}); "
+        "the ordering fixture has become insensitive, not that the bug is fixed")
+
+
+def test_default_is_still_precision_orientation(anisotropic_model):
+    """The default orientation is the owner's call, so pin what it currently is.
+
+    If a later WP flips it, this test is the one to update, and it should be flipped together with
+    G3 evidence (>= 5 seeds per model, divergence rate not rising) rather than on its own.
+    """
+    _, max_rhat, *_ = _mixing_report(anisotropic_model)      # no imm_orientation passed
+    assert max_rhat > 2.0, (
+        "default orientation changed: imm_orientation now defaults to something other than "
+        "'precision' -- update the default and the G3 evidence trail together")

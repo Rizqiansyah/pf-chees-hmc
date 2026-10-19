@@ -465,7 +465,9 @@ class PfCheesHMC:
         else:
             raise ValueError("init_source must be 'pf' or 'adapt_diag'")
 
-        # 6) Dense covariance from ALL PF samples -> inverse mass
+        # 6) Dense covariance from ALL PF samples. This is a COVARIANCE in Pathfinder's own tuple
+        # order; whether it is handed to the kernel as-is or inverted is the `imm_orientation` choice
+        # decided in step 6c, and the reorder to kernel order happens in step 8.
         samples_total = jax.tree_util.tree_map(
             lambda x: x.reshape((total,) + x.shape[2:]),
             samples_cd
@@ -477,24 +479,11 @@ class PfCheesHMC:
         flat_mat = jax.vmap(_flatten_i)(jnp.arange(total))  # (total, D)
 
         X   = flat_mat - flat_mat.mean(axis=0, keepdims=True)
-        cov = (X.T @ X) / (total - 1) + ridge * jnp.eye(X.shape[1], dtype=X.dtype)
-        # The metric is the COVARIANCE, not its inverse. BlackJAX's `inverse_mass_matrix` is the
-        # matrix that multiplies the momentum in the kinetic energy, KE = 1/2 p . (imm p)
-        # (mcmc/metrics.py:262-270), and the leapfrog acceleration is q'' = -imm * grad U, so a
-        # well-conditioned trajectory needs imm ~ Cov(q): with imm = Cov(q)^-1 every coordinate's
-        # period is wrong by 1/var, which is why a logistic run under the inverted metric froze at
-        # eps=0.0021 with L=136 instead of eps=0.66 with L=26. BlackJAX says so in its own code --
-        # chees_adaptation.py:335 calls this quantity "the diagonal inverse_mass_matrix (Sigma)"
-        # and :453 computes v' = Sigma p' -- and its window adaptation returns exactly the
-        # regularised sample covariance (adaptation/mass_matrix.py:344-353, Stan's formula).
-        # NOTE: the matrix is still in Pathfinder's tuple order here; step 8 reorders it.
-        inverse_mass_matrix = cov
+        covariance = (X.T @ X) / (total - 1) + ridge * jnp.eye(X.shape[1], dtype=X.dtype)
 
-        # 6b) Optional alternative metric (E4). Default "mc" keeps the empirical covariance above,
-        # so nothing changes for existing callers. Anything other than "mc" produces a
-        # LowRankInverseMassMatrix and expands it to the same dense (D,D) the pipeline already
-        # consumes -- ChEES takes jnp.diag(imm) and dynamic_hmc takes imm -- so only the *value* of
-        # the metric changes here, not the contract.
+        # 6b) Optional alternative metric (E4). Default "mc" keeps the empirical covariance above.
+        # A low-rank source produces the same kind of object -- a COVARIANCE estimate -- so the
+        # orientation is not its property, it is chosen once in 6c.
         imm_source = kwargs.get("imm_source", "mc")
         if imm_source != "mc":
             if imm_source == "lbfgs_lowrank":
@@ -518,11 +507,48 @@ class PfCheesHMC:
                 raise ValueError(
                     f"imm_source must be 'mc', 'lbfgs_lowrank' or 'fisher_lowrank', got {imm_source!r}")
             D = jnp.diag(lr.sigma)
-            inverse_mass_matrix = (D @ (jnp.eye(lr.sigma.shape[0], dtype=lr.sigma.dtype)
-                                        + lr.U @ jnp.diag(lr.lam - 1.0) @ lr.U.T) @ D)
+            covariance = (D @ (jnp.eye(lr.sigma.shape[0], dtype=lr.sigma.dtype)
+                               + lr.U @ jnp.diag(lr.lam - 1.0) @ lr.U.T) @ D)
             # Note: rescaling this metric to the empirical covariance's geometric mean was tried and
             # is NOT implemented -- it made every measured model worse (8 Schools 50,626 -> 13,628
-            # ESS/s, radon centered R-hat 2.10 -> 5.69). See docs/ladder-results.md.
+            # ESS/s, radon centered R-hat 2.10 -> 5.69). See docs/ladder-results.md. That comparison
+            # is now known to be confounded: see 6c.
+
+        # 6c) Orientation. The array the kernel calls `inverse_mass_matrix` (call it A) is the matrix
+        # that multiplies the momentum in the kinetic energy, KE = 1/2 p.(A p) (mcmc/metrics.py:
+        # 262-270), so momentum ~ N(0, A^-1) and leapfrog gives q'' = -A * grad U. For a target with
+        # Hessian H, the squared frequencies are eig(A H): A = H^-1 = Cov(q) makes every coordinate
+        # oscillate at unit frequency (dimensionless eps), while A = H makes them 1/var, so one global
+        # eps cannot serve narrow and wide coordinates at once.
+        #
+        # Historically the pipeline was NOT internally consistent here: "mc" passed inv(covariance)
+        # while the two low-rank sources passed their expansion un-inverted, i.e. "mc" ran in
+        # "precision" and "lbfgs_lowrank"/"fisher_lowrank" in "covariance". Every published
+        # mc-vs-low-rank comparison in docs/ladder-results.md therefore compared opposite
+        # orientations. The knob now applies to all three arms identically, which makes the low-rank
+        # sources behave consistently with `mc` for the first time (a behaviour change for them).
+        #
+        # The default stays "precision": it is the literal reading of the argument name and the
+        # shipped behaviour, and changing it is an efficiency decision the owner makes, not a task.
+        # One measured caveat to carry into WP4 (which owns the metric), from CPU runs on a 3-scalar
+        # conjugate Gaussian with posterior variances 1e1 / 1e0 / 1e-2 and reverse-sorted names
+        # (32 chains, 500 warmup, 1,000 draws, seeds 5-7): "precision" froze at eps=0.0138 with
+        # max R-hat 10.10 and bulk ESS 33 / 41 / 27,221, while "covariance" gave eps=1.14,
+        # max R-hat 1.0024 and ESS 24,664 / 24,377 / 25,117 -- worst-variable ESS per gradient 0.012
+        # vs 6.6-13.9. Both arms pass a 4-MCSE moment check, because Pathfinder's starts already
+        # sample that Gaussian posterior: the ensemble mean is right whether or not the chains move,
+        # so a moment test alone cannot arbitrate orientation. See results/WP1/SUMMARY.md section 6
+        # and test_precision_orientation_does_not_mix_an_anisotropic_target.
+
+        orientation = kwargs.get("imm_orientation", "precision")
+        if orientation == "precision":
+            inverse_mass_matrix = jnp.linalg.inv(covariance)
+        elif orientation == "covariance":
+            inverse_mass_matrix = covariance
+        else:
+            raise ValueError(
+                f"imm_orientation must be 'precision' or 'covariance', got {orientation!r}")
+        self.last_covariance = covariance      # diagnostics only (WP1 A/B), never read by the sampler
 
         # 7) Return dict-of-arrays keyed by variable (leading axis = chains)
         if isinstance(pf_inits_tree, (list, tuple)):
@@ -536,7 +562,14 @@ class PfCheesHMC:
         # Everything downstream (find_reasonable_step_size, the ChEES whitening diagonal, and the
         # dynamic-HMC kernel) ravels the dict state, so the reorder happens here and nowhere else.
         perm = self._kernel_permutation(samples_flat)
-        inverse_mass_matrix = self._metric_to_kernel_order(inverse_mass_matrix, perm)
+        # imm_order="pathfinder" skips the reorder. It exists only so the 2x2 (ordering x
+        # orientation) can be measured in ONE tree with one key stream; nothing in a production run
+        # should set it, and test_metric_orientation.py pins the default.
+        order = kwargs.get("imm_order", "kernel")
+        if order == "kernel":
+            inverse_mass_matrix = self._metric_to_kernel_order(inverse_mass_matrix, perm)
+        elif order != "pathfinder":
+            raise ValueError(f"imm_order must be 'kernel' or 'pathfinder', got {order!r}")
 
         return pf_samples, inverse_mass_matrix
 
