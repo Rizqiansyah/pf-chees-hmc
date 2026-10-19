@@ -129,3 +129,20 @@ WP3 delivered its self-test and I re-derived its rows rather than trusting the r
 **2. "Divergences cannot be an R1 gate" is only true of sampling divergences.** All 30 grid rows have `divs_per_1k = 0.0` — but `warmup_divs` is 626–647 on 8 Schools at C=1,024 (≈0.6 per chain) and 238–1,724 on logistic. That reproduces §2c's "~1 divergence per chain in warmup" observation, which the plan asked WP1 to check and which is therefore now independently confirmed. The correct statement is that *sampling* divergence rate is a null test at D=10, while *warmup* divergence is non-null and is the only divergence signal R1 produces.
 
 **Consequences.** G-R1 stays the primary gate (b² with its floor, which the harness does emit). G-R1-diag is downgraded to informational until item 1 is resolved, and no accept/kill decision in WP4/WP5 may cite nested R̂ as evidence of convergence. WP3 is re-tasked with the K=1 control when a slot frees.
+
+## 2026-10-19 18:42 · WP1 · the orientation 2×2 on a REAL model (GEV) confirms the retraction — found in the task's uncommitted rows during the pause
+
+The fixture settled the mechanism; this is the discriminating evidence on a model where the tuple-vs-dict permutation is not the identity. Rows read from `~/pf/wp1/results/runs/WP1__gev_2x2.jsonl` (24 rows, 4 arms x 3 seeds x rep 0/1, C=32, GPU, warm and cold identical to the 3rd digit so no timing contention in these fields). `kernel` = permuted into kernel order, `pathfinder` = the old unpermuted order; `precision` = the shipped default, `covariance` = Part B §0.1's fix.
+
+| arm | max R̂ | frozen ε | nominal L | realised steps/draw | min bulk ESS |
+|---|---|---|---|---|---|
+| permuted + **precision** (shipped) | **1.0313–1.0518** | 0.00089–0.00092 | 7–8 | 4.0–4.4 | **579–838** |
+| permuted + **covariance** | **1.0017–1.0055** | 0.767–0.832 | 11–18 | 5.5–9.2 | **5,818–16,628** |
+| unpermuted + precision | 1.0074–1.0142 | 0.00086–0.00087 | 30–43 | 15.0–21.9 | 2,369–5,196 |
+
+Consequences:
+1. On GEV the shipped orientation fails the project's own G-A bar (R̂ ≤ 1.01) at every seed and yields ~20x less worst-variable ESS than the covariance orientation at the same chain count. `a03dc0f`'s conclusion now holds on a real model, not only the 4-scalar fixture.
+2. The ε and L ratio matches the plan's §2c direction (ε jumps ~900x, L falls), so the reviewer's qualitative story is right even though §0.1's stated mechanism about what the kernel reads remains refuted.
+3. These rows are NOT yet committed by the task (untracked file). Do not treat the arm as final until WP1 commits them; the numbers above are read directly from the file, which is why they are recorded now.
+
+Pause note: box yielded to another user at 18:38, GPU released (99 MiB, 0%). No new measurement was run to produce this entry.
