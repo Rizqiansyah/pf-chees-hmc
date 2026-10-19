@@ -1,12 +1,13 @@
 {
   "schema": "pf-r1/v1",
   "generator": "tools/make_reference.py",
-  "created": "2026-10-19T14:35:24+1100",
+  "created": "2026-10-19T15:00:44+1100",
   "gate": "max R-hat < 1.01 AND bulk ESS > 10,000 per parameter (incl. transformed vars)",
+  "stat_shape_contract": "mean__/var__/mcse_x__/mcse_x2__ have the sample shape minus the (chain, draw) axes",
   "models": {
     "8schools": {
       "path": "/home/akbar/pf-runs/references/8schools.npz",
-      "sha256": "74b7a10d5dd713ce803818be97def24d7bec8adc84f2b19b9ee0f66174551208",
+      "sha256": "e588e6278f154593cf35bb882368c4a887e1ae8718df43335ecc8908738de5c5",
       "chains": 8,
       "draws": 10000,
       "tune": 2000,
@@ -17,7 +18,7 @@
       "divergences": 0,
       "divs_per_1k": 0.0,
       "gate": "PASS",
-      "wall_s": 15.860152118024416,
+      "wall_s": 15.489218209986575,
       "note": null
     },
     "gev": {
@@ -38,7 +39,7 @@
     },
     "logit_1000x25": {
       "path": "/home/akbar/pf-runs/references/logit_1000x25.npz",
-      "sha256": "ef55d0957174b42dc9d92c343582d636abc572e3e4405816e481aa7d10826f54",
+      "sha256": "4df6055ce769e3c1797f496be3ea07603d5009a44b44f55d26b1ce2dc0880173",
       "chains": 8,
       "draws": 10000,
       "tune": 2000,
@@ -49,12 +50,12 @@
       "divergences": 0,
       "divs_per_1k": 0.0,
       "gate": "PASS",
-      "wall_s": 119.5870421549771,
+      "wall_s": 130.5487818469992,
       "note": null
     },
     "radon_noncentered": {
       "path": "/home/akbar/pf-runs/references/radon_noncentered.npz",
-      "sha256": "5f2b05b4caf31f99b40f3c193164f9cd730c788994a166a770e51d1b5c5dad77",
+      "sha256": "78ef839e30d44f1a0d66ca57e94a4e4ff0cfc9ab6764d052b3550a44cdb14e2e",
       "chains": 8,
       "draws": 10000,
       "tune": 2000,
@@ -65,7 +66,7 @@
       "divergences": 0,
       "divs_per_1k": 0.0,
       "gate": "PASS",
-      "wall_s": 73.34454754402395,
+      "wall_s": 79.12667140597478,
       "note": null
     }
   }

@@ -11,9 +11,11 @@ Writes ~/pf-runs/references/<model>.npz, a flat dict keyed by variable name:
 
     x__<name>   constrained posterior samples, (chains, draws, ...)
     u__<name>   unconstrained value-var samples, (chains, draws, ...)
-    mean__<name>, var__<name>          scalars (ddof=1 variance, over all chains)
-    mcse_x__<name>, mcse_x2__<name>    Monte Carlo SE of the mean and of the variance
-                                       (arviz_stats.mcse, methods 'mean' and 'var')
+    mean__<name>, var__<name>          per parameter: shape = sample shape minus
+                                       the (chain, draw) axes (ddof=1 variance)
+    mcse_x__<name>, mcse_x2__<name>    MCSE of the mean and of the second moment,
+                                       per parameter (arviz_stats.mcse, method
+                                       'mean' on x and on x**2)
     meta__<key>  run metadata (seed, target_accept, divergences, gate verdict, ...)
 
 The npz stays OUTSIDE git (A8). A JSONL row is appended to
@@ -69,9 +71,17 @@ def _ess_min(x):
 
 
 def _mcse(x, method):
-    """arviz_stats.mcse on a raw (chains, draws, ...) array; scalar float64."""
+    """arviz_stats.mcse on a (chains, draws, ...) array.
+
+    Returns a float64 array with exactly x.shape[2:] -- one value per parameter
+    element. The library already keeps the non-sample axes (verified on
+    (8, 10000, 8) -> (8,)); the caller must not reduce them.
+    """
     arr = arviz_stats.mcse(x, chain_axis=0, draw_axis=1, method=method)
-    return float(np.ravel(np.asarray(arr))[0])
+    out = np.asarray(arr, dtype=np.float64)
+    if out.shape != x.shape[2:]:
+        raise ValueError(f"mcse collapsed the parameter axis: {x.shape[2:]} -> {out.shape}")
+    return out
 
 
 def make_reference(model_name, chains, draws, tune, target, seed, out):
@@ -123,10 +133,24 @@ def make_reference(model_name, chains, draws, tune, target, seed, out):
         x = data[n]
         key = ("u__" if n in u_set else "x__") + n
         arr[key] = x
-        arr["mean__" + n] = float(x.mean())
-        arr["var__" + n] = float(x.var(ddof=1))
+        # Per-parameter stats: shape must equal the sample shape minus the
+        # (chain, draw) axes, or WP3 would score every parameter of a vector
+        # variable against one pooled number. Guarded below, loudly.
+        arr["mean__" + n] = x.mean(axis=(0, 1))
+        arr["var__" + n] = x.var(axis=(0, 1), ddof=1)
         arr["mcse_x__" + n] = _mcse(x, "mean")
         arr["mcse_x2__" + n] = _mcse(x ** 2, "mean")  # MCSE of the second moment
+
+    # Permanent shape guard: every stat array must keep the parameter axis.
+    for n in names:
+        x = data[n]
+        for s in ("mean", "var", "mcse_x", "mcse_x2"):
+            v = arr[f"{s}__" + n]
+            if np.asarray(v).shape != x.shape[2:]:
+                raise ValueError(
+                    f"{s}__{n}: stat shape {np.asarray(v).shape} != sample shape "
+                    f"{x.shape[2:]} (chain/draw axes must be dropped, parameter axis kept)"
+                )
 
     meta = {
         "model": model_name,
