@@ -38,21 +38,25 @@ Suite: 38 → **47 passed** (forced CPU, 88 s).
 
 **Reproduction: PASS** — seven of eight frozen pairs within 8%, the eighth within 17% on a different seed. The intermediate L@500 is seed-sensitive while the endpoints are stable; the endpoint is the decision-relevant number.
 
-### 3.2 The warmup cost of the deviation (same rows, warm rep)
+### 3.2 What the deviation costs, and where the wall time goes (same rows, warm rep)
 
-Logistic 1000x25 warmup wall: **A 16.7 s → C 7.9 s** (2.1× faster) with the frozen trajectory time L·ε unchanged to 1.4% (0.271 s vs 0.269 s). 8 Schools: 4.1 s → 3.5 s. The rate limit costs most where the trajectory is long — logistic L 130 vs 26 — i.e. on exactly the models the reviewer flagged. Warmup divergences: flat across variants on logistic (32-42); on 8 Schools the cov metric doubles them (34 → 63 in B/C/D) — a metric effect, not an iterate effect (C, D equal B), consistent with §2c's ~1 divergence/chain observation.
+Two separate effects, not one. The frozen trajectory time T = L·ε is dominated by the **metric**: logistic A 0.271 → B 17.8 → C 16.9 → D 15.7 (a 65× rescale — the covariance metric makes the geometry isotropic enough for ε to grow 300×, and the ChEES criterion on the whitened geometry then chooses a longer trajectory; the reviewer's own §2c numbers show the same jump, 136·0.0021=0.29 vs 26·0.66=17.2). The **iterate** is the small effect: within each metric, raw moves frozen T by ≤12% (logistic B→C −5%, B→D −12%; 8 Schools B 11.42 → C 11.49 → D 10.81). So the raw iterate does not change where the run ends in any material way; it changes how fast warmup gets there.
 
-What `iterate="raw"` costs in wall time at C=32: **nothing — it is the saving**. A long trajectory means long leapfrog loops per warmup step; once L stops overgrowing, the same 2,000 warmup steps cost less. The raw iterate changes how fast warmup converges, not where it lands.
+Warmup wall, logistic 1000x25: **A 16.7 s → C 7.9 s** (2.1× faster); 8 Schools 4.1 → 3.5 s. The saving is leapfrog count, not gradient cost: A's L climbs to 130 over the warmup (4.7× more integration steps per transition at the end), while C sits at ~26 — 2,000 warmup steps × fewer leapfrogs. The 2.1× (not 4.7×) is because the average over the run includes the early low-L steps both arms share.
+
+Warmup divergences: flat across variants on logistic (32–42); on 8 Schools the cov metric doubles them (34 → 63 in B/C/D) — a metric effect, not an iterate effect (C, D equal B), consistent with §2c's ~1 divergence/chain observation.
+
+What `iterate="raw"` costs in wall time at C=32: **nothing — it is the saving**, on the models whose trajectory is long on the failing orientation.
 
 ## 4. Frozen ε–L and realised steps
 
-GPU rows: logistic A 0.002083/130.2 (T=0.271 s), B 0.6476/27.5 (0.278 s), C 0.6485/26.0 (0.269 s), D 0.6488/24.2 (0.258 s); 8 Schools A 0.1902/41.3 (0.079 s), B 0.5311/21.5 (0.114 s), C 0.5152/22.3 (0.115 s), D 0.535/20.2 (0.108 s). The raw iterate does not change where the run ends, it changes how fast it gets there: L@1000 on logistic is 84.6 for ma (still climbing toward 130) vs 28.4 for raw (converged).
+GPU rows (ε, L, T=L·ε): logistic A 0.002083 / 130.2 / 0.271, B 0.6476 / 27.5 / 17.81, C 0.6485 / 26.0 / 16.86, D 0.6488 / 24.2 / 15.70; 8 Schools A 0.1902 / 41.3 / 7.86, B 0.5311 / 21.5 / 11.42, C 0.5152 / 22.3 / 11.49, D 0.535 / 20.2 / 10.81. Attribution: the metric arm (A→B) rescales T by 1.5× (8 Schools) to 65× (logistic); the iterate arm (B→C→D) moves T by ≤12%. The warmup wall saving (section 3.2) is the iterate's, because it stops L overgrowing; the T rescale is the metric's, and it is expected behaviour of a preconditioner that makes the geometry isotropic.
 
 ## 5. Gate verdicts
 
 - **Reproduction (deliverable 3, first half): PASS** — eight frozen pairs, seven within 8% of the plan's GPU targets, the eighth (8 Schools C, L 22.3 vs 19) within 17% and stable across device at 21.7/22.3, i.e. a seed effect.
-- **Accept/kill (deliverable 3, second half): ACCEPT as an option; the kill criterion is not met.** The plan's kill rule is "raw's noise at C=32 makes frozen L worse than ma at W=2,000 on two or more models". Measured at W=2,000, GPU, C=32: logistic 26.0 (raw) vs 27.5 (ma) — raw better by 5.5%; 8 Schools 22.3 (raw) vs 21.5 (ma) — raw worse by 3.7%. That is worse on ONE model, within single-seed spread, not two or more. The honest statement is that one seed cannot separate 5% from noise, so the default-flip question is genuinely open — which is why it goes to G3.
-- **Default stays `ma`** (shipped behaviour unchanged; the option exists for callers). **G3 (5+ seeds, means within 1σ, no divergence-rate increase): NOT RUN** — deliberately. Flipping the default is the owner's call per the plan, and the data for it is: raw saves 2.1× logistic warmup wall at equal frozen trajectory time, changes frozen L by ≤5% on two models at one seed, and shows no divergence-rate increase on the iterate axis (the 8 Schools warmup-divergence doubling is the cov metric's, identical in B, C, D).
+- **Accept/kill (deliverable 3, second half): ACCEPT as an option; the kill criterion is not met.** The plan's kill rule is "raw's noise at C=32 makes frozen L worse than ma at W=2,000 on two or more models". Measured at W=2,000, GPU, C=32: logistic 26.0 (raw) vs 27.5 (ma) — raw better by 5.5%; 8 Schools 22.3 (raw) vs 21.5 (ma) — raw worse by 3.7%. That is worse on ONE model, within single-seed spread, not two or more. Frozen trajectory time T agrees to ≤12% within each metric. The honest statement is that one seed cannot separate 5% from noise, so the default-flip question is genuinely open — which is why it goes to G3.
+- **Default stays `ma`** (shipped behaviour unchanged; the option exists for callers). **G3 (5+ seeds, means within 1σ, no divergence-rate increase): NOT RUN** — deliberately. Flipping the default is the owner's call per the plan, and the data for it is: raw saves 2.1× logistic warmup wall (16.7 → 7.9 s) with frozen T within 12%, changes frozen L by ≤5% on two models at one seed, and shows no divergence-rate increase on the iterate axis (the 8 Schools warmup-divergence doubling is the cov metric's, identical in B, C, D).
 
 ## 6. Surprises and contradictions with the plan
 
