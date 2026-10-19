@@ -13,6 +13,10 @@ import arviz as az
 
 from tqdm.auto import tqdm
 from .utils import *
+from .ensemble_metric import (
+    estimate_covariance, reseed_trajectory_length, positions_to_draws,
+    ENGLISH_NAMES as _METRIC_REFRESH_NAMES,
+)
 
 from typing import Tuple, Optional, Dict, Any
 from datetime import date
@@ -36,6 +40,30 @@ def _stratified_pool_idx(logp_subset, subset_idx, n_pick):
     m = int(order.shape[0])
     ranks = (jnp.arange(n_pick) * m) // n_pick
     return subset_idx[order[ranks]]
+
+
+def _concat_warmup_info(a, b):
+    """Concatenate two warmup-info stacks (phase A then phase B) along the step axis.
+
+    Returns a WarmupInfo whose ``info`` (the HMCInfo stack) and ``trace`` are concatenated so a
+    downstream reader sees one warmup of length ``a_steps + b_steps``. ``positions`` is set to
+    None: it is consumed only to build the refreshed estimator and is not read downstream, and
+    keeping it would hold the (steps, C, ...) position stack for no reason.
+    """
+    from .utils import WarmupInfo
+    ainfo = getattr(a, "info", a)
+    binfo = getattr(b, "info", b)
+    info = jax.tree_util.tree_map(
+        lambda x, y: jnp.concatenate([x, y], axis=0), ainfo, binfo)
+    atr, btr = getattr(a, "trace", None), getattr(b, "trace", None)
+    if atr is not None and btr is not None:
+        # trace is a ChEESTrace named tuple (one (steps,) array per field), not a 2-D array,
+        # so concatenate field-wise through the pytree, not with a single jnp.concatenate.
+        trace = jax.tree_util.tree_map(
+            lambda x, y: jnp.concatenate([x, y], axis=0), atr, btr)
+    else:
+        trace = None
+    return WarmupInfo(info=info, trace=trace, positions=None)
 
 
 def _frozen_nominal_L(integration_steps_fn, warmup_steps_used):
@@ -664,6 +692,15 @@ class PfCheesHMC:
         kwargs.setdefault("max_leapfrog_steps", 1000)
 
         optim = optax.adam(learning_rate=kwargs["adam_lr"])
+        # WP4 two-phase metric refresh. ``metric_refresh`` names an ensemble estimator
+        # (see pfcheeshmc/ensemble_metric.py); when set, phase A is a short fixed warmup on the
+        # Pathfinder metric, the ensemble covariance is estimated from phase-A draws, and phase B
+        # continues on the refreshed metric with a re-searched eps and re-seeded trajectory length.
+        # ``"none"`` (default) keeps the single-phase path bit-for-bit.
+        refresh = kwargs.get("metric_refresh", "none")
+        if refresh in _METRIC_REFRESH_NAMES:
+            return self._run_chees_two_phase(
+                pf_samples, inverse_mass_matrix, init_step_size, refresh, optim, **kwargs)
         # Stage-scoped key. This site used to be `_, key_warm = jax.random.split(jax.random.key(seed))`,
         # which produced exactly the key the sampling stage derived, so sampling replayed the warmup
         # key stream's child. Stage numbers are part of the key now: 1 = warmup, 2 = sampling.
@@ -697,6 +734,111 @@ class PfCheesHMC:
             chees_parameters,
             chees_info,
         )
+
+    def _run_chees_two_phase(self, pf_samples, imm_A, eps_A, refresh, optim, **kwargs):
+        """WP4 two-phase warmup: short fixed warmup on the Pathfinder metric, then a refresh.
+
+        Phase A runs ``metric_refresh_warmup`` steps of the ordinary ChEES warmup on ``imm_A``
+        and collects its draws. The named ensemble estimator builds a COVARIANCE (kernel order)
+        from those draws; eps is re-searched on the new metric (the same traced 32-probe search
+        the shipped path uses, so the cost is independent of chain count) and the trajectory
+        length is re-seeded at ``T = (pi/2) * sqrt(l_max(Sigma^-1))``. Phase B then continues the
+        warmup to the budget from phase A's final positions, on the refreshed metric.
+
+        Everything downstream of this method is unchanged: it returns the same
+        ``(states, parameters), info`` contract as :meth:`_run_chees`, so ``sample()`` and the
+        A8 attrs write the frozen values and gradient counts exactly as before.
+        """
+        W_total = int(kwargs["draws"])
+        W_A = int(kwargs.get("metric_refresh_warmup", 50))
+        W_A = max(2, min(W_A, W_total - 2))
+        W_B = W_total - W_A
+
+        # Stage-scoped key, same as the single-phase path; the two phases get distinct children
+        # so a refresh never replays the phase-A key stream.
+        key_warm = jax.random.fold_in(jax.random.key(kwargs["seed"]), 1)
+        keyA, keyB = jax.random.split(key_warm)
+
+        # ---- Phase A: short fixed warmup on the Pathfinder metric, collect draws ----------
+        (states_A, params_A), info_A = chees_warmup_with_progress(
+            self.ld_fn, keyA, pf_samples, eps_A, optim, W_A, imm_A,
+            target_acceptance_rate=kwargs["target_accept"],
+            max_leapfrog_steps=kwargs["max_leapfrog_steps"],
+            progressbar=False, stop_rule=None,
+            iterate=kwargs.get("iterate", "ma"))
+        pos_hist = getattr(info_A, "positions", None)
+        if pos_hist is None:
+            raise RuntimeError(
+                "two-phase metric refresh requires WarmupInfo.positions; the installed utils "
+                "predates WP4")
+
+        # Ensemble pool: the last `pool` phase-A steps, flattened in kernel order.
+        pool = int(kwargs.get("metric_refresh_pool", min(W_A, 20)))
+        pool = max(2, min(pool, W_A))
+        pos_pool = {n: jnp.asarray(p)[-pool:] for n, p in pos_hist.items()}
+        draws = positions_to_draws(pos_pool, pool)                       # (pool*C, d)
+
+        # Gradients are needed only by the Fisher estimator; chunked so peak memory is O(chunk).
+        grads = None
+        if refresh == "fisher_diag":
+            grads = self._pool_gradients(pos_pool, pool, kwargs)
+
+        # ---- The swap: build the refreshed covariance (kernel order), re-search eps, re-seed T
+        imm_B = estimate_covariance(
+            refresh, draws, grads,
+            ridge=float(kwargs.get("metric_refresh_ridge", 1e-6)),
+            shrink=float(kwargs.get("metric_refresh_shrink", 0.5)),
+            max_rank=int(kwargs.get("metric_refresh_rank", 5)))
+        # HMC state is a named tuple (index 0 = position dict); match the access the rest of
+        # the sampler uses (states_hist[0] / .position), not a string key.
+        pos_A = getattr(states_A, "position", None)
+        if pos_A is None:
+            pos_A = states_A[0]
+        eps_B = self._run_step_size_tune(pos_A, imm_B, **kwargs)         # traced, C-independent
+        T0_B = reseed_trajectory_length(imm_B)
+
+        # ---- Phase B: continue to the budget on the refreshed metric -----------------------
+        (states_B, params_B), info_B = chees_warmup_with_progress(
+            self.ld_fn, keyB, pos_A, eps_B, optim, W_B, imm_B,
+            target_acceptance_rate=kwargs["target_accept"],
+            max_leapfrog_steps=kwargs["max_leapfrog_steps"],
+            progressbar=bool(kwargs.get("progressbar", True)), stop_rule=None,
+            iterate=kwargs.get("iterate", "ma"), t0=T0_B)
+
+        # Merge the frozen bookkeeping so the A8 attrs and any row schema see one warmup.
+        params_B["warmup_steps_used"] = W_A + W_B
+        params_B["metric_refresh"] = refresh
+        params_B["metric_refresh_warmup"] = W_A
+        params_B["metric_refresh_pool"] = pool
+        # eps bookkeeping for the A8 row schema and the "re-search moves eps" test:
+        #   eps0            -- the step size the swap started from (phase-A input),
+        #   phaseA_end_eps  -- what the ChEES adapter had settled at the end of phase A,
+        #   eps_researched  -- the re-search on the NEW metric (must differ from phaseA_end).
+        params_B["metric_refresh_eps0"] = float(eps_A)
+        params_B["metric_refresh_phaseA_end_eps"] = float(params_A["step_size"])
+        params_B["metric_refresh_eps_researched"] = float(eps_B)
+        params_B["metric_refresh_T0"] = float(T0_B)
+        # The third return must be the warmup HMCInfo stack for the WHOLE warmup (phase A + phase B)
+        # so the exact A8 gradient count (sum of num_integration_steps) and the warmup divergence
+        # count span both phases; returning phase B alone would under-count warmup gradients by W_A
+        # steps. Build the combined WarmupInfo, then unwrap to the HMCInfo stack like the single-
+        # phase path.
+        combined = _concat_warmup_info(info_A, info_B)
+        if hasattr(combined, "info"):
+            self._warmup_trace = getattr(combined, "trace", None)
+            combined = combined.info
+        return (states_B, params_B, combined)
+
+    def _pool_gradients(self, pos_pool, pool, kwargs):
+        """Log-density gradients at the pooled phase-A positions, in kernel order, chunked."""
+        raveled, unravel = jax.tree_util.ravel_pytree(pos_pool)          # (pool, C, d)
+        N = int(raveled.size) // int(raveled.shape[-1])
+        flat = raveled.reshape(N, -1)
+        chunk = int(kwargs.get("score_chunk", 1024))
+        grad_vmap = jax.jit(jax.vmap(
+            lambda f: ravel_pytree(jax.grad(self.ld_fn)(unravel(f)))[0]))
+        return jnp.concatenate([grad_vmap(flat[i:i + chunk])
+                                for i in range(0, N, chunk)], axis=0)
     
     def _run_dynamic_hmc(self, chees_states, chees_parameters, inverse_mass_matrix, **kwargs):
         # Defaults
@@ -1096,6 +1238,14 @@ class PfCheesHMC:
         samp_n = _np.asarray(infos_hist.num_integration_steps, dtype=_np.int64)   # (draws, chains)
         idata.attrs["warmup_grad_evals_per_chain"] = int(warm_n.sum() // warm_n.shape[1])
         idata.attrs["sampling_grad_evals_per_chain"] = int(samp_n.sum() // samp_n.shape[1])
+        # WP4 metric refresh: expose the swap bookkeeping in the output (and hence the row
+        # schema) so a refresh is auditable -- which estimator, which warmup split it used,
+        # and where the step size moved across the swap.
+        for _k in ("metric_refresh", "metric_refresh_warmup", "metric_refresh_pool",
+                  "metric_refresh_eps0", "metric_refresh_phaseA_end_eps",
+                  "metric_refresh_eps_researched", "metric_refresh_T0"):
+            if _k in chees_parameters:
+                idata.attrs[_k] = chees_parameters[_k]
         return idata
     
 
