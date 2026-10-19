@@ -38,6 +38,28 @@ def _stratified_pool_idx(logp_subset, subset_idx, n_pick):
     return subset_idx[order[ranks]]
 
 
+def _frozen_nominal_L(integration_steps_fn, warmup_steps_used):
+    """ceil(T/eps) at the frozen point, recovered from the kernel's own step-count function.
+
+    `integration_steps_fn(arg)` returns ceil(halton(arg) * T/eps), and halton(arg) < 1 always, so a
+    direct call underestimates. arg = 2**b - 1 gives jitter = 1 - 2**-b, which is exact enough to
+    identify ceil(T/eps) for any L far below 2**b. Bit width is guessed from the warmup length and
+    checked over b-1..b+1, taking the maximum, so a change to utils' `max_sampling_steps` default
+    cannot make the reported number too small.
+    """
+    base = max(int(warmup_steps_used) + 1000, 1024)   # 1000 = utils' max_sampling_steps default
+    best = 0.0
+    for bits in (base.bit_length() - 1, base.bit_length(), base.bit_length() + 1):
+        if bits < 1:
+            continue
+        arg = jnp.asarray(2 ** bits - 1, dtype=jnp.int64)
+        try:
+            best = max(best, float(integration_steps_fn(arg)))
+        except Exception:
+            continue
+    return best
+
+
 class PfCheesHMC:
     def __init__(self, model:pm.Model, seed:Optional[int]=None):
         self.model = model
@@ -62,6 +84,58 @@ class PfCheesHMC:
     def dict_to_position(self, model, names):
         ip = model.initial_point()
         return [jnp.asarray(ip[n]) for n in names]
+
+    def _kernel_flat(self, position):
+        """Flatten a chain position exactly as the HMC kernel does.
+
+        The kernel ravels the *state*, which is a dict, so JAX orders the coordinates by sorted
+        key (blackjax/mcmc/metrics.py:236-244). Anything that builds a metric, or reads one, must
+        flatten through here so it cannot silently use Pathfinder's tuple order instead.
+        """
+        return ravel_pytree(position)[0]
+
+    def _kernel_permutation(self, ref_tree):
+        """Index vector ``perm`` with ``perm[k]`` = tuple-order index of kernel coordinate ``k``.
+
+        Two flatten orders exist in this pipeline and they are not the same order:
+
+        * Pathfinder is fitted on ``tuple(position[n] for n in self.rvs)`` (:py:func:`ld_fn` and
+          ``approximate(initial_position=...)``), so its draws, its covariance and its L-BFGS
+          factors are in **model.value_vars order**.
+        * The HMC state is a **dict**, and ``ravel_pytree`` sorts dict keys, so the kernel reads a
+          metric in **sorted-name order**.
+
+        When those differ (GEV: ``[mu, sigma_log__, xi_interval__]`` vs ``[mu, xi_interval__,
+        sigma_log__]``; radon: the five scalars land inside the 170 raw effects) a metric built in
+        tuple order is applied to the wrong coordinates, and nothing raises. This returns the
+        permutation that fixes it; identity when the orders already agree.
+        """
+        leaves0 = jax.tree_util.tree_leaves(jax.tree_util.tree_map(lambda x: x[0], ref_tree))
+        if len(leaves0) != len(self.rvs):
+            raise ValueError(
+                f"the position tree has {len(leaves0)} leaves but the model has "
+                f"{len(self.rvs)} value_vars ({self.rvs}); cannot map Pathfinder's coordinate "
+                "order onto the kernel's"
+            )
+        d = int(sum(int(jnp.size(x)) for x in leaves0))
+        _, unravel_tuple = ravel_pytree(jax.tree_util.tree_map(lambda x: x[0], ref_tree))
+        # Label each tuple-order slot with its own index, then ravel as a dict: entry k of the
+        # result is the tuple-order index of the coordinate the kernel puts at position k.
+        labelled = dict(zip(self.rvs, jax.tree_util.tree_leaves(unravel_tuple(jnp.arange(d)))))
+        return ravel_pytree(labelled)[0].astype(int)
+
+    def _metric_to_kernel_order(self, imm, perm):
+        """Reorder a dense metric from Pathfinder's tuple order into the kernel's dict order.
+
+        Applied to the *expanded* dense matrix for every ``imm_source``. For a low-rank factor
+        ``D (I + U (lam-1) U^T) D`` this is identical to permuting the factors first
+        (``sigma[perm]``, ``U[perm, :]``), because conjugation by the permutation matrix commutes
+        with that expression; ``tests/test_metric_orientation.py`` pins the equivalence rather
+        than carrying two code paths.
+        """
+        if jnp.ndim(imm) == 2:
+            return imm[perm][:, perm]
+        return imm[perm]
     
     @property
     def seed(self):
@@ -403,7 +477,17 @@ class PfCheesHMC:
 
         X   = flat_mat - flat_mat.mean(axis=0, keepdims=True)
         cov = (X.T @ X) / (total - 1) + ridge * jnp.eye(X.shape[1], dtype=X.dtype)
-        inverse_mass_matrix = jnp.linalg.inv(cov)
+        # The metric is the COVARIANCE, not its inverse. BlackJAX's `inverse_mass_matrix` is the
+        # matrix that multiplies the momentum in the kinetic energy, KE = 1/2 p . (imm p)
+        # (mcmc/metrics.py:262-270), and the leapfrog acceleration is q'' = -imm * grad U, so a
+        # well-conditioned trajectory needs imm ~ Cov(q): with imm = Cov(q)^-1 every coordinate's
+        # period is wrong by 1/var, which is why a logistic run under the inverted metric froze at
+        # eps=0.0021 with L=136 instead of eps=0.66 with L=26. BlackJAX says so in its own code --
+        # chees_adaptation.py:335 calls this quantity "the diagonal inverse_mass_matrix (Sigma)"
+        # and :453 computes v' = Sigma p' -- and its window adaptation returns exactly the
+        # regularised sample covariance (adaptation/mass_matrix.py:344-353, Stan's formula).
+        # NOTE: the matrix is still in Pathfinder's tuple order here; step 8 reorders it.
+        inverse_mass_matrix = cov
 
         # 6b) Optional alternative metric (E4). Default "mc" keeps the empirical covariance above,
         # so nothing changes for existing callers. Anything other than "mc" produces a
@@ -446,6 +530,12 @@ class PfCheesHMC:
             pf_samples = {name: pf_inits_tree[name] for name in self.rvs}
         else:
             pf_samples = {self.rvs[0]: pf_inits_tree}
+
+        # 8) Single choke point: hand the rest of the pipeline a metric in the kernel's order.
+        # Everything downstream (find_reasonable_step_size, the ChEES whitening diagonal, and the
+        # dynamic-HMC kernel) ravels the dict state, so the reorder happens here and nowhere else.
+        perm = self._kernel_permutation(samples_flat)
+        inverse_mass_matrix = self._metric_to_kernel_order(inverse_mass_matrix, perm)
 
         return pf_samples, inverse_mass_matrix
 
@@ -892,6 +982,7 @@ class PfCheesHMC:
         step_size_tune_kwargs:dict={},
         pathfinder_kwargs:dict={},
         dynamic_hmc_kwargs:dict={},
+        keep_untransformed: bool = False,
         **kwargs,
     ) -> az.InferenceData:
         #Override chains in all kwargs
@@ -926,11 +1017,30 @@ class PfCheesHMC:
             infos_hist,
             draw_axis=0,          # your scan stacks draws first
             chain_axis=1,         # and chains second (vmapped)
-            keep_untransformed=False,
+            keep_untransformed=keep_untransformed,
         )
         # How much warmup actually ran. Visible in the output on purpose: with a stop rule the
         # configured warmup length is an upper bound, and a reader must be able to see the difference.
         idata.attrs["warmup_steps_used"] = int(chees_parameters.get("warmup_steps_used", -1))
+
+        # A8 artifact contract: a speed claim is only auditable if the frozen adaptation values and
+        # the *exact* gradient counts travel with the draws. Gradient counts are summed from
+        # num_integration_steps, never estimated from L x draws: the trajectory length is jittered
+        # per step, so any product of frozen values is an approximation.
+        import numpy as _np
+        idata.attrs["frozen_step_size"] = float(chees_parameters["step_size"])
+        # Nominal (unjittered) trajectory length L = T/eps at the frozen point. The kernel draws
+        # ceil(jitter(i) * L) per step, and jitter is a Halton value in (0,1), so the largest jitter
+        # available inside the scan's own bit width recovers ceil(L). Bit widths are probed over a
+        # small range because max_bits is a property of utils' signature, not of this call.
+        idata.attrs["frozen_L_nominal"] = _frozen_nominal_L(
+            chees_parameters["integration_steps_fn"],
+            int(idata.attrs["warmup_steps_used"]),
+        )
+        warm_n = _np.asarray(chees_info.num_integration_steps, dtype=_np.int64)     # (steps, chains)
+        samp_n = _np.asarray(infos_hist.num_integration_steps, dtype=_np.int64)   # (draws, chains)
+        idata.attrs["warmup_grad_evals_per_chain"] = int(warm_n.sum() // warm_n.shape[1])
+        idata.attrs["sampling_grad_evals_per_chain"] = int(samp_n.sum() // samp_n.shape[1])
         return idata
     
 
@@ -942,6 +1052,7 @@ def sample_pf_chees_hmc(
     chains: int = 32,
     random_seed: Optional[int] = None,
     progressbar: bool = True,
+    keep_untransformed: bool = False,
     # pass-through buckets for your class:
     pathfinder_kwargs: Optional[Dict[str, Any]] = None,
     step_size_tune_kwargs: Optional[Dict[str, Any]] = None,
@@ -968,6 +1079,9 @@ def sample_pf_chees_hmc(
         Number of chains.
     random_seed : int | None
         Seed for the PfCheesHMC instance.
+    keep_untransformed : bool
+        Return the posterior in unconstrained (value-var) space as well. Needed by the R1 bias
+        harness (WP3), which compares moments against a NUTS reference in unconstrained space.
     pathfinder_kwargs, step_size_tune_kwargs, chees_kwargs, dynamic_hmc_kwargs : dict | None
         Forwarded to `PfCheesHMC.sample(...)`.
 
@@ -994,6 +1108,7 @@ def sample_pf_chees_hmc(
     idata = sampler.sample(
         chains=chains,
         draws=draws,
+        keep_untransformed=keep_untransformed,
         pathfinder_kwargs=pathfinder_kwargs,
         step_size_tune_kwargs=step_size_tune_kwargs,
         chees_kwargs=chees_kwargs,
