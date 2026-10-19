@@ -49,7 +49,7 @@ def mem_readings(dev):
 
 def run_cfg(model_name, C, D, W, pf_draws, seed, out_path):
     import tools.bench_ladder as bl
-    from pfcheeshmc import PfCheesHMC
+    from pfcheeshmc.sampler import PfCheesHMC
 
     model = bl.model_specs()[model_name]()
     dev = device()

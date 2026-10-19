@@ -64,7 +64,7 @@ def main():
     a = ap.parse_args()
 
     import tools.bench_ladder as bl
-    from pfcheeshmc import PfCheesHMC
+    from pfcheeshmc.sampler import PfCheesHMC
 
     model = bl.model_specs()[a.model]()
     pf_kwargs = dict(draws=a.pf_draws, pm_chains=a.pm_chains, score_chunk=a.score_chunk)
