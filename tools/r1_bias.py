@@ -443,7 +443,8 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
                                    imm_orientation=args.orientation),
             chees_kwargs=dict(draws=W, iterate=args.iterate,
                             **({"metric_refresh": args.metric_refresh,
-                                "metric_refresh_warmup": max(2, W // 2)}
+                                "metric_refresh_warmup": max(2, W // 2),
+                                "metric_refresh_reseed": args.metric_refresh_reseed}
                                if args.metric_refresh != "none" else {})),
         )
         import arviz as az
@@ -579,6 +580,12 @@ def main():
     ap.add_argument("--metric-refresh", default="none",
                     choices=["none", "sample_diag", "fisher_diag", "dense_shrunk", "diag_lowrank"],
                     help="WP4 two-phase ensemble metric refresh (none = the T1 single-phase arm)")
+    ap.add_argument("--metric-refresh-reseed", dest="metric_refresh_reseed", default=True,
+                    action="store_true",
+                    help="re-seed phase-B trajectory length at (pi/2)*sqrt(l_max) (default)")
+    ap.add_argument("--no-metric-refresh-reseed", dest="metric_refresh_reseed",
+                    action="store_false",
+                    help="skip the trajectory-length re-seed on the metric swap (phase B starts at L=1)")
     ap.add_argument("--superchains", type=int, default=0, help="K (superchains); 0 = off")
     ap.add_argument("--nested-limit", type=float, default=1.01)
     ap.add_argument("--cpu-contended", action="store_true",

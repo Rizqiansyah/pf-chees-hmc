@@ -795,7 +795,12 @@ class PfCheesHMC:
         if pos_A is None:
             pos_A = states_A[0]
         eps_B = self._run_step_size_tune(pos_A, imm_B, **kwargs)         # traced, C-independent
-        T0_B = reseed_trajectory_length(imm_B)
+        # metric_refresh_reseed (default True) keeps the current behaviour: re-seed the phase-B
+        # trajectory length at (pi/2)*sqrt(l_max(Sigma^-1)). False skips that re-seed so phase B
+        # starts at L=1 (t0=None -> trajectory_length = step_size) and grows T with its own
+        # dynamics on the refreshed metric -- isolating the cost of the re-seed itself.
+        reseed = bool(kwargs.get("metric_refresh_reseed", True))
+        T0_B = reseed_trajectory_length(imm_B) if reseed else None
 
         # ---- Phase B: continue to the budget on the refreshed metric -----------------------
         (states_B, params_B), info_B = chees_warmup_with_progress(
@@ -817,7 +822,8 @@ class PfCheesHMC:
         params_B["metric_refresh_eps0"] = float(eps_A)
         params_B["metric_refresh_phaseA_end_eps"] = float(params_A["step_size"])
         params_B["metric_refresh_eps_researched"] = float(eps_B)
-        params_B["metric_refresh_T0"] = float(T0_B)
+        params_B["metric_refresh_reseed"] = reseed
+        params_B["metric_refresh_T0"] = float(T0_B) if T0_B is not None else None
         # The third return must be the warmup HMCInfo stack for the WHOLE warmup (phase A + phase B)
         # so the exact A8 gradient count (sum of num_integration_steps) and the warmup divergence
         # count span both phases; returning phase B alone would under-count warmup gradients by W_A
@@ -1250,7 +1256,7 @@ class PfCheesHMC:
         # and where the step size moved across the swap.
         for _k in ("metric_refresh", "metric_refresh_warmup", "metric_refresh_pool",
                   "metric_refresh_eps0", "metric_refresh_phaseA_end_eps",
-                  "metric_refresh_eps_researched", "metric_refresh_T0"):
+                  "metric_refresh_eps_researched", "metric_refresh_reseed", "metric_refresh_T0"):
             if _k in chees_parameters:
                 idata.attrs[_k] = chees_parameters[_k]
         return idata
