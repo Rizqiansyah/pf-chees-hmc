@@ -17,8 +17,13 @@ class WarmupInfo(NamedTuple):
     """What the warmup scan stacks, plus the per-step scalar trace.
 
     info
-        The HMCInfo stack (draws, chains, ...) -- same as before the vendored
-        adapter existed.
+        The (projected) warmup scan output, (steps, chains, ...). With the stop rule
+        off this is a WarmupScanInfo stack -- num_integration_steps, is_divergent,
+        acceptance_rate -- the only fields a consumer reads (the sampler's
+        warmup_grad_evals_per_chain, the divergence counters, the stop-rule check).
+        Stacking the full HMCInfo would also stack proposal.position/momentum/
+        logdensity_grad, ~4x the volume of the states, which is what made the warmup
+        scan the device-memory wall at C=1,024 (measured: ~14 GB at d=175, W=2,000).
     trace
         A (steps, 4) float stack: (step, step_size, trajectory_length,
         harmonic_acceptance) at each warmup step, from the vendored adapter's
@@ -33,7 +38,26 @@ class WarmupInfo(NamedTuple):
     trace: Any
 
 
-__all__ = ["chees_warmup_with_progress", "chees_harmonic_acceptance", "block_max_rhat", "WarmupInfo"]
+class WarmupScanInfo(NamedTuple):
+    """The only per-step fields of the warmup scan that a consumer reads.
+
+    num_integration_steps -- exact gradient counts (A8: sum of steps, never an estimate)
+    is_divergent          -- divergence counters and the harmonic-acceptance mask
+    acceptance_rate       -- the ChEES step-size signal (harmonic mean over chains)
+    """
+
+    num_integration_steps: Any
+    is_divergent: Any
+    acceptance_rate: Any
+
+
+__all__ = [
+    "chees_warmup_with_progress",
+    "chees_harmonic_acceptance",
+    "block_max_rhat",
+    "WarmupInfo",
+    "WarmupScanInfo",
+]
 
 
 def chees_harmonic_acceptance(acc_vals, is_divergent):
@@ -190,8 +214,12 @@ def chees_warmup_with_progress(
         )
         bar.refresh()
 
-    # One ChEES step (vectorized over chains) with throttled host callback
-    def one_step(carry, xs):
+    # One ChEES step (vectorized over chains) with throttled host callback.
+    # `stack_positions` (a trace-time constant) selects the scan output: the stop-rule
+    # path needs the position window for block_max_rhat, the default path's consumers
+    # read nothing from it. Stacking the full HMCInfo either way was the warmup memory
+    # wall at large C (proposal.position/momentum/logdensity_grad duplicate the state).
+    def _step_body(carry, xs, stack_positions):
         i, key = xs
         states, astate = carry
         keys = jax.random.split(key, num_chains_local)
@@ -215,6 +243,11 @@ def chees_warmup_with_progress(
         # diagnostics for this iteration (across chains)
         div_step  = jnp.sum(info.is_divergent)
         acc_mean  = chees_harmonic_acceptance(acc_vals, info.is_divergent)
+
+        # Scan output projection: the only fields a downstream consumer reads. Everything else
+        # in HMCInfo (momentum, proposal.*) duplicates state leaves the scan does not need to
+        # keep, and was the warmup memory wall at large C (~14 GB at d=175, W=2,000, C=1,024).
+        proj = WarmupScanInfo(info.num_integration_steps, info.is_divergent, acc_vals)
 
         # Update adaptation state (vendored adapter: state + scalar trace)
         new_astate, trace = update_adapt(
@@ -243,9 +276,12 @@ def chees_warmup_with_progress(
 
             lax.cond(should_cb, do_cb, dont_cb, operand=None)
 
-        return (new_states, new_astate), (new_states.position, info, trace)   # carry, ys
+        if stack_positions:
+            return (new_states, new_astate), (new_states.position, proj, trace)   # carry, ys
+        return (new_states, new_astate), (proj, trace)                            # carry, ys
 
-    one_step_jit = jax.jit(one_step)
+    one_step_jit = jax.jit(lambda c, x: _step_body(c, x, False))          # default path
+    one_step_pos_jit = jax.jit(lambda c, x: _step_body(c, x, True))       # stop-rule path
 
     def _scan_block(carry, start, n):
         """Run n warmup steps whose *global* step indices start at `start`.
@@ -255,7 +291,7 @@ def chees_warmup_with_progress(
         every block replay the same jitter sequence.
         """
         ks = jax.random.split(jax.random.fold_in(rng_key, start), n)
-        return jax.lax.scan(one_step_jit, carry, (jnp.arange(start, start + n), ks))
+        return jax.lax.scan(one_step_pos_jit, carry, (jnp.arange(start, start + n), ks))
 
     def _stop_met(pos_win, info_win, astate):
         """Rank-normalised split-R-hat over a window, plus step-size quietness.
@@ -320,9 +356,11 @@ def chees_warmup_with_progress(
         (last_states, last_adapt_state), (pos_hist, warm_info, trace_hist) = carry, (pos_blk, info_blk, trace_blk)
     else:
         # Default path: one scan, same key stream as before the stop rule existed.
+        # Positions are not stacked: nothing on this path reads them.
         keys = jax.random.split(rng_key, num_steps)
-        (last_states, last_adapt_state), (pos_hist, warm_info, trace_hist) = jax.lax.scan(
+        (last_states, last_adapt_state), (warm_info, trace_hist) = jax.lax.scan(
             one_step_jit, (init_states, adaptation_state), (jnp.arange(num_steps), keys))
+        pos_hist = None
         stopped_at = None
 
     if bar is not None:
@@ -349,8 +387,8 @@ def chees_warmup_with_progress(
         # Number of warmup steps actually executed: equals num_steps unless a stop rule fired.
         "warmup_steps_used": int(stopped_at) if stopped_at else int(num_steps),
     }
-    # warm_info is the (info, trace) stack. The sampler's `_run_chees` returns it
-    # as `chees_info`, which sample() currently does not read -- so the added
-    # trace costs nothing downstream, and a future caller can read the whole
-    # warmup curve (step, eps, T, harmonic acceptance) without re-running.
+    # warm_info is the projected per-step stack (WarmupScanInfo): exact gradient counts,
+    # divergences, and the acceptance signal. The sampler's `_run_chees` returns it as
+    # `chees_info`; sample() reads num_integration_steps / is_divergent from it, and the
+    # trace carries the warmup curve (step, eps, T, harmonic acceptance) for free.
     return (last_states, parameters), WarmupInfo(info=warm_info, trace=trace_hist)
