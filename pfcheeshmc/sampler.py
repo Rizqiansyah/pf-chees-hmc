@@ -458,6 +458,19 @@ class PfCheesHMC:
                 raise ValueError(f"init_pick must be 'iid' or 'stratified', got {pick!r}")
             # samples_flat is the whole pool in (chains, draws) chunk order; the chunk axis is just
             # how Pathfinder emitted the draws, so any row may seed any chain.
+            #
+            # superchains=K (WP3, nested R-hat): keep the first K picks and replicate each C//K times,
+            # so the C chains form K equal-sized superchains that start at K *distinct* Pathfinder
+            # points -- which is what makes between-superchain variation a real signal (arXiv
+            # 2110.13017). Absent (default) leaves pick_global byte-identical to the previous pick.
+            K = kwargs.get("superchains")
+            if K is not None:
+                K = int(K)
+                if K < 1 or K > chains:
+                    raise ValueError(f"superchains must be in [1, chains={chains}], got {K}")
+                if chains % K:
+                    raise ValueError(f"chains={chains} must be divisible by superchains={K}")
+                pick_global = jnp.repeat(pick_global[:K], chains // K)
             pf_inits_tree = jax.tree_util.tree_map(lambda x: x[pick_global], samples_flat)
         elif init_source == "adapt_diag":
             # use the repaired adapt_diag starts as chain inits
