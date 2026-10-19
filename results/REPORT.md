@@ -16,6 +16,18 @@ Pathfinder draws are flattened as a **tuple** in `model.value_vars` order; the H
 
 Measured in isolation (orientation held correct, ordering wrong), on a 4-scalar target with posterior variances 1e2 / 3 / 1 / 1e-2: **max R̂ 1.0069 and worst-variable bulk ESS 3,176 against ~31,000 for the other three coordinates** — one coordinate silently dies. `tests/test_metric_orientation.py` is the permanent gate (G-ORDER); it must fail on `ecd9ba1`.
 
+### 2.1a How to describe the permutation — reviewer-corrected wording
+
+The statistical reviewer's re-review (after the order A/B) set out four points, all adopted, because the earlier framing risked being read as an accuracy fix:
+
+1. It is a **coordinate-coupling / representation-ordering correction, not a posterior-accuracy improvement.** The reason it stays default-on is the controlled fixture, where ordering is correctness-critical: R̂ 12.10 and worst-variable ESS 32 without it.
+2. **Throughput sign is geometry-dependent and both directions are measured:** radon NC **4.7× faster** on all 5 seeds (3.92 vs 18.42 gradients per ESS), GEV **2.6–4.5× slower** on all 3 seeds. A reader must see that the sign flips by model.
+3. The **GEV posterior-mean halving belongs to the orientation flip, not the permutation.** Attributing it to the ordering would be wrong.
+4. **Radon carries a small, seed-consistent accuracy cost** — worst mean error worse by 0.004–0.011 sd on all 5 seeds — recorded so it is not later rediscovered as an unexplained regression.
+
+Two of the four benchmark models (8 Schools, logistic) are identity cases where the ordering cannot differ, which is both the clean negative control and the explanation for how the defect survived: the project's everyday benchmark is one of them.
+
+
 ### 2.2 The metric orientation is inverted (P0, confirmed — after one retracted contradiction)
 
 `pfcheeshmc/sampler.py` passes `inverse_mass_matrix = jnp.linalg.inv(cov)`. The array in BlackJAX's slot is `M⁻¹` in `KE = ½ pᵀ M⁻¹ p`, and leapfrog frequencies are `ω² = eig(M⁻¹ H)` with target Hessian `H = Σ⁻¹`. The well-conditioned choice is therefore **`M⁻¹ = Σ`, i.e. the slot must hold the covariance** (Stan's docs call the inverse mass matrix "the covariance" for exactly this reason). An earlier entry in this run's ledger challenged the review on this point; that challenge is **retracted** at `5a18c88` after direct re-measurement:
