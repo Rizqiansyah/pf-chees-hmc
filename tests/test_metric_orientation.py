@@ -344,13 +344,16 @@ def test_ordering_error_collapses_one_coordinate(anisotropic_model):
         "the ordering fixture has become insensitive, not that the bug is fixed")
 
 
-def test_default_is_still_precision_orientation(anisotropic_model):
-    """The default orientation is the owner's call, so pin what it currently is.
+def test_default_orientation_is_covariance_and_mixes(anisotropic_model):
+    """The shipped default is the covariance orientation (owner decision, 2026-10-20).
 
-    If a later WP flips it, this test is the one to update, and it should be flipped together with
-    G3 evidence (>= 5 seeds per model, divergence rate not rising) rather than on its own.
+    Pinned by behaviour, not by a string: the default arm must mix an anisotropic target. Evidence
+    behind the flip, all in results/LEDGER.md -- gradients/ESS better on 4 of 4 real models,
+    posterior-mean error halved on GEV (0.059 -> 0.028 sd), R-hat <= 1.01 on GEV in 3 of 5 seeds
+    where precision gives 0 of 5, and G-R1 at C=1,024 passing on 3 of 4 models vs 2 of 4. Accepted
+    cost: GEV divergences 0.025 -> 0.400 per 1k, seed-stable, mechanism still open.
+    If this test goes red the default moved again; change it with the G3 trail, not alone.
     """
-    _, max_rhat, *_ = _mixing_report(anisotropic_model)      # no imm_orientation passed
-    assert max_rhat > 2.0, (
-        "default orientation changed: imm_orientation now defaults to something other than "
-        "'precision' -- update the default and the G3 evidence trail together")
+    _, max_rhat, min_ess, per, *_ = _mixing_report(anisotropic_model)   # no imm_orientation passed
+    assert max_rhat < 1.05, f"default arm is not mixing: max R-hat {max_rhat:.4f}, per-var ESS {per}"
+    assert min_ess > 10_000, f"default arm is not mixing: min bulk ESS {min_ess:.0f}, per-var {per}"

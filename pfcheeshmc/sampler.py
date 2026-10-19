@@ -528,8 +528,12 @@ class PfCheesHMC:
         # orientations. The knob now applies to all three arms identically, which makes the low-rank
         # sources behave consistently with `mc` for the first time (a behaviour change for them).
         #
-        # The default stays "precision": it is the literal reading of the argument name and the
-        # shipped behaviour, and changing it is an efficiency decision the owner makes, not a task.
+        # The default is "covariance" (owner decision, 2026-10-20; the flip and the coordinate
+        # permutation land in the same merge because holding "precision" next to a fixed
+        # permutation would ship a state that fails R-hat <= 1.01 on GEV in 5 of 5 seeds).
+        # Measured reason: the slot array is M^-1 in KE = 0.5 p^T A p, and leapfrog frequencies are
+        # eig(A H) with H = Sigma^-1, so the well-conditioned value of A is the posterior
+        # covariance. Accepted cost: GEV's divergence rate rises 0.025 -> 0.400 per 1k, seed-stable.
         # One measured caveat to carry into WP4 (which owns the metric), from CPU runs on a 3-scalar
         # conjugate Gaussian with posterior variances 1e1 / 1e0 / 1e-2 and reverse-sorted names
         # (32 chains, 500 warmup, 1,000 draws, seeds 5-7): "precision" froze at eps=0.0138 with
@@ -540,7 +544,7 @@ class PfCheesHMC:
         # so a moment test alone cannot arbitrate orientation. See results/WP1/SUMMARY.md section 6
         # and test_precision_orientation_does_not_mix_an_anisotropic_target.
 
-        orientation = kwargs.get("imm_orientation", "precision")
+        orientation = kwargs.get("imm_orientation", "covariance")
         if orientation == "precision":
             inverse_mass_matrix = jnp.linalg.inv(covariance)
         elif orientation == "covariance":
