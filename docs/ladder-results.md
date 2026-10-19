@@ -472,3 +472,84 @@ Convergence readouts are flat across all five seeds.
 Method note: the ESS in this table is arviz's per-chain quantity under this script's own convention and
 is only comparable within it. Cross-model ESS/s claims use `tools/bench_ladder.py`, which is what the
 grid numbers elsewhere in this file come from.
+
+## Chains at fixed total draws: parallelism buys throughput, not latency (E5)
+
+Prompt for this section: if a GPU has thousands of lanes, why don't many chains beat a few long
+chains at the same number of draws? Measured on the RTX A2000, 32 cores on the other arm, warm rows
+(compile excluded), `c/step = wall / (warmup + draws_per_chain)`.
+
+Fixed total draws = 40,000, warmup 2,000:
+
+| model | chains | draws/chain | wall | c/step | max R-hat | ESS/s worst var |
+|---|---|---|---|---|---|---|
+| 8 Schools | 32 | 1,250 | **10.3 s** | 3.17 ms | 1.0013 | 2,185 |
+| 8 Schools | 128 | 313 | 11.1 s | 4.79 ms | 1.0060 | 2,118 |
+| 8 Schools | 512 | 78 | 17.7 s | 8.51 ms | 1.0229 | 1,387 |
+| 8 Schools | 1,024 | 39 | 27.9 s | 13.69 ms | **1.0404** | 940 |
+| logistic 1000x25 | 32 | 1,250 | **34.3 s** | 10.54 ms | 1.0022 | 355 |
+| logistic 1000x25 | 64 | 625 | 46.8 s | 17.84 ms | 1.0024 | **525** |
+| logistic 1000x25 | 512 | 78 | 181.6 s | 87.39 ms | 1.0164 | 146 |
+| radon non-centered | 32 | 1,250 | **38.6 s** | 11.89 ms | 1.0069 | 105 |
+| radon non-centered | 64 | 625 | 38.6 s | 14.70 ms | 1.0124 | 110 |
+| radon non-centered | 128 / 256 | — | **OOM** | — | — | — |
+
+**What you hold fixed is the whole answer.** At fixed *draws per chain* the GPU's parallelism pays
+comfortably -- 128 chains is 3.2x the 32-chain throughput on 8 Schools and 3.8x on logistic (grid
+above). At fixed *total draws* it loses monotonically, because wall is
+
+    wall(C) = (W + D/C) x c(C),   W = 2,000 warmup steps
+
+and the two terms move in opposite directions: `D/C` shrinks with chains while `c(C)` grows. At
+1,024 chains there are only 1.6x fewer sequential steps than at 32, while each step costs 4.3x more.
+ChEES warmup is a chain of 2,000 *dependent* adaptation updates; parallelism lives inside a step, so
+adding chains cannot remove one.
+
+Quality moves the same way -- max R-hat 1.0013 -> 1.0404 and worst-variable ESS/s 2,185 -> 940 going
+32 -> 1,024 chains. Short chains do not substitute for long ones.
+
+### Warmup length versus chain count (fixed 10,000 total draws, warm rows)
+
+| warmup | 8 Schools C=32 | C=128 | C=512 |
+|---|---|---|---|
+| 100 | 6.5 s / R-hat 1.0408 | 8.2 s / 1.0787 | 13.7 s / 1.1148 |
+| 250 | 6.7 s / 1.0088 | 8.2 s / 1.0218 | 14.1 s / 1.1118 |
+| 500 | 7.1 s / 1.0063 | 8.6 s / 1.0213 | 14.3 s / 1.0822 |
+| 1,000 | 7.8 s / 1.0067 | 9.3 s / 1.0215 | 15.5 s / 1.0559 |
+| 2,000 | 9.1 s / 1.0073 | 10.8 s / 1.0245 | 17.3 s / 1.0938 |
+
+More warmup does not repair what more chains broke: at 512 chains (20 draws per chain) R-hat stays
+1.08-1.11 at every warmup length. A Pathfinder start needs draws-per-chain to burn off, not warmup.
+
+Radon at C=32, the same grid: R-hat 2.2397 (W=100), 1.6646 (250), 1.4540 (500), 1.0698 (1,000),
+1.0381 (2,000) -- monotone, and still above the 1.01 bar at the shipped default for a 10,000-draw
+budget at d=175.
+
+### Warmup 500 versus 2,000, five seeds -- why there is no smaller default
+
+| model | warmup | wall | max R-hat | ESS/s worst var | realised steps/draw |
+|---|---|---|---|---|---|
+| 8 Schools (d=8) | 500 | **8.52 s** | 1.0020 | **2,260** | 19.8 |
+| 8 Schools (d=8) | 2,000 | 10.66 s | 1.0020 | 2,098 | 21.4 |
+| logistic (d=25) | 500 | 12.48 s | **1.0433** | **63** | **15.4** |
+| logistic (d=25) | 2,000 | 35.58 s | 1.0020 | 389 | 59.9 |
+
+A dimension-scaled warmup looked tempting after 8 Schools (20% faster for free) and was killed by its
+own control: logistic is d=25 and at warmup 500 it lost 6x ESS with R-hat 1.043, because ChEES had
+only grown the trajectory to 15.4 steps where the geometry needs ~60. **Required warmup tracks
+realised trajectory length, which is not knowable before warmup runs.** No default change ships from
+this. It is also the strongest argument in the project for a criterion-based stop rule -- and that
+rule currently measures cost-negative (+6.7-9.0 s of block-boundary overhead), so the remaining
+honest option is to move the loop inside the trace, not to pick a smaller constant.
+
+### Two claims from earlier in this file that these runs refuted
+
+1. "128 chains does not fit because every chain re-reads the data" -- the OOM ceiling is not
+   explained by the draw pool: radon OOMs at 128 chains even with warmup 100, where the stacked
+   warmup output is tiny. Measured and unrefuted fact: **radon's ceiling on this card is 64 chains at
+   any warmup or draw count.** Where the memory actually goes (Pathfinder pool, step-size tuner, or
+   warmup state) is NOT ESTABLISHED -- the earlier explanation was wrong twice and should not be
+   repeated.
+2. "`c(C)` is roughly flat, so chains are nearly free." True for the 32-chain batched gradient alone
+   (23.0 -> 25.3 us from 32 to 128 chains) and false for the full transition, which is what the wall
+   is made of: c/step on 8 Schools rises 3.17 -> 13.69 ms from 32 to 1,024 chains.
