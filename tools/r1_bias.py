@@ -567,7 +567,8 @@ def main():
     ap.add_argument("--init-pick", default="stratified", choices=["stratified", "iid"])
     # WP1/WP2 knobs, forwarded so the R1 sweep can vary them without a per-arm harness.
     ap.add_argument("--orientation", default="precision", choices=["precision", "covariance"])
-    ap.add_argument("--iterate", default="ma", choices=["ma", "raw"])    ap.add_argument("--superchains", type=int, default=0, help="K (superchains); 0 = off")
+    ap.add_argument("--iterate", default="ma", choices=["ma", "raw"])
+    ap.add_argument("--superchains", type=int, default=0, help="K (superchains); 0 = off")
     ap.add_argument("--nested-limit", type=float, default=1.01)
     ap.add_argument("--cpu-contended", action="store_true",
                     help="tag rows taken while a CPU-heavy job (e.g. WP0.2 NUTS) was running")
