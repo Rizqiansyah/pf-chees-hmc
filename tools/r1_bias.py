@@ -421,8 +421,10 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
                                      "chains": args.chains, "draws": args.draws, "warmup": W,
                                      "pathfinder_kwargs": {"draws": args.pf_draws,
                                                            "init_pick": args.init_pick,
+                                                           "imm_orientation": args.orientation,
                                                            "superchains": args.superchains},
-                                     "chees_kwargs": {"draws": W}, "progressbar": False,
+                                     "chees_kwargs": {"draws": W, "iterate": args.iterate},
+                                     "progressbar": False,
                                      "ref_stats_check": "skipped"
                                      if args.allow_collapsed_reference_stats else "strict"},
                                     sort_keys=True))
@@ -432,8 +434,9 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
         idata = sample_pf_chees_hmc(
             model, chains=args.chains, draws=args.draws, random_seed=seed, progressbar=False,
             pathfinder_kwargs=dict(draws=args.pf_draws, init_pick=args.init_pick,
-                                   superchains=args.superchains),
-            chees_kwargs=dict(draws=W),
+                                   superchains=args.superchains,
+                                   imm_orientation=args.orientation),
+            chees_kwargs=dict(draws=W, iterate=args.iterate),
         )
         import arviz as az
 
@@ -562,7 +565,9 @@ def main():
     ap.add_argument("--pf-draws", type=int, default=1,
                     help="Pathfinder draws per chain; the pool is chains*this (4000 OOMs at C=1024)")
     ap.add_argument("--init-pick", default="stratified", choices=["stratified", "iid"])
-    ap.add_argument("--superchains", type=int, default=0, help="K (superchains); 0 = off")
+    # WP1/WP2 knobs, forwarded so the R1 sweep can vary them without a per-arm harness.
+    ap.add_argument("--orientation", default="precision", choices=["precision", "covariance"])
+    ap.add_argument("--iterate", default="ma", choices=["ma", "raw"])    ap.add_argument("--superchains", type=int, default=0, help="K (superchains); 0 = off")
     ap.add_argument("--nested-limit", type=float, default=1.01)
     ap.add_argument("--cpu-contended", action="store_true",
                     help="tag rows taken while a CPU-heavy job (e.g. WP0.2 NUTS) was running")
