@@ -332,7 +332,11 @@ def instrument():
                 # _run_chees forwards that as (states, parameters, warm_info): the third element is
                 # the stacked warmup HMCInfo, NOT a (positions, info) pair.
                 _, params, winfo = out
-                steps = np.asarray(winfo.num_integration_steps, dtype="int64")
+                # WP2 wraps the stacked HMCInfo as WarmupInfo(info=..., trace=...); trees without
+                # the vendored adapter hand the HMCInfo itself. Accept both so one harness spans
+                # the pre- and post-vendoring trees (found by the integration smoke cell).
+                hinfo = getattr(winfo, "info", winfo)
+                steps = np.asarray(hinfo.num_integration_steps, dtype="int64")
                 if steps.ndim == 1:
                     steps = steps[:, None]
                 INSTR["chees"] = {
@@ -340,7 +344,7 @@ def instrument():
                     "frozen_L_nominal": nominal_length(params["integration_steps_fn"], steps.shape[0]),
                     "warmup_steps_used": int(params.get("warmup_steps_used", steps.shape[0])),
                     "grads_warmup_per_chain": steps.sum(0).tolist(),
-                    "warmup_divs": int(np.asarray(winfo.is_divergent).sum()),
+                    "warmup_divs": int(np.asarray(hinfo.is_divergent).sum()),
                 }
             return out
         inner.__name__ = f"timed_{meth}"
