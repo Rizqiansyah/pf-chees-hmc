@@ -5,12 +5,22 @@ Commits: `c6aea8a` → `6fa5cd1` (merge) → `60c1baa` (harness) → `4460dc7` (
 
 ## 1. Change
 
+> **Default changed after this summary was written (2026-10-20, `08357db`).** The owner approved
+> flipping the shipped default to `covariance`, in the same merge as the permutation, because
+> keeping `precision` next to a fixed permutation would ship a state that fails R-hat <= 1.01 on
+> GEV in 5 of 5 seeds. Consequences for reading this file: the arm label `wp1:mc` below means
+> "permuted + precision", which is now a **non-default** arm, and every phrase "default unchanged /
+> shipped default" in the tables and in section 6.1 describes the state at the time of measurement,
+> not the state of the branch. Evidence for the flip and its one accepted cost (GEV divergences
+> 0.025 -> 0.400 per 1k, seed-stable) are in `results/LEDGER.md`.
+
+
 `pfcheeshmc/sampler.py`, all inside `_run_pathfinder` plus one module helper:
 
 | Factor | What changed | Status |
 |---|---|---|
 | **Ordering** | `_kernel_permutation` + `_metric_to_kernel_order` reorder the metric from Pathfinder's tuple order into the kernel's dict order, applied once at the return, for `imm_source` = `mc`, `lbfgs_lowrank`, `fisher_lowrank`. `_kernel_flat(position)` is the flatten helper WP4 must use. | **shipped, unconditional** — this is the P0 |
-| **Orientation** | `imm_orientation` = `"precision"` (default, = today's `mc` behaviour) or `"covariance"`. Applied to **all three sources identically**, which changes the two low-rank arms for the first time. | **explicit, default unchanged** (owner's call, see §6.1) |
+| **Orientation** | `imm_orientation` = `"precision"` (now `covariance`; was `precision`, = today's `mc` behaviour) or `"covariance"`. Applied to **all three sources identically**, which changes the two low-rank arms for the first time. | **explicit, default unchanged** (owner's call, see §6.1) |
 | A8 contract | `idata.attrs`: `frozen_step_size`, `frozen_L_nominal`, `warmup_grad_evals_per_chain`, `sampling_grad_evals_per_chain` (summed exactly from `num_integration_steps`), plus `keep_untransformed` pass-through on `sample()` / `sample_pf_chees_hmc` for WP3. | shipped |
 | Measurement knob | `imm_order="pathfinder"` skips the reorder so the 2×2 runs in one tree with one key stream. Production must not set it. | test-only |
 
