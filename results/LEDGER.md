@@ -174,3 +174,15 @@ Lead's own aggregation of warm rows (rep 1, 5 seeds each) from `~/pf/wp1/results
 5. **The earlier `imm_source` comparisons are now explained.** `wp1:lbfgs_lowrank` on GEV gives R̂ 1.0400 and 238.9 gradients/ESS, and on radon 1.0146 with 2,353.7 — the same broken-orientation failure, confirming `9f892b2` that those arms were not comparable to `mc`.
 
 **Consequence for the default.** The direction is clear and measured on real models, but the default change is gated on G3 and the owner's decision, and GEV currently fails the divergence clause of G3. So: land the permutation and the explicit orientation knob; do not flip the shipped default in this commit; the flip needs a GEV-specific look at why correcting the orientation raises its warmup divergence rate.
+
+## 2026-10-19 22:15 · WP3 code review · one blocking defect, and G-R1-diag is a plan-level defect with a mechanism
+
+Review at `results/reviews/WP3-code.md`. Verdict hold. Findings I verified are actionable:
+
+1. **BLOCKING.** `tools/r1_bias.py:463-467` writes `grads_per_chain_warmup`/`_sampling` as `np.median(...)` across chains, while the exact per-chain sums computed at `:341-346` are discarded. Plan A8 requires EXACT counts defined as the sum of `num_integration_steps`. Every T1 column built on that field is wrong by whatever chain-to-chain variation exists. Fix in `wp/wp3`, not by relabelling.
+2. **The delivered `WP3__selftest.jsonl` grid rows are at git_sha `f82d1ba`, which predates the `grads_per_chain_total` key added at `542c12c`.** Those rows must be read as warmup+sampling combined. Confirmed by inspection: the field is absent from the file.
+3. **G-R1-diag cannot do the job Part B assigns it, and the reason is arithmetic, not a bug.** The harness's `superchain_ids` are correct (`:387`, matches the sampler's `jnp.repeat(pick_global[:K], C//K)` at `sampler.py:391-399`), but nested R̂'s between-superchain term scales as `B/n` with `n` = draws *per superchain*. At K=8, C=1024, D=10 that is n=1,280, so a 1-sd offset contributes about 1/1,280 → nR̂ ≈ 1.0008 before any bias. `tests/test_nested_rhat.py:45-57` already pins exact shift-invariance. That is why the same value, 1.0040–1.0043, came back at b² 0.4100 and at 0.00063.
+   Consequence adopted: **nested R̂ is reported as a multimodality alarm with a stated K ceiling, never as the R1 convergence gate.** No WP4/WP5 accept-kill may cite it as convergence evidence. R1 convergence rests on b² against the reference plus the printed floor.
+4. Second-order, recorded: the noise floor at `:268-270` does not propagate reference MCSE and assumes cross-chain independence, which the `superchains` arm deliberately violates, so the floor is mildly optimistic there.
+
+A positive control is running now on GPU (`WP3__nested_k8.jsonl`, C=1024, K=8, W=25 and 100): if nR̂ fails to move at K=8 and moves at larger K, the blindness is measured directly rather than inferred.
