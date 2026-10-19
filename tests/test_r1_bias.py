@@ -328,3 +328,24 @@ def test_cold_rows_starts_rows_and_error_rows_are_excluded():
     t = rb2.summarise(dup)[0]
     assert t["cells"][0][2] == 0.001, "the later row for the same cell must win"
     assert t["smallest_passing_W"] == 100
+
+
+def test_scoring_a_radon_shaped_posterior_does_not_merge_the_dims():
+    """A trap WP1 hit in the same code path: `idata.posterior.to_array()` on radon materialises a
+    137 TiB cross-product, because xarray merges the repeated 85-length dim and the scalar dims into
+    one index. The scorer must extract variables one at a time. Shape here is radon's (two scalars
+    plus an (85,) vector, one of each size), sizes shrunk so the test costs milliseconds: if anything
+    ever joins the dims, this raises or explodes instead of passing quietly."""
+    import xarray as xr
+
+    C, D = 4, 25
+    ds = xr.Dataset({
+        "sigma_y_log__": (("chain", "draw"), np.zeros((C, D))),
+        "mu_alpha": (("chain", "draw"), np.zeros((C, D))),
+        "alpha_raw": (("chain", "draw", "alpha_raw_dim_0"), np.zeros((C, D, 85))),
+    })
+    unc = {str(v): np.asarray(ds[v].values, dtype="float64") for v in ds.data_vars}
+    ref = {n: np.zeros((C * D, a.shape[2] if a.ndim == 3 else 1)) for n, a in unc.items()}
+    sc = rb.score_ensemble(unc, ref, chains=C, draws=D, superchains=2, nested_limit=1.01)
+    assert sc["d"] == 87                       # 2 scalars + 85 leaves, one variable at a time
+    assert sc["b2_max"] == pytest.approx(0.0, abs=1e-12)

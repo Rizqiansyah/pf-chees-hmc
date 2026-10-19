@@ -227,6 +227,16 @@ def flatten_by_leaf(by_name):
 
 # ---------------------------------------------------------------- scoring
 
+def argmax_name(labels, k):
+    """Name the leaf behind bias()'s index, which runs over [x_1..x_d, x^2_1..x^2_d] (2d entries).
+
+    Indexing `labels` (d entries) with it is an IndexError when k >= d and, worse, names the wrong
+    parameter whenever the x^2 half wins for an early leaf.
+    """
+    d = len(labels)
+    return f"{labels[k % d]} ({'x' if k < d else 'x^2'})"
+
+
 def bias(ens, ref, mcse_mean, mcse_mean_sq):
     """b2_max over {x, x^2}, its argmax leaf, and the MC noise floor. Pure numpy: testable on CPU."""
     d = ens.shape[1]
@@ -339,6 +349,11 @@ def score_ensemble(unc, ref, chains, draws, superchains, nested_limit):
     """b2 / nested R-hat for one run. `unc` is {name: (chains, draws, leaves)}."""
     import arviz_stats as AS
 
+    # Normalise to (chains, draws, leaves) here rather than trusting the caller: a scalar variable
+    # arrives as 2-D (chain, draw) and the generic 2-D rule reads it as (rows, leaves), which mixes
+    # 4 rows against the vector variable's 100 and dies in the concatenation -- or, if the sizes
+    # happened to agree, would silently score different numbers of draws per parameter.
+    unc = {n: np.asarray(v, dtype="float64").reshape(chains, draws, -1) for n, v in unc.items()}
     ens, labels = flatten_by_leaf(unc)
     reff, rlabels = flatten_by_leaf(ref)
     if labels != rlabels:
@@ -350,9 +365,7 @@ def score_ensemble(unc, ref, chains, draws, superchains, nested_limit):
         ens, reff,
         np.asarray(AS.mcse(stacked, method="mean", chain_axis=0, draw_axis=1)),
         np.asarray(AS.mcse(stacked ** 2, method="mean", chain_axis=0, draw_axis=1)))
-    # bias() maximises over [x_1..x_d, x^2_1..x^2_d], so the index is 2d long while labels is d long:
-    # taking labels[k] directly is an IndexError (or, worse, names the wrong parameter).
-    argmax = f"{labels[k % d]} ({'x' if k < d else 'x^2'})"
+    argmax = argmax_name(labels, k)
     nested = None
     if superchains and superchains > 1 and draws >= 2:
         ids = [i // (chains // superchains) for i in range(chains)]
@@ -460,7 +473,12 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
         from _common import peak_mem_bytes
         row.update(wall_s=round(time.perf_counter() - t0, 2),
                    peak_mem_bytes=peak_mem_bytes(),   # process-cumulative, read AFTER the run
-                   cpu_contended=bool(args.cpu_contended))
+                   cpu_contended=bool(args.cpu_contended),
+                   # T1's objective is gradients per chain. A8 lists the two halves
+                   # (grads_per_chain_warmup, grads_per_chain_sampling) but no sum, and a reporting
+                   # task reading the file column-by-column has to add them. One column, same source.
+                   grads_per_chain_total=(
+                       (row["grads_per_chain_warmup"] or 0) + (row["grads_per_chain_sampling"] or 0)))
 
     from _common import gpu_other_procs
     row["gpu_other_procs"] = gpu_other_procs()   # A5: a foreign process voids a timing
@@ -486,6 +504,7 @@ def run_starts(bl, model_name, args, rep, cold):
     model = build_model(model_name)
     names = [v.name for v in model.value_vars]
     s = PfCheesHMC(model, seed=int(args.seeds.split(",")[0]))   # int: the CLI value is a string
+    t_start = time.perf_counter()
     pos, imm = s._run_pathfinder(chains=args.chains, draws=args.pf_draws,
                                  init_pick=args.init_pick, superchains=args.superchains)
     ens, labels = flatten_by_leaf(
@@ -496,13 +515,14 @@ def run_starts(bl, model_name, args, rep, cold):
     b2_max, k, _, _, _ = bias(ens, reff, np.zeros(ens.shape[1]), np.zeros(ens.shape[1]))
     row = new_row(wp=args.wp, arm="pf_starts", model=model_name, chains=args.chains,
                   draws_per_chain=1, warmup=0, seed=s.seed, rep=rep, cold=cold,
-                  b2_max=b2_max, b2_argmax=labels[k], d=ens.shape[1],
+                  wall_s=round(time.perf_counter() - t_start, 2),
+                  b2_max=b2_max, b2_argmax=argmax_name(labels, k), d=ens.shape[1],
                   kwargs=json.dumps({"chains": args.chains, "draws": args.pf_draws,
                                      "init_pick": args.init_pick,
                                      "superchains": args.superchains}, sort_keys=True))
     write_row(args.out, row)
     banner(model=model_name, cold=cold, wp=args.wp, arm="pf_starts")
-    print(f"  [{model_name} pf_starts] b2_max={b2_max:.3f} at {labels[k]}", flush=True)
+    print(f"  [{model_name} pf_starts] b2_max={b2_max:.3f} at {row['b2_argmax']}", flush=True)
     return row
 
 
