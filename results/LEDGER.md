@@ -146,3 +146,31 @@ Consequences:
 3. These rows are NOT yet committed by the task (untracked file). Do not treat the arm as final until WP1 commits them; the numbers above are read directly from the file, which is why they are recorded now.
 
 Pause note: box yielded to another user at 18:38, GPU released (99 MiB, 0%). No new measurement was run to produce this entry.
+
+## 2026-10-19 21:55 · WP1 · the completed 4-model re-baseline says the permutation fix alone FAILS acceptance and must not ship without the orientation flip
+
+Lead's own aggregation of warm rows (rep 1, 5 seeds each) from `~/pf/wp1/results/runs/WP1__rebaseline.jsonl` and `WP1__covarm.jsonl`. C=32, D=1,250, W=2,000, GPU. `legacy:mc` = unpermuted + precision (what is shipped today). `wp1:mc` = permuted + precision (permutation fix only). `wp1:mc:covariance` = permuted + covariance (Part B §0.1 as written).
+
+| model | arm | max R̂ | min bulk ESS | ESS/s | gradients/ESS | divs/1k | ε | nominal L | realised steps |
+|---|---|---|---|---|---|---|---|---|---|
+| 8 Schools | legacy:mc | 1.0017 | 22,120 | 2,085 | 58.2 | 0.00 | 0.185 | 42 | 21.3 |
+| | wp1:mc | 1.0020 | 22,082 | 2,166 | 57.2 | 0.00 | 0.187 | 42 | 21.4 |
+| | **wp1:mc:covariance** | 1.0014 | 20,469 | 2,226 | **35.5** | 0.00 | 0.524 | 22 | 11.5 |
+| GEV | legacy:mc | 1.0023 | 8,102 | **403** | 73.4 | 0.23 | 0.0009 | 54 | 27.0 |
+| | wp1:mc | **1.0465 FAIL** | 679 | 44 | 295.8 | 0.03 | 0.0009 | 8 | 4.1 |
+| | **wp1:mc:covariance** | 1.0074 | 4,983 | 303 | 71.2 | 0.47 | 0.833 | 10 | 5.1 |
+| logistic 1000×25 | legacy:mc | 1.0016 | 15,462 | 417 | 151.7 | 0.00 | 0.0020 | 129 | 64.7 |
+| | wp1:mc | 1.0021 | 14,058 | 403 | 163.8 | 0.00 | 0.0021 | 122 | 61.0 |
+| | **wp1:mc:covariance** | 1.0014 | 17,163 | **1,048** | **46.1** | 0.00 | 0.656 | 27 | 13.6 |
+| radon NC | legacy:mc | 1.0069 | 3,845 | 98 | 501.9 | 0.00 | 0.0025 | 75 | 37.6 |
+| | wp1:mc | **1.0142 FAIL** | 2,418 | 28 | 2,278.8 | 0.00 | 0.0007 | 268 | 134.0 |
+| | **wp1:mc:covariance** | 1.0066 | 4,468 | **171** | **182.3** | 0.00 | 0.971 | 27 | 13.7 |
+
+**Verdicts.**
+1. **The permutation-only fix fails the plan's own acceptance criterion.** Gradients/ESS against `legacy:mc`: 8 Schools 57.2 vs 58.2 (better), logistic 163.8 vs 151.7 (worse), GEV 295.8 vs 73.4 (4.0x worse), radon 2,278.8 vs 501.9 (4.5x worse) — better on 1 of 4, criterion requires >= 3 of 4. It also breaks R̂ ≤ 1.01 on GEV and radon, which the shipped code passes. Shipping `wp1:mc` alone would be a regression.
+2. **Permutation + covariance is the shippable combination.** Gradients/ESS better on 4 of 4 (35.5/71.2/46.1/182.3 vs 58.2/73.4/151.7/501.9), ESS/s better on 3 of 4 (logistic 2.5x, radon 1.7x, 8 Schools +7%), R̂ within the bar on all four.
+3. **GEV is the honest counter-example and it must be reported, not smoothed.** There the buggy shipped arm accidentally performs well (ESS/s 403, R̂ 1.0023); correcting both factors gives R̂ 1.0074 and ESS/s 303, and the divergence rate rises 0.23 -> 0.47 per 1k. G3's "divergence rate must not rise" is therefore NOT met by GEV, which is the one gate a default change needs.
+4. **§2c reproduces.** logistic ε 0.0021 -> 0.656 and L 122 -> 27 (reviewer: 0.66 / 26); 8 Schools ε 0.187 -> 0.524, L 42 -> 22 (reviewer: 0.51 / 22).
+5. **The earlier `imm_source` comparisons are now explained.** `wp1:lbfgs_lowrank` on GEV gives R̂ 1.0400 and 238.9 gradients/ESS, and on radon 1.0146 with 2,353.7 — the same broken-orientation failure, confirming `9f892b2` that those arms were not comparable to `mc`.
+
+**Consequence for the default.** The direction is clear and measured on real models, but the default change is gated on G3 and the owner's decision, and GEV currently fails the divergence clause of G3. So: land the permutation and the explicit orientation knob; do not flip the shipped default in this commit; the flip needs a GEV-specific look at why correcting the orientation raises its warmup divergence rate.
