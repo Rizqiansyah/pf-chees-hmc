@@ -1070,3 +1070,28 @@ GPU. Correct form is inside the lock: `tools/gpu_run.sh timeout 900 <cmd>`. Rela
 in FIFO order, so queued drivers do not run in submission order — which is fine for exclusivity but means a
 driver that must run entirely on one code version cannot be interleaved with a sampler commit. No sampler
 edits are being made while the pool-default A/B is in flight for that reason.
+
+---
+
+## 2026-10-20 15:30 — start dispersion across all four models: the pattern is real, my GEV story was too strong
+
+`START__dispersion.jsonl` — start sd ÷ CPU-NUTS reference sd, per coordinate, kernel order asserted on
+both sides (C=32, both `pf_draws=1` and the production 4,000-draw pool):
+
+| model | d | median | coords < 0.5 | coldest coordinates |
+|---|---|---|---|---|
+| 8 Schools | 10 | 0.74 / 0.72 | 2 | **`mu` 0.159 / 0.228**, `tau_log__` 0.493 / 0.446, `theta[0]` 0.854 |
+| GEV | 3 | 0.865 / 0.860 | 1 | `μ` 0.949, **`ξ_interval__` 0.156 / 0.115**, `σ_log__` 0.865 |
+| logistic | 25 | 0.557 | 9 | `b[0]` 0.367, `b[21]` 0.354, `b[10]` 0.484 |
+
+**What this changes.** I had written that GEV's under-dispersed `xi_interval__` "is confirmed" as the
+mechanism behind GEV's divergence rise. Wrong emphasis: **8 Schools' `mu` is *colder* (0.159) than GEV's ξ
+(0.156) and 8 Schools has no divergence problem.** So under-dispersion is not sufficient, and the honest
+claim is a pattern rather than a cause — Pathfinder's pool is systematically too concentrated on the
+near-boundary scale/hyperparameter coordinates (`mu`, `tau_log__`, `ξ_interval__`), and on GEV that
+coincides with the divergence rise. The discriminating test (same target, that one coordinate re-dispersed)
+has not been run and is now the named next experiment.
+
+**Also notable:** logistic has 9 of 25 coordinates below 0.5 with a median of 0.557 — the broadest
+under-dispersion of the four — and logistic is the model where the corrected orientation *helped* most
+(417 → 1,048 ESS/s). So start dispersion and orientation benefit are not simply related either.
