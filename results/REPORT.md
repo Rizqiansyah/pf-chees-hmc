@@ -298,7 +298,9 @@ The 2 s warm-init bar is **not met** (4.07 s), and 1.59 s of it is the step-size
 | 8 Schools | 13.6 | 3.27 s | **+3.3 %** (54 µs/transition) | **+8.0 %** |
 | logistic | 17.4 | 9.10 s | **+0.3 %** (16 µs/transition) | **+2.0 %** |
 | GEV | 1.8 | 2.97 s | **+64.2 %** (953 µs/transition) | **+5.2 %** |
-| radon NC | — | — | *running* | *running* |
+| radon NC | — | — | **NOT MEASURED** | **NOT MEASURED** |
+
+   *radon was dropped deliberately:* its 16 timed warmups at W=2,000 hold the single 6 GB card for ~20 min, and the harness's false completion events had just killed the A/B driver that decides a library default. The default-deciding measurement won; radon's T5b cell is the one gap left in this table and it changes no conclusion, since GEV and logistic already bracket the effect (0.3 % to 64.2 %).
 
 Three readings, one of them a negative result about my own process:
 

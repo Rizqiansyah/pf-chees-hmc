@@ -1130,3 +1130,23 @@ After the fix: **17 passed in 55.68 s** in that file. Suite count for the run is
 test's statistical resolution (the first was the `g_r1` floor masking). Anything that changes sample counts,
 pool sizes, or warmup length should be followed by a check of the tolerance-vs-SE of every assertion that
 consumes the affected quantity — a green suite does not prove that.
+
+---
+
+## 2026-10-20 15:40 — queue discipline on a box whose completion events cannot be trusted
+
+Two of my background drivers were killed by the harness reporting a *different* task as completed — the
+false `b2bb892bf` completion took out its replacement driver (`3120175`) as well, because they shared a
+process group. Result: the pool A/B sat at 4/12 while radon's T5b cost cell held the card for 16 minutes.
+
+**Trade made, and recorded:** I stopped radon's T5b cell to let the A/B run. The A/B decides a **library
+default** (`pf_pool_cap`); radon's warmup-output cost decides nothing that GEV (64.2 %) and logistic (0.3 %)
+do not already bracket. `REPORT.md` T5b now says radon is **NOT MEASURED**, with that reason attached, rather
+than leaving a blank that reads as an oversight.
+
+Operating rules adopted for the rest of this box session:
+* never trust a completion event; confirm with `ps` + `wc -l` on the row file;
+* one driver at a time, and nothing else queued behind it (wall-clock job timeouts charge lock wait);
+* `timeout` goes **inside** `tools/gpu_run.sh`, never outside;
+* prefer a driver that recomputes its own missing-cell list from the row file, so a kill costs only the cell
+  in flight — which is how the A/B resumed at 4/12 instead of 0/12.
