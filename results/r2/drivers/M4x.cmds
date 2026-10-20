@@ -1,0 +1,12 @@
+r2 --models 8schools --chains 32 --draws 1250 --warmups 2000 --seeds 1,2,3 --repeat 2 --legacy /home/akbar/pf/legacy --arm m4x:legacy_ecd9ba1 --wp R2 --step M4x
+r2 --models 8schools --chains 32 --draws 1250 --warmups 2000 --seeds 1,2,3 --repeat 2 --arm m4x:current_default --wp R2 --step M4x
+r2 --models gev --chains 32 --draws 1250 --warmups 2000 --seeds 1,2,3 --repeat 2 --legacy /home/akbar/pf/legacy --arm m4x:legacy_ecd9ba1 --wp R2 --step M4x
+r2 --models gev --chains 32 --draws 1250 --warmups 2000 --seeds 1,2,3 --repeat 2 --arm m4x:current_default --wp R2 --step M4x
+r2 --models logit_1000x25 --chains 32 --draws 1250 --warmups 2000 --seeds 1,2,3 --repeat 2 --legacy /home/akbar/pf/legacy --arm m4x:legacy_ecd9ba1 --wp R2 --step M4x
+r2 --models logit_1000x25 --chains 32 --draws 1250 --warmups 2000 --seeds 1,2,3 --repeat 2 --arm m4x:current_default --wp R2 --step M4x
+r2 --models radon_noncentered --chains 32 --draws 1250 --warmups 2000 --seeds 1,2,3 --repeat 2 --legacy /home/akbar/pf/legacy --arm m4x:legacy_ecd9ba1 --wp R2 --step M4x
+r2 --models radon_noncentered --chains 32 --draws 1250 --warmups 2000 --seeds 1,2,3 --repeat 2 --arm m4x:current_default --wp R2 --step M4x
+r1 --models 8schools --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --pf-draws 1 --legacy /home/akbar/pf/legacy --arm m4x:legacy_ecd9ba1 --wp R1 --step M4x
+r1 --models gev --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --pf-draws 1 --legacy /home/akbar/pf/legacy --arm m4x:legacy_ecd9ba1 --wp R1 --step M4x
+r1 --models logit_1000x25 --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --pf-draws 1 --legacy /home/akbar/pf/legacy --arm m4x:legacy_ecd9ba1 --wp R1 --step M4x
+r1 --models radon_noncentered --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --pf-draws 1 --legacy /home/akbar/pf/legacy --arm m4x:legacy_ecd9ba1 --wp R1 --step M4x
