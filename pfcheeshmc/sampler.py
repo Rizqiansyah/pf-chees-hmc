@@ -21,6 +21,7 @@ from .ensemble_metric import (
 from typing import Tuple, Optional, Dict, Any, NamedTuple
 from datetime import date
 import io
+import json
 import re
 import logging
 import contextlib
@@ -163,9 +164,22 @@ def _frozen_nominal_L(integration_steps_fn, warmup_steps_used):
     return best
 
 
+def _json_default(o):
+    """json.dumps fallback for the config record: numpy / JAX scalars and arrays -> plain Python."""
+    if hasattr(o, "tolist"):
+        return o.tolist()
+    if hasattr(o, "item"):
+        return o.item()
+    raise TypeError(f"config value {o!r} of type {type(o).__name__} is not JSON serialisable")
+
+
 class PfCheesHMC:
     def __init__(self, model:pm.Model, seed:Optional[int]=None):
         self.model = model
+        # Per-stage record of what each stage actually resolved (defaults filled in). Written by the
+        # stage methods, composed into idata.attrs["config"] by sample(). Stages can be called on
+        # their own (tests, tools), so every stage overwrites only its own entry.
+        self._resolved = {}
 
         self.rvs = [rv.name for rv in model.value_vars]
         self._ld_fn = get_jaxified_logp(model)
@@ -806,6 +820,25 @@ class PfCheesHMC:
         elif order != "pathfinder":
             raise ValueError(f"imm_order must be 'kernel' or 'pathfinder', got {order!r}")
 
+        self._resolved["pathfinder"] = {
+            "seed": int(seed),
+            "imm_source": imm_source,
+            "imm_orientation": orientation,
+            "imm_order": order,
+            # the ridge is added to the Monte-Carlo covariance only; every other source overwrites it
+            "ridge": float(ridge) if imm_source == "mc" else 0.0,
+            "pf_draws": int(draws),
+            "pf_pool_cap": 0 if cap is None else int(cap),     # 0 = uncapped, as the kwarg
+            "pf_pool_rows": int(total),
+            "init_source": init_source,
+            "init_pick": kwargs.get("init_pick", "stratified"),
+            "superchains": kwargs.get("superchains", None),
+            "pm_chains": pm_chains,
+            "pm_init": pm_init,
+            "pm_tune": int(pm_tune),
+            "score_chunk": score_chunk,
+        }
+
         return pf_samples, inverse_mass_matrix
 
 
@@ -838,6 +871,7 @@ class PfCheesHMC:
         ld_fn = self.ld_fn
         num_probes = int(kwargs.get("eps0_probes", 32))
         seed = kwargs.get("seed", self.seed)
+        self._resolved["step_size"] = {"eps0_probes": num_probes, "seed": int(seed)}
 
         n_drawn = int(len(next(iter(pf_samples.values()))))
         take = min(num_probes, n_drawn)
@@ -886,13 +920,31 @@ class PfCheesHMC:
         kwargs.setdefault("max_leapfrog_steps", 1000)
 
         optim = optax.adam(learning_rate=kwargs["adam_lr"])
+        refresh = kwargs.get("metric_refresh", "none")
+        refreshing = refresh in _METRIC_REFRESH_NAMES
+        # What this stage resolved, for idata.attrs["config"]. The three estimator defaults below
+        # repeat the ones in _run_chees_two_phase (a refresh is only applied when `refresh` names an
+        # estimator, so anything else is recorded as "none"); tests/test_pf_closed_form.py spies on
+        # estimate_covariance so the two cannot drift apart unnoticed.
+        self._resolved["warmup"] = {
+            "seed": int(kwargs["seed"]),
+            "num_warmup": int(kwargs["draws"]),
+            "adam_lr": float(kwargs["adam_lr"]),
+            "target_accept": float(kwargs["target_accept"]),
+            "max_leapfrog_steps": int(kwargs["max_leapfrog_steps"]),
+            "iterate": kwargs.get("iterate", "ma"),
+            "warmup_stop": kwargs.get("warmup_stop", None),
+            "metric_refresh": refresh if refreshing else "none",
+            "metric_refresh_ridge": float(kwargs.get("metric_refresh_ridge", 1e-6)) if refreshing else None,
+            "metric_refresh_shrink": float(kwargs.get("metric_refresh_shrink", 0.5)) if refreshing else None,
+            "metric_refresh_rank": int(kwargs.get("metric_refresh_rank", 5)) if refreshing else None,
+        }
         # WP4 two-phase metric refresh. ``metric_refresh`` names an ensemble estimator
         # (see pfcheeshmc/ensemble_metric.py); when set, phase A is a short fixed warmup on the
         # Pathfinder metric, the ensemble covariance is estimated from phase-A draws, and phase B
         # continues on the refreshed metric with a re-searched eps and re-seeded trajectory length.
         # ``"none"`` (default) keeps the single-phase path bit-for-bit.
-        refresh = kwargs.get("metric_refresh", "none")
-        if refresh in _METRIC_REFRESH_NAMES:
+        if refreshing:
             return self._run_chees_two_phase(
                 pf_samples, inverse_mass_matrix, init_step_size, refresh, optim, **kwargs)
         # Stage-scoped key. This site used to be `_, key_warm = jax.random.split(jax.random.key(seed))`,
@@ -1068,6 +1120,8 @@ class PfCheesHMC:
         rng = jax.random.fold_in(jax.random.key(kwargs["seed"]), 2)  # 2 = sampling stage, see _run_chees
         num_chains = kwargs["chains"]
         num_draws = kwargs["draws"]
+        self._resolved["sampling"] = {"seed": int(kwargs["seed"]), "chains": int(num_chains),
+                                      "num_draws": int(num_draws)}
 
         dyn = bj.mcmc.dynamic_hmc.as_top_level_api(
             self.ld_fn,
@@ -1421,6 +1475,7 @@ class PfCheesHMC:
             dynamic_hmc_kwargs["draws"] = kwargs["draws"]
         
 
+        self._resolved = {}
         pf_samples, inverse_mass_matrix = self._run_pathfinder(**pathfinder_kwargs)
         eps0 = self._run_step_size_tune(pf_samples, inverse_mass_matrix, **step_size_tune_kwargs)
         chees_states, chees_parameters, chees_info = self._run_chees(
@@ -1473,7 +1528,87 @@ class PfCheesHMC:
                   "metric_refresh_eps_researched", "metric_refresh_reseed", "metric_refresh_T0"):
             if _k in chees_parameters:
                 idata.attrs[_k] = chees_parameters[_k]
+        # R2-WP2: the resolved configuration, one JSON string (key list: see _config_record).
+        idata.attrs["config"] = self._config_record(idata, chees_parameters, eps0)
         return idata
+
+    def _config_record(self, idata, chees_parameters, eps0) -> str:
+        """JSON string for ``idata.attrs["config"]``: what the sampler RESOLVED, not what was asked.
+
+        Every value is the one the code applied, defaults filled in, so a harness can compare it with
+        the flags it passed and can never read "None" for a knob that had a default. Keys:
+
+        Pathfinder / pool / metric (``_run_pathfinder``)
+            ``imm_source``, ``imm_orientation``, ``imm_order``; ``ridge`` (added to the Monte-Carlo
+            covariance only, so 0.0 for every other source); ``pf_draws``; ``pf_pool_cap`` (the cap
+            applied, 0 = uncapped) and ``pf_pool_rows`` (rows actually drawn); ``init_source``,
+            ``init_pick``, ``superchains`` (null = not set), ``pm_chains``, ``pm_init``, ``pm_tune``,
+            ``score_chunk``.
+        Step-size search (``_run_step_size_tune``)
+            ``eps0_probes`` (number of probe positions) and ``eps0`` (the step size it returned).
+        Warmup (``_run_chees``)
+            ``num_warmup`` (configured warmup length) and ``warmup_steps_used`` (ran; differs only
+            with a stop rule), ``iterate``, ``adam_lr``, ``target_accept``, ``max_leapfrog_steps``,
+            ``warmup_stop`` (null = no stop rule).
+        Metric refresh
+            ``metric_refresh`` ("none" or the estimator name that ran) and, when one ran,
+            ``metric_refresh_warmup`` (phase-A steps after clamping), ``metric_refresh_pool``,
+            ``metric_refresh_reseed``, ``metric_refresh_ridge``, ``metric_refresh_shrink``,
+            ``metric_refresh_rank``; all null when ``metric_refresh`` is "none" (not applicable).
+        Sampling (``_run_dynamic_hmc``)
+            ``chains``, ``num_draws``.
+        Frozen at the end of warmup
+            ``frozen_step_size`` (eps) and ``frozen_L_nominal`` (L = T/eps).
+        Seeds
+            ``seed`` (the sampler's own) and ``stage_seeds`` for pathfinder / step_size / warmup /
+            sampling, which differ from ``seed`` only if a stage's kwargs overrode it.
+        ``jax_enable_x64`` is recorded because the metric dtype, and with it the pf_closed
+        positive-definiteness check, depends on it.
+        """
+        r = self._resolved
+        pf, ss, wu, sm = r["pathfinder"], r["step_size"], r["warmup"], r["sampling"]
+        refreshing = wu["metric_refresh"] != "none"
+        cfg = {
+            "imm_source": pf["imm_source"],
+            "imm_orientation": pf["imm_orientation"],
+            "imm_order": pf["imm_order"],
+            "ridge": pf["ridge"],
+            "pf_draws": pf["pf_draws"],
+            "pf_pool_cap": pf["pf_pool_cap"],
+            "pf_pool_rows": pf["pf_pool_rows"],
+            "init_source": pf["init_source"],
+            "init_pick": pf["init_pick"],
+            "superchains": pf["superchains"],
+            "pm_chains": pf["pm_chains"],
+            "pm_init": pf["pm_init"],
+            "pm_tune": pf["pm_tune"],
+            "score_chunk": pf["score_chunk"],
+            "eps0_probes": ss["eps0_probes"],
+            "eps0": float(eps0),
+            "num_warmup": wu["num_warmup"],
+            "warmup_steps_used": int(idata.attrs["warmup_steps_used"]),
+            "iterate": wu["iterate"],
+            "adam_lr": wu["adam_lr"],
+            "target_accept": wu["target_accept"],
+            "max_leapfrog_steps": wu["max_leapfrog_steps"],
+            "warmup_stop": wu["warmup_stop"],
+            "metric_refresh": wu["metric_refresh"],
+            "metric_refresh_warmup": chees_parameters["metric_refresh_warmup"] if refreshing else None,
+            "metric_refresh_pool": chees_parameters["metric_refresh_pool"] if refreshing else None,
+            "metric_refresh_reseed": chees_parameters["metric_refresh_reseed"] if refreshing else None,
+            "metric_refresh_ridge": wu["metric_refresh_ridge"],
+            "metric_refresh_shrink": wu["metric_refresh_shrink"],
+            "metric_refresh_rank": wu["metric_refresh_rank"],
+            "chains": sm["chains"],
+            "num_draws": sm["num_draws"],
+            "frozen_step_size": idata.attrs["frozen_step_size"],
+            "frozen_L_nominal": idata.attrs["frozen_L_nominal"],
+            "seed": int(self.seed),
+            "stage_seeds": {"pathfinder": pf["seed"], "step_size": ss["seed"],
+                            "warmup": wu["seed"], "sampling": sm["seed"]},
+            "jax_enable_x64": bool(jax.config.jax_enable_x64),
+        }
+        return json.dumps(cfg, sort_keys=True, default=_json_default)
     
 
 
