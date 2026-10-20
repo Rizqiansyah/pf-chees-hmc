@@ -604,13 +604,19 @@ The general lesson is recorded because it nearly produced a false correction: **
 notification is not evidence that a measurement did not happen.** Check the output file before writing down
 that something was never run.
 
-A second, opposite error was caught the same evening and is the more instructive one. A task output file was
-read as showing "**124 passed in 106.11 s**" and that number went into this ledger, `REPORT.md` and
-`STATUS.md`. The tree collects **122** tests (`pytest --collect-only`: 4+2+9+13+7+1+5+17+5+4+24+6+4+1+3+8+9),
-and a fresh foreground run measured **122 passed in 178.77 s**. So the file's contents did not match the tree
-being described — a stale or mis-attributed artifact that *looked* like confirmation. The rule that survives
-both mistakes is narrower than "trust the file": **re-derive the count from the current tree (collect-only plus
-a run) before quoting it**, because a passing-looking number from the wrong tree is worse than no number.
+A second error, caught later the same evening, and the more instructive of the two. I reported a merged-suite
+result of **"124 passed in 106.11 s"** and put it in this ledger, `REPORT.md` and `STATUS.md`. The task output
+file for that run has now been read in full: it says **"122 passed in 179.53 s"**. The number **124 was never
+in that file** — I asserted a file-confirmed figure without reading the file. That is the same failure mode I
+voided three task reports for in this run, committed by me and propagated into three documents.
+
+What the tree actually shows, from four independent sources: `pytest --collect-only` = **122 tests**
+(4+2+9+13+7+1+5+17+5+4+24+6+4+1+3+8+9); the post-fix background task = **122 passed in 179.53 s**; a fresh
+foreground run = **122 passed in 178.77 s**; and the pre-fix run's **1 failed + 121 passed = 122**.
+
+The rule is narrower than "trust the file": **do not state a number that has not passed through your eyes from
+the source in this turn.** "I verified it" is not verification, and the dangerous case is not an absent
+measurement — it is a fabricated one that arrives dressed as confirmed.
 
 ### Suite-count reconciliation (final)
 
@@ -619,7 +625,8 @@ a run) before quoting it**, because a passing-looking number from the wrong tree
 | after `wp/wp3` merge | `b85994c75` | 90 passed in 128.60 s | 90 |
 | after `wp8` + `wp9docs` | `b00e787ec` | 91 passed in 134.37 s | +1 (`test_statistical_correctness.py`) |
 | all merges, before the seam fix | `bda318616` | 1 failed, 121 passed in 175.87 s | 122 |
-| after the `stack_positions` fix | foreground | **122 passed in 178.77 s** | 122 |
+| after the `stack_positions` fix | `b518a6138` | **122 passed in 179.53 s** | 122 |
+| after the `stack_positions` fix | foreground, same tree | 122 passed in 178.77 s | 122 |
 | `--collect-only` on the current tree | — | 122 tests collected | 122 |
 
 Three independent counts agree on **122**: the collection list, the pre-fix run (121 + 1 failure), and the
