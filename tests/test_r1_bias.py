@@ -73,6 +73,16 @@ def test_g_r1_refuses_to_call_an_unresolvable_cell_a_pass():
     assert rb.g_r1(0.0005, 0.001, 128 * 10) == "not eligible (C*D < 2000)"
 
 
+def test_a_coarse_floor_does_not_neutralise_a_bias_far_above_it():
+    """The old rule returned 'not resolvable' on floor > 0.005 without reading b². Measured
+    consequence: 6 radon cells, worst b² 63.23 against a floor of 0.00558, read neutral."""
+    assert rb.g_r1(63.23, 0.00558, 1024 * 10) == "fail"
+    assert rb.g_r1(0.4279, 0.00528, 1024 * 10) == "fail"
+    # a bias inside its own noise band stays unresolvable, which is not a pass
+    assert rb.g_r1(0.00877, 0.00544, 1024 * 10).startswith("not resolvable")
+    assert rb.g_r1(0.01364, 0.00559, 1024 * 10).startswith("not resolvable")
+
+
 # ---------------------------------------------------------------- frozen L reconstruction
 
 def test_nominal_length_recovers_the_frozen_trajectory_length():

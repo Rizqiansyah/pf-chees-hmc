@@ -273,10 +273,17 @@ def bias(ens, ref, mcse_mean, mcse_mean_sq):
 
 
 def g_r1(b2_max, floor, c_times_d):
-    """G-R1 as a verdict string. Not resolvable is NOT a pass (plan §6)."""
+    """G-R1 as a verdict string. Not resolvable is NOT a pass (plan §6).
+
+    A coarse floor does not neutralise a bias far above it: on the delivered rows this rule
+    change moves 6 radon cells from "not resolvable" to "fail", including b² = 63 against a
+    floor of 0.0056 (11,000x its own noise). Only a b² inside its noise band is unresolvable.
+    """
     if c_times_d < 2000:
         return "not eligible (C*D < 2000)"
     if floor > 0.005:
+        if b2_max > max(0.01, 3.0 * floor):
+            return "fail"
         return f"not resolvable (floor {floor:.4f} > 0.005)"
     return "pass" if b2_max < 0.01 else "fail"
 
@@ -341,7 +348,8 @@ def instrument():
                     steps = steps[:, None]
                 INSTR["chees"] = {
                     "frozen_eps": float(np.asarray(params["step_size"]).reshape(-1)[0]),
-                    "frozen_L_nominal": nominal_length(params["integration_steps_fn"], steps.shape[0]),
+                    "frozen_L_nominal": lambda: nominal_length(params["integration_steps_fn"],
+                                                                steps.shape[0]),
                     "warmup_steps_used": int(params.get("warmup_steps_used", steps.shape[0])),
                     "grads_warmup_per_chain": steps.sum(0).tolist(),
                     "warmup_divs": int(np.asarray(hinfo.is_divergent).sum()),
@@ -466,7 +474,7 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
         attrs, ch = dict(idata.attrs), INSTR["chees"]
         row.update(
             frozen_eps=attrs.get("frozen_step_size", ch.get("frozen_eps")),
-            frozen_L_nominal=attrs.get("frozen_L_nominal", ch.get("frozen_L_nominal")),
+            frozen_L_nominal=attrs.get("frozen_L_nominal"),   # ch-side thunk runs after wall_s
             steps_mean=float(steps.mean()) if steps.size else None,
             grads_per_chain_warmup=attrs.get(
                 "warmup_grad_evals_per_chain",
@@ -507,6 +515,11 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
                    # task reading the file column-by-column has to add them. One column, same source.
                    grads_per_chain_total=(
                        (row["grads_per_chain_warmup"] or 0) + (row["grads_per_chain_sampling"] or 0)))
+        # The nominal-L diagnostic walks every warmup step with a device sync (measured: 5.4 s
+        # warm / 6.5 s cold at W=2,000 on 8 Schools, i.e. +52% on a 10.5 s cell). It is
+        # informational, so it is resolved here, AFTER wall_s was stamped.
+        if row.get("frozen_L_nominal") is None and callable(ch.get("frozen_L_nominal")):
+            row["frozen_L_nominal"] = ch["frozen_L_nominal"]()
 
     from _common import gpu_other_procs
     row["gpu_other_procs"] = gpu_other_procs()   # A5: a foreign process voids a timing
