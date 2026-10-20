@@ -147,3 +147,34 @@ covariance, `pf_draws=4000`). Smallest W with `g_r1 == pass` on all of seeds 1�
 Lead incident: M2a finished at 00:25, but my completion watcher matched its own command
 line in `pgrep -f`, so it never fired, and the GPU sat idle until 07:22. Fixed by waiting on driver
 log lines instead. M2b → M3 → M5 now run as one chain.
+
+## 2026-10-21 — M2b done (128 rows, 12 jobs rc=0); **D3 recommendation = OFF**
+
+`results/r2/runs/M2b__r1.jsonl`, IT = raw, fixed re-seed. Smallest W passing all 3 seeds, with
+median grads per chain there:
+
+| model | m2b:diag | m2b:diag_norese (W=50 only) | m2b:fisher (W 50,100) | no refresh, raw (M2a) | no refresh, ma (M2a) |
+|---|---|---|---|---|---|
+| 8schools | 25 / 616 | 50 / 1,306 | 50 / 1,165 | 25 / 861 | 25 / 540 |
+| gev | 25 / 324 | 50 / 707 | 50 / 1,472 | 25 / 629 | 25 / 270 |
+| logit_1000x25 | 25 / 387 | 50 / 507 | 50 / 1,186 | 25 / 297 | 50 / 319 |
+| radon_noncentered | none ≤ 300 | none ≤ 50 | none ≤ 100 | 100 / 2,037 | 300 / 1,770 |
+
+**Re-seed defect signature check** (frozen L, refresh vs no-refresh raw at W=50): 8schools 30 vs
+50 (0.6×), gev 21 vs 31 (0.7×), logit 55 vs 35 (1.6×), radon 22 vs 34 (0.65×). None is above 3×,
+so the fix holds at C=1,024 (run 1: 213–283).
+
+**Radon under the refresh** is "not resolvable", not failing. At W ≥ 50 the per-seed floors are
+0.0055–0.0068 (> 0.005) and b² is 0.0063–0.0116. Pooled b²/floor (diagnostic) is 0.0022/0.0017 to
+0.0036/0.0020. The diagonal refresh discards the dense Pathfinder correlation (d=175), so the draws
+are noisier: the floor roughly doubles against no-refresh raw (0.0027–0.0037).
+
+**D3**, refresh = `m2b:diag` against the IT no-refresh arm (M2a raw):
+- (i) It lowers grads at the smallest passing W on 8schools (616 < 861) and gev (324 < 629), so ≥ 2/4
+  holds. But it raises them by more than 1.2× on logit (387/297 = 1.30) and on radon (no pass ≤ 300),
+  so **(i) fails**.
+- (ii) Is it the only arm passing radon at W ≤ 300? No: M2a raw passes from W=100 and ma at W=300.
+  **(ii) fails**.
+- Against the default `ma` arm it fails as well: 1.14×, 1.20×, 1.21×, and radon none.
+
+**Recommendation: refresh OFF for R1.** The default stays off; it was never changeable in run 2.
