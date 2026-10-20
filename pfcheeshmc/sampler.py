@@ -78,6 +78,29 @@ def default_pool_cap(chains, d):
     return max(4 * c, 4 * dd * dd)
 
 
+def resolve_pool_cap(pf_pool_cap, chains, d, imm_source="mc"):
+    """Row cap for the Pathfinder start/metric pool, or None for the historical uncapped pool.
+
+    `pf_pool_cap=None` (the default) depends on who consumes the pool:
+
+    * ``imm_source == "mc"``: the pool is also the sample the Monte-Carlo covariance is estimated
+      from, so rows must stay large relative to d^2 -> :func:`default_pool_cap`, ``max(4C, 4d^2)``.
+    * any other source: the metric comes from the fitted L-BFGS factors (``pf_closed``) or from its own
+      estimator, and the pool only feeds the start picks, so ``4C`` rows are enough. This also removes
+      the ~32 d^3-byte pool the d-dependent cap needs at large d (4 GB at d=500).
+
+    ``0`` is the uncapped pool and an explicit integer pins the row count, for every source.
+    """
+    if pf_pool_cap is None:
+        return default_pool_cap(chains, d) if imm_source == "mc" else 4 * int(chains)
+    cap = int(pf_pool_cap)
+    if cap == 0:
+        return None
+    if cap < chains:
+        raise ValueError(f"pf_pool_cap={cap} must be >= chains={chains} (or 0 for uncapped)")
+    return cap
+
+
 def _stratified_pool_idx(logp_subset, subset_idx, n_pick):
     """Equally spaced ranks by log-density, chosen from a scored subset of the draw pool.
 
@@ -463,7 +486,9 @@ class PfCheesHMC:
         pm_tune: int (default 500)
         pm_seed: int (default self.seed)
         init_source: "pf" | "adapt_diag" (default "pf")
-        ridge: float covariance ridge (default 1e-6)
+        ridge: float covariance ridge (default 1e-6; the "mc" covariance only)
+        imm_source: "mc" (default) | "pf_closed" | "lbfgs_lowrank" | "fisher_lowrank"
+        pf_pool_cap: pool row cap; None -> see resolve_pool_cap (depends on imm_source), 0 = uncapped
         pf_jitter_eps, pf_max_backtracks, pf_max_restarts, pf_center, pf_restart_radius
         """
         # ---- Defaults
@@ -489,9 +514,10 @@ class PfCheesHMC:
 
         # WP5: cap on the PF start pool (chains*draws rows). At C=1,024 with the default
         # draws=4,000 the pool is 4.1M rows -- 5.73 GB at d=175 -- and it feeds both the covariance
-        # estimate and the start picks. None (the default) now means
-        # default_pool_cap(chains, d) = max(4C, 4d^2); 0 is the historical uncapped pool; an integer
-        # pins the row count.
+        # estimate and the start picks. None (the default) means resolve_pool_cap(...): 4C rows when
+        # imm_source != "mc" (the pool only feeds start picks), default_pool_cap(chains, d) =
+        # max(4C, 4d^2) when imm_source == "mc"; 0 is the historical uncapped pool; an integer pins
+        # the row count.
         pf_pool_cap = kwargs.get("pf_pool_cap", None)
         # WP5: block size for the vmapped log-density scorings below (peak memory is
         # O(block), not O(pool or chains)).
@@ -578,15 +604,8 @@ class PfCheesHMC:
             for s in jnp.asarray(x0_pf[n]).shape:
                 k *= int(s)
             d_flat += k
-        cap = pf_pool_cap
-        if cap is not None:
-            cap = int(cap)
-            if cap == 0:
-                cap = None
-            elif cap < chains:
-                raise ValueError(f"pf_pool_cap={cap} must be >= chains={chains} (or 0 for uncapped)")
-        else:
-            cap = default_pool_cap(chains, d_flat)
+        imm_source = kwargs.get("imm_source", "mc")
+        cap = resolve_pool_cap(pf_pool_cap, chains, d_flat, imm_source)
         total = chains * draws
         if cap is not None:
             total = min(total, cap)
@@ -677,9 +696,26 @@ class PfCheesHMC:
         # 6b) Optional alternative metric (E4). Default "mc" keeps the empirical covariance above.
         # A low-rank source produces the same kind of object -- a COVARIANCE estimate -- so the
         # orientation is not its property, it is chosen once in 6c.
-        imm_source = kwargs.get("imm_source", "mc")
         if imm_source != "mc":
-            if imm_source == "lbfgs_lowrank":
+            if imm_source == "pf_closed":
+                # The exact covariance Pathfinder's own sampler draws with: bfgs_sample builds
+                # phi = mu + sqrt(alpha) * (Q (L - I) Q^T u + u) with L L^T = I + R gamma R^T and
+                # Q R = beta / sqrt(alpha), whose covariance is diag(alpha) + beta gamma beta^T
+                # (formula II.1 of zhang2022pathfinder). So the MC pool covariance above is a noisy
+                # estimate of this matrix; here it is taken in closed form, from the one fit made in
+                # step 3. It is in Pathfinder's flat (tuple, self.rvs) order and goes through the
+                # same orientation (6c) and kernel-order choke point (8) as "mc". No ridge: it is
+                # positive definite by construction, which is asserted instead of patched over.
+                covariance = bj.optimizers.lbfgs.lbfgs_inverse_hessian_formula_1(
+                    pf_state.alpha, pf_state.beta, pf_state.gamma)
+                lam_min = float(jnp.linalg.eigvalsh(covariance).min())
+                if not lam_min > 0.0:
+                    raise ValueError(
+                        f"imm_source='pf_closed': the closed-form Pathfinder covariance is not "
+                        f"positive definite (min eigenvalue {lam_min:.3e}, dtype {covariance.dtype}, "
+                        f"d={covariance.shape[0]}). No ridge is added by design; use "
+                        "imm_source='mc' or enable float64.")
+            elif imm_source == "lbfgs_lowrank":
                 # Free: these are the L-BFGS factors Pathfinder already fitted (zhang2022pathfinder
                 # formula II.1/II.3). No extra gradients, no extra solve.
                 lr = bj.mcmc.metrics.lbfgs_inverse_hessian_to_low_rank_metric(
@@ -698,10 +734,12 @@ class PfCheesHMC:
                     cutoff=float(kwargs.get("fisher_cutoff", 2.0)))
             else:
                 raise ValueError(
-                    f"imm_source must be 'mc', 'lbfgs_lowrank' or 'fisher_lowrank', got {imm_source!r}")
-            D = jnp.diag(lr.sigma)
-            covariance = (D @ (jnp.eye(lr.sigma.shape[0], dtype=lr.sigma.dtype)
-                               + lr.U @ jnp.diag(lr.lam - 1.0) @ lr.U.T) @ D)
+                    "imm_source must be 'mc', 'pf_closed', 'lbfgs_lowrank' or 'fisher_lowrank', "
+                    f"got {imm_source!r}")
+            if imm_source != "pf_closed":
+                D = jnp.diag(lr.sigma)
+                covariance = (D @ (jnp.eye(lr.sigma.shape[0], dtype=lr.sigma.dtype)
+                                   + lr.U @ jnp.diag(lr.lam - 1.0) @ lr.U.T) @ D)
             # Note: rescaling this metric to the empirical covariance's geometric mean was tried and
             # is NOT implemented -- it made every measured model worse (8 Schools 50,626 -> 13,628
             # ESS/s, radon centered R-hat 2.10 -> 5.69). See docs/ladder-results.md. That comparison
