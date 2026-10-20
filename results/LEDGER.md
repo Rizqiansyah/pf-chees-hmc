@@ -692,3 +692,46 @@ shape (974 grads, b² 0.00060–0.00242), the production pool **reproduces** the
 
 Remaining 7 cells (GEV, logistic, radon × 2 seeds) run in the background, ~35 min; radon is the one where the
 pool could matter most, since Pathfinder quality is where radon's deficit came from.
+
+---
+
+## 2026-10-20 — three late reviews: one catastrophic risk checked and cleared, one data collision found
+
+`wp5-code-review-y`, `wp5-stats-review-z` and `wp4-code-review-x` all completed after the run
+was closed. Two of them independently warned the same thing: **wp5 and wp4 branch from a pre-flip base**, so a
+naive merge could silently revert the owner's covariance default (`08357db`) and wp1's dict guard (`7982356`).
+Both branches were already merged when this arrived, so I checked the shipped tree rather than reasoning about it:
+
+| check | result |
+|---|---|
+| `sampler.py:703` `imm_orientation` default | **`"covariance"`** — the flip is intact |
+| `_kernel_permutation` dict rejection | present (`isinstance` guard, `sampler.py:131`) |
+| post-flip test `test_default_orientation_is_covariance_and_mixes` | present at `tests/test_metric_orientation.py:347` |
+| `tests/test_metric_orientation.py` | **17 passed in 56.34 s** |
+
+The auto-merge took the mainline side, so the risk did not materialise. The reviews were still right to demand
+the check — and it is the first time in this run a review caught a *class* of failure (stale-base merge) rather
+than a specific number. Their merge-side instructions ("take the `pf-r1-int` side of every conflict in
+`sampler.py` / `test_metric_orientation.py`") should be treated as standing policy for any further merges.
+
+**Their verified content, kept:**
+- wp5 code review confirms the capacity mechanics I could not test myself: `pf_pool_cap=None` draws exactly
+  `chains*draws` (proven with a spy on `pathfinder.sample`), the shared-base guard repairs a NaN-gradient start
+  and raises on an unrepairable one, chunked and single-vmap picks are value-identical with argmax pinned at
+  `rtol=0`, and no dropped scan field is read anywhere. It also corrects me again: the "~14 GB warmup scan"
+  figure is **arithmetic, not measured** — no pre-branch run ever reached that stage at C=1,024.
+- wp4 code review confirms the estimator core (covariances in kernel order with a 20%-of-true-variance teeth
+  test; PD guard proven on all four; ε re-search is toothed; `T0 = (π/2)·√(1/λ_min(Σ))` ≡ `(π/2)·√λ_max(M⁻¹)`,
+  so no inversion error) and reports three label defects: the SUMMARY's baseline column is seed-2 values rather
+  than medians, its header says "warm" while all 50 rows are `cold=True`, and the A/B table is a stale
+  placeholder.
+
+**Data collision, confirmed and pending reconciliation.** A live driver (`~/scratch/wp4_reseed_ab_missing.sh`,
+pid 2930556) is writing `wp/wp4`'s `WP4__reseed_ab.jsonl`: the working copy now has **27** rows and is missing
+the **6 radon W=100/200 ladder rows** that exist in git HEAD (`83ebac6`). Reconcile as a union after the driver
+exits — do not commit while it runs, and do not let the driver's file be the last writer.
+
+**New evidence from that driver, worth having now:** its `ab:baseline` cells add a third seed to the no-refresh
+radon control — **b² 3.000, 0.223, 2.852 against floors 0.00485–0.00491** — so radon's no-refresh failure is
+resolvable on **3 of 3 seeds**, not 2. That strengthens §3e's claim that the refresh is the only measured path
+to a passing R1 run on radon.
