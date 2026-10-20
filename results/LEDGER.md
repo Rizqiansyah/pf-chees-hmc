@@ -735,3 +735,69 @@ exits — do not commit while it runs, and do not let the driver's file be the l
 radon control — **b² 3.000, 0.223, 2.852 against floors 0.00485–0.00491** — so radon's no-refresh failure is
 resolvable on **3 of 3 seeds**, not 2. That strengthens §3e's claim that the refresh is the only measured path
 to a passing R1 run on radon.
+
+---
+
+## 2026-10-20 13:20 — production Pathfinder pool at R1: the pool OOMs at d ≥ 25, and two WP4 review claims are wrong
+
+### 1. The uncapped production pool does not run at R1 shapes above d = 8 (measured, 8 cells)
+
+Every R1 bias number in this run was measured with `pathfinder_kwargs.draws=1`. `results/reviews/WP5-stats.md`
+named that as the run's biggest untested variable: production uses `draws=4,000`, so the start pool is
+`chains × draws` = **4,096,000 rows** at C=1,024. Measured at the R1 shape (C=1,024 × D=10, W=50,
+covariance orientation, `iterate=raw`, arm `int:prodpool`), `results/runs/T1__prodpool.jsonl`:
+
+| model | d | pool array | result |
+|---|---|---|---|
+| GEV | 4 | 131 MB | b² 0.00152 / 0.00012 vs floors 0.00115 / 0.00100 — seed 1 fails resolvably, seed 2 passes; 480/564 grads, 782 MiB peak |
+| 8 Schools | 8 | 262 MB | b² 0.00072 (floor 0.00117) and 0.00144 (floor 0.00119) — seed 1 pass, seed 2 fail; 964/976 grads, 2,076 MiB peak |
+| logistic 1000×25 | 25 | 819 MB | **RESOURCE_EXHAUSTED**, tried to allocate 797.25 MiB, 0 rows scored |
+| radon NC | 175 | 5.73 GB | **RESOURCE_EXHAUSTED**, 5.36 GiB allocation refused |
+
+The XLA op that dies is `f64[20,4096000] = jit(matmul)/dot_general(f64[4096000,175], f64[20,175])`, and the
+bytes match the pool arithmetic exactly: 4,096,000 × 175 × 8 = **5,734,400,000 B**, the same number XLA
+reports as the over-limit argument size. So the wall is the pool operand, not the sampler state.
+
+**The crossover is measured, not extrapolated:** the pool fits on the 6 GB A2000 at d = 8 and does not fit at
+d = 25. This confirms WP3's scoping claim (`§0.6` is pool + start scoring, not chain count) on the failure side.
+
+`pf_pool_cap` (WP5, `sampler.py:471`) is the remedy and it defaults to `None` = uncapped = historical
+behaviour. `tools/r1_bias.py` had no flag for it, so this first pass could not reach it; a `--pf-pool-cap`
+plumbing flag was added and the capped arm (`int:prodpool_cap4C`, cap = 4C = 4,096 rows) is running for the
+four OOM'd cells plus capped-vs-uncapped controls on GEV and 8 Schools. Until those rows land, **no R1 bias
+verdict in this report may be described as a production-pool result.**
+
+### 2. WP4 row-file reconcile — and a self-correction on cell size
+
+The `wp4` driver had exited with 36 rows on its checkout disk against 18 in git. Main was **not** missing the
+6 radon ladder rows (they were in main all along — the clobber was checkout-local). Union by
+(arm, model, seed, rep, warmup, refresh, reseed) added **24 rows** (`ab:baseline`, `ab:sample_diag`,
+`ab:sample_diag_noreseed`, 12 each) → `WP4__reseed_ab.jsonl` is now **42 rows**, 0 errors.
+
+Self-correction: I wrote "3 seeds × 4 reps = 12 rows/cell" while reading this. Wrong — the 12 rows per arm are
+4 models × 3 seeds. **Each cell is 3 rows.** The re-seed A/B table in `REPORT.md` §3e item 3 therefore rests on
+3 seeds per cell at W=50, and its multipliers move slightly on the larger sample (8 Schools 1.33→1.35×,
+GEV 8.62→9.55×, logistic 7.36→7.24×, radon 15.09→20.05×; re-seed alone 0.99→1.00×, 5.71→6.44×, 4.90→4.89×,
+9.69→9.52×). The conclusions are unchanged; the table is updated to the 42-row file.
+
+### 3. Two claims in `results/reviews/WP4-stats.md` are refuted against the rows
+
+Both were carried into `REPORT.md` §3e item 2 as provenance defects. Neither is one.
+
+1. *"The re-seed factor is recorded in no row field; the two ablation arms are byte-identical except for their
+   label."* False. Paired across all **12** common (model, seed, rep) cells, the two arms' `kwargs` differ in
+   exactly two recorded fields: `metric_refresh` = `"sample_diag"` vs `null`, and
+   **`metric_refresh_reseed` = `true` vs `null`**. The factor is in the row. (My first check answered "yes it
+   is recorded" by substring-scanning the whole `kwargs` blob, where the *arm label* `ab:sample_diag_noreseed`
+   also contains the string — a match on the label, not on a factor. Pairing the cells and diffing keys is what
+   settled it.)
+2. *"Radon's noise floor swings 2× between nominally identical cells (0.0029 in one file, 0.0054–0.0060 in the
+   other)."* Not a defect, and not between files: the two radon floors come from the **same file, same model,
+   same W=50**, and belong to two different arms — refresh 0.00282, no-refresh 0.00559. The floor is
+   `max_f (mcse_run[f]² / Var_ref[f]) × 2·ln(2d)` (`tools/r1_bias.py:268-270`), i.e. built from the **run's own**
+   chain MCSE, so any arm that changes the chains changes the floor. Arm-dependent floors are the formula's
+   construction, not instability. Consequence for reading §3e: a refresh arm is compared against a *looser* bar,
+   so "passes at 0.79× floor" is weaker evidence than the ratio alone suggests.
+
+Rule repeated because it bit again: a review is a claim, not a fact — including when the claim is about data
+provenance, and including when agreeing with it would be convenient.
