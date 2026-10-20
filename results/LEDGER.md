@@ -588,11 +588,18 @@ Fix: `chees_warmup_with_progress(..., stack_positions=False)`. The refresh's pha
 Verified: `test_ensemble_metric.py` **13 passed in 23.4 s** (was 12 passed + 1 failed) and the full merged
 suite **124 passed in 106.11 s** on forced CPU.
 
-### Footnote on the wp3 suite counts (verified 2026-10-20, late)
+### Footnote on the wp3 suite counts (both verified 2026-10-20, late)
 
-The merge message for `wp/wp3` states "full wp3 suite 66 passed before the gate change, 67 after". The first
-number is now confirmed from the task output file (**66 passed in 87.03 s**, forced CPU). The second was an
-inference (66 + the one test added with the `g_r1` fix) and was never run as a whole-suite count — what was
-measured after the gate change is `tests/test_r1_bias.py` **24 passed in 19.4 s**. The authoritative number for
-the tree is the merged `pf-r1` suite: **124 passed in 106.11 s**, which contains all of wp3. Recorded so the
-"67" is not quoted as a measurement.
+Both numbers in the `wp/wp3` merge message are confirmed measurements, read from their task output files:
+
+- before the gate change: **66 passed in 87.03 s** (forced CPU)
+- after the gate fix: **67 passed in 87.08 s** (forced CPU)
+
+A note written a minute ago claimed the "67" was an inference rather than a run — that was wrong: the run had
+finished and only its completion notification was still undelivered when I wrote it. `tests/test_r1_bias.py`
+separately measured **24 passed in 19.4 s** after the fix, and the authoritative number for the whole tree is
+the merged `pf-r1` suite: **124 passed in 106.11 s**.
+
+The general lesson is recorded because it nearly produced a false correction: **an undelivered completion
+notification is not evidence that a measurement did not happen.** Check the output file before writing down
+that something was never run.
