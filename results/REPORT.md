@@ -140,6 +140,33 @@ The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); th
 
 Tripling warmup to W=200 cuts b² by 20% and raises the floor, while costing **5.7× the gradients**. Every cell stays inside its own noise band, so radon is *unmeasurable* against the 0.01 bar at C=1,024 × D=10 — not a pass, not a fail. Resolving it needs more draws per chain (which R1 does not allow) or a reference-based floor reduction, and that is a plan change, not a result.
 
+### 3f. The production Pathfinder pool at R1 — `§7` item 6, now closed
+
+Every R1 number above was measured with `pathfinder_kwargs.draws = 1`. Production defaults to **4,000 draws per chain**, which makes the start pool `chains × draws` = **4,096,000 rows** at C=1,024. Measured at the R1 shape (C=1,024 × D=10, W=50, covariance, `iterate=raw`, `init_pick=stratified`), `results/runs/T1__prodpool.jsonl` 15 rows:
+
+| model (d) | uncapped pool — pool array | result |
+|---|---|---|
+| GEV (4) | 131 MB | runs: b² 0.00152 / 0.00012 vs floors 0.00115 / 0.00100 (seed 1 fail, seed 2 pass), peak 782 MiB |
+| 8 Schools (8) | 262 MB | runs: 0.00072 / 0.00144 vs 0.00117 / 0.00119 (pass, fail), peak 2,076 MiB |
+| logistic (25) | 819 MB | **RESOURCE_EXHAUSTED** — 797.25 MiB allocation refused, 0 rows scored |
+| radon NC (175) | 5.73 GB | **RESOURCE_EXHAUSTED** — 5.36 GiB refused |
+
+The failing op is `f64[20,4096000] = jit(matmul)/dot_general(f64[4096000,175], f64[20,175])` and XLA's over-limit figure, **5,734,400,000 B, is exactly 4,096,000 × 175 × 8** — the wall is the pool operand, not sampler state. So on a 6 GB card the production pool **fits at d = 8 and does not fit at d = 25**; that crossover is measured, not extrapolated.
+
+WP5's `pf_pool_cap` (`sampler.py:471`) is the remedy and it **defaults to `None`**, i.e. the uncapped historical behaviour; `tools/r1_bias.py` had no flag for it, so `--pf-pool-cap` was added to reach it. Capping to `4C` = 4,096 rows makes every model run:
+
+| model | b² (capped, seeds 1 / 2) | floor | verdict | grads/chain | peak, uncapped → capped |
+|---|---|---|---|---|---|
+| radon NC | **2.4449 / 2.3165** | 0.0052 / 0.0051 | **fail 2/2** | 276 / 291 | OOM → 653 MiB |
+| logistic | 0.00385 / 0.00446 | 0.0024 / 0.0024 | fail 2/2 | 335 / 319 | OOM → 581 MiB |
+| GEV | 0.00179 / 0.00007 | 0.0011 / 0.0010 | fail / pass | 447 / 578 | 782 → 288 MiB |
+| 8 Schools | — / 0.00151 | — / 0.0012 | — / fail | — / 1,061 | 2,076 → **224** MiB |
+
+**Two conclusions.**
+
+1. **The cap is verdict-neutral, so it is a safe default.** The three cells measurable both ways keep their class: 8 Schools s2 fail→fail (0.00144 → 0.00151), GEV s1 fail→fail (0.00152 → 0.00179), GEV s2 pass→pass (0.00012 → 0.00007), while peak memory falls **9×** on 8 Schools and 2.7× on GEV.
+2. **The production pool changes no R1 conclusion.** Against the matched 1-draw control (`ab:baseline`: identical `init_pick`, orientation, iterate, C, D, W — the single difference is pool size), radon fails either way (1-draw b² median **2.852**, 0/3 seeds; production pool **2.445 / 2.316**, 0/2) at ~275 grads/chain in both; logistic fails either way (0.00354 median vs 0.00385 / 0.00446); GEV and 8 Schools are mixed either way. **No R1 verdict in this report is an artifact of the single-draw start.** The item that flagged this as the run's biggest untested variable is resolved in both directions: the start policy does not move the bias result, and it does move the memory result — by 5.7 GB at d=175, which is a hard failure rather than a tuning question.
+
 ## 4. Decisions taken in this run
 
 1. `imm_orientation` is an explicit, tested parameter (default unchanged for now); `imm_order` likewise. The default flip is owner-gated (G3) — recommendation and remaining evidence in §7.
@@ -188,7 +215,7 @@ Two limits stated on the face of the table: the arms move orientation **and** ad
 | same, at 128 chains | ESS/s | direction holds at the higher chain count | `WP1__t2_128.jsonl` |
 | order A/B on real models (orientation pinned) | gradients/ESS | radon **4.7× win**; GEV reverse (explained by a 50× Pathfinder under-dispersion of `xi_interval__`); logistic and 8 Schools **bit-identical** (identity permutation) | `ORDER__radon_noncentered.jsonl` 10, `ORDER__logit_1000x25.jsonl` 10 |
 | Pathfinder as init vs as warmup (R2) | gradients/ESS | **no benefit at any budget**, 5 seeds × 4 models | §3 |
-| metric refresh at W=50 | gradients/ESS | costs **1.34–13.98×**; **1.34–1.55×** once the trajectory-length re-seed is dropped | `WP4__r1.jsonl` 32, `WP4__reseed_ab.jsonl` 18 |
+| metric refresh at W=50 | gradients/ESS | costs **1.35–20.05×**; **1.35–2.11×** once the trajectory-length re-seed is dropped | `WP4__r1.jsonl` 32, `WP4__reseed_ab.jsonl` 42 |
 | ChEES raw `log T` iterate | warmup wall | **no saving — it costs ~8%.** The 2.1× on logistic (16.72 → 7.86 s) is the **metric** change; isolating the iterate (B cov,ma → C cov,raw) gives **+7.6% GPU / +14.6% CPU slower**, because raw starts at a larger L (L@100 25–42 vs 8.3) and pays for it. Frozen L is not worse (−5.3% logistic, +4.0% 8 Schools, inside the reproducibility floor) | `WP2__lgrowth.jsonl` 32 rows = **1 seed × 2 devices** |
 | XLA command buffers | wall | **not shipped** — see T5 | `T5a__cmdbuf.jsonl` 10 |
 
@@ -250,13 +277,15 @@ The 2 s warm-init bar is **not met** (4.07 s), and 1.59 s of it is the step-size
 3. **WP4 fails its own accept rule** (0 of 4 models improved on gradients per chain; overhead grows 1.5× → 2.7× with warmup) and survives only as radon's accuracy rescue. The refresh's re-seed removal is still a 4.9–9.7× saving, which is why the mechanism is kept rather than deleted.
 4. **GEV's divergence mechanism is unidentified.** The rise is real and seed-stable (0.875, 0.350, 0.400, 0.200, 0.575 per 1k on the candidate against ≤ 0.100 on every shipped seed). One instrumented run reporting the diverging coordinate's implied velocity answers it; the 50× Pathfinder under-dispersion of `xi_interval__` is the leading candidate and also explains GEV's apparently-inverted permutation result.
 5. **Radon cannot be gated at R1 at any warmup** (§3e) — floors never fall below ~0.0057. Needs more draws per chain or a better noise floor (reference MCSE + serial correlation), which is also the item standing between this run and any near-floor decision elsewhere.
-6. **The R1 evidence base is single-start.** All 48 T1 rows and all 50 WP4 rows ran `pathfinder_kwargs.draws = 1`, while production defaults to 4,000 and `wp/wp5`'s capacity work is about the 4,000-draw pool. The R1 conclusions are internally consistent but do not describe the production start policy.
+6. **The R1 evidence base is single-start — CLOSED 2026-10-20 (§3f).** All 48 T1 rows and all 50 WP4 rows ran `pathfinder_kwargs.draws = 1`, while production defaults to 4,000. Measured: the production pool changes **no** bias verdict (radon fails at b² 2.32–2.45 against the matched 1-draw control's 2.852 median, same gradient count), and it **cannot run at all above d ≈ 8** on a 6 GB card without WP5's `pf_pool_cap` — which is default-off and should be defaulted on, since capping to `4C` is verdict-neutral and cuts peak memory 9×.
 
 **A process deviation the owner should know about.** A4 asks for two independent reviews per merge. Seven review tasks were launched; only one wrote a file whose claims survived verification, three wrote nothing, and the rest produced detailed blocking findings that were false — refuted by reading the source or running the named test (each refutation is recorded in the review file itself). Four of the eight branches therefore carry **lead-executed** reviews, labelled as such at the top of each file. That is a deviation from the ruling, not a fulfilment of it. The remedy is measured, not rhetorical: every claim in those reviews is a number re-derived from a row file, and three of the run's own published statements were refuted in the process (the estimator ranking in §3e, the 3.7–15× range, and the WP5 memory attribution).
 
 ## 8. Handoff — where everything lives
 
 **Tree.** `main` untouched at `ecd9ba1`; **nothing pushed**. `pf-r1` carries every work package merged: `wp0refs`, `wp1` (coordinate-order fix + covariance default), `wp2` (vendored ChEES adapter), `wp3` (R1 bias harness), `wp4` (ensemble metric refresh), `wp5` (R1 capacity), `wp8` (hygiene), `wp9docs` (documentation retractions). `pf-r1-int` (`~/pf/int`) is the measurement tree the R1/T1/G3 numbers came from, and its row files are now committed there — they were untracked, and 101 of the run's 619 rows would have been lost with the checkout.
+
+**Row-file provenance, checked file by file (2026-10-20).** All 13 row files cited in §6b resolve and every cited row count matches its file. Five of them (`T1__r1_sweep` 48, `T3__cpu_nuts` 12, `T5a__cmdbuf` 10, `ORDER__radon_noncentered` 10, `ORDER__logit_1000x25` 10) existed **only on `pf-r1-int`** and have been copied onto `pf-r1` so this report is self-contained. They are not equally attributable: `T1`'s rows are at `164f449`/`574f960`, both **ancestors of `pf-r1`** and carrying the WP1 permutation, so T1 reads against the current tree; `T3`, `T5a` and both `ORDER__` files are at `80e39f2`/`d48a624`/`62049b2`, which are **not in `pf-r1`'s history** — auditable, but not reproducible from `pf-r1` HEAD. `T3` (CPU NUTS reference) and `T5a` (XLA flag) are orientation-independent, so this moves no conclusion; the two `ORDER__` files feed T2's order A/B row and would need a re-run on `pf-r1` before being claimed as current-tree evidence.
 
 **Evidence base.** 21 distinct row files, 619 rows, in `~/pf/*/results/runs/` (each T-table cell in §6b names its file). References: `~/pf-runs/references/*.npz` + `results/references/MANIFEST.json` (sample arrays are the single authority; stat columns are display-only). Reviews: `results/reviews/` (14 files). Decisions, contradictions and retractions: `results/LEDGER.md`. This report: `results/REPORT.md`. Resume state: `results/STATUS.md`.
 

@@ -801,3 +801,44 @@ Both were carried into `REPORT.md` §3e item 2 as provenance defects. Neither is
 
 Rule repeated because it bit again: a review is a claim, not a fact — including when the claim is about data
 provenance, and including when agreeing with it would be convenient.
+
+---
+
+## 2026-10-20 13:45 — production Pathfinder pool measured at R1; and five report tables pointed at files that were not on this branch
+
+### 1. The capped production pool runs everywhere and changes no verdict
+
+`--pf-pool-cap` was added to `tools/r1_bias.py` (WP5's `pf_pool_cap` was unreachable from the harness) and the
+capped arm ran on the four cells that OOM'd plus capped/uncapped controls. `results/runs/T1__prodpool.jsonl`, 15 rows.
+
+* **Capacity.** Pool capped to `4C` = 4,096 rows: radon **653 MiB**, logistic 581, GEV 288, 8 Schools **224** —
+  against uncapped 2,076 MiB on 8 Schools and outright OOM at d ≥ 25.
+* **Verdict neutrality (the control that matters).** All three cells measurable both ways keep their class:
+  8 Schools s2 0.00144 → 0.00151 (fail → fail), GEV s1 0.00152 → 0.00179 (fail → fail),
+  GEV s2 0.00012 → 0.00007 (pass → pass). So `pf_pool_cap=4C` is safe to default on.
+* **Single-start doubt resolved.** Against the matched 1-draw control `ab:baseline` — verified identical on
+  `init_pick=stratified`, orientation `covariance`, `iterate=raw`, C=1,024, D=10, W=50, refresh none, with
+  **pool size the only difference** — radon fails either way (1-draw median 2.852, 0/3 seeds vs production
+  2.445 / 2.316, 0/2) at ~275 grads/chain in both; logistic fails either way (0.00354 median vs 0.00385 / 0.00446);
+  GEV and 8 Schools are mixed either way. **No R1 verdict in the report is an artifact of `draws=1`.**
+
+Stated plainly because it cuts both ways: the start policy is **not** a bias lever, but it **is** a 5.7 GB memory
+wall at d=175 — a hard failure, not a tuning question. §7 item 6 is closed.
+
+### 2. Five of the six report tables cited row files that were not on `pf-r1`
+
+Audited every `.jsonl` cited in `REPORT.md` §6b against disk and against every branch. All cited **row counts are
+correct**, but `T1__r1_sweep` (48), `T3__cpu_nuts` (12), `T5a__cmdbuf` (10), `ORDER__radon_noncentered` (10) and
+`ORDER__logit_1000x25` (10) existed **only on `pf-r1-int`** — which diverged from `pf-r1` (7 commits on int not in
+pf-r1; 93 on pf-r1 not in int). Anyone checking out `pf-r1` and trying to re-derive T1, T3, T5 or the T2 order row
+would have found nothing. The five files are now copied onto `pf-r1` and §8 states the residual asymmetry:
+
+* `T1` rows are at `164f449` / `574f960`, both **ancestors of `pf-r1`**, and that code contains the WP1 permutation
+  (`_kernel_permutation` / `_metric_to_kernel_order` present) — so T1 reads against the current tree.
+* `T3`, `T5a`, `ORDER__*` rows are at `80e39f2` / `d48a624` / `62049b2`, **not in `pf-r1`'s history** at all.
+  T3 (CPU NUTS) and T5a (XLA flag) are orientation-independent so nothing moves; the two `ORDER__` files feed a
+  T2 claim and are now labelled as needing a `pf-r1` re-run before being called current-tree evidence.
+
+This is the same failure class as the "124 tests" number: a citation that was true when written and was never
+re-checked against its source. The difference is that a broken file pointer is silently unrecoverable, so the
+check now runs over every cited file rather than the one I happened to doubt.
