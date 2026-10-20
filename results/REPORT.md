@@ -100,8 +100,17 @@ The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); th
 | logistic | 0.0047 | pass (marginal) | 0.0006 – 0.0009 | pass | 324 → 1,352 – 4,934 |
 | radon NC | **1.6118** | **fails at every warmup tested** | **0.0018 – 0.0020** | **pass on both seeds** | 372 → 3,886 – 5,612 |
 
-1. **The refresh is the only measured path to a passing R1 run on radon NC.** The task initially argued the same benefit is cheaper by running the baseline at W=200; that is refuted by its own rows (seed 1 b² **0.02339 = fail** at W=200, both seeds `unresolvable` at W=100), and the task accepted the correction.
-2. **Every estimator is a cost on the models Pathfinder already handles** — 1.4–8× more gradients for a bias change inside seed noise — and **no estimator clears the plan's 1.2× kill clause against the plain sample diagonal** (dense-with-shrinkage 1.03× on logistic and radon, low-rank worse, Fisher-diagonal worst on GEV at 6,673). So: kill `dense_shrunk`, `diag_lowrank`, `fisher_diag`; keep `sample_diag`; ship the refresh **opt-in, keyed on Pathfinder metric quality** (radon's variance ratio 0.011 versus 8 Schools' 0.56), never on by default.
+1. **The refresh is the only measured path to a passing R1 run on radon NC** — but read that with the instrument's own limits: with the refresh radon's b² is 0.0018–0.0020 against floors of 0.0026–0.0029 (a pass), while the ablation's radon cells at the same warmup carry floors of 0.0054–0.0060 and are unresolvable. The same nominal cell changes class between runs. The task initially argued the same benefit is cheaper by running the baseline at W=200; that is refuted by its own rows (seed 1 b² **0.02339 = fail** at W=200, both seeds `unresolvable` at W=100), and the task accepted the correction.
+2. **One estimator clears the kill clause, and this report previously said none did.** Re-derived from the rows (the earlier sentence was inherited from the implementation SUMMARY without checking, which is the failure mode this run exists to catch): gradients/chain at W=50, median over seeds —
+
+| estimator | 8 Schools | GEV | logistic | radon NC | vs plain diagonal (logistic, radon) | verdict |
+|---|---|---|---|---|---|---|
+| `sample_diag` | 1,292 | 4,804 | 2,386 | 5,612 | — | reference |
+| **`fisher_diag`** | **1,157** | 6,673 | **1,352** | **3,886** | **0.57, 0.69** | **clears 1.2× → keep** |
+| `dense_shrunk` | 1,344 | 4,237 | 2,323 | 5,469 | 0.97, 0.97 | indistinguishable → kill |
+| `diag_lowrank` | 1,400 | 3,778 | 4,934 | 5,317 | 2.07, 0.95 | worse → kill |
+
+   So the shipped recommendation becomes: **keep `sample_diag` as the safe default and `fisher_diag` as the one worth pursuing** (1.45–1.77× fewer gradients on the two correlated models, at a cost on GEV), kill `dense_shrunk` and `diag_lowrank`. All 16 cells pass on bias; cost is the discriminator. Two provenance problems go with this, filed in `results/reviews/WP4-stats.md`: the re-seed factor is recorded in **no row field** (the two ablation arms are byte-identical except for their label), and radon's noise floor swings 2× between nominally identical cells (0.0029 in one file, 0.0054–0.0060 in the other).
 3. **The cost was the re-seed, and that is now measured.** The trajectory-length re-seed `T = (π/2)·√λ_max` lands at L = 23–402 against the baseline's converged 10–27 because λ_max of a 50-step ensemble estimate is noise-dominated. The A/B (4 models × 3 arms × 3 seeds at W=50) is in `results/runs/WP4__ablation.jsonl`:
 
 | model | no refresh | refresh + re-seed | **refresh, no re-seed** | verdict |
