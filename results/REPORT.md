@@ -100,7 +100,15 @@ The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); th
 | logistic | 0.0047 | pass (marginal) | 0.0006 – 0.0009 | pass | 324 → 1,352 – 4,934 |
 | radon NC | **1.6118** | **fails at every warmup tested** | **0.0018 – 0.0020** | **pass on both seeds** | 372 → 3,886 – 5,612 |
 
-1. **The refresh is the only measured path to a passing R1 run on radon NC** — but read that with the instrument's own limits: with the refresh radon's b² is 0.0018–0.0020 against floors of 0.0026–0.0029 (a pass), while the ablation's radon cells at the same warmup carry floors of 0.0054–0.0060 and are unresolvable. The same nominal cell changes class between runs. The task initially argued the same benefit is cheaper by running the baseline at W=200; that is refuted by its own rows (seed 1 b² **0.02339 = fail** at W=200, both seeds `unresolvable` at W=100), and the task accepted the correction.
+1. **The refresh is the only measured path to a passing R1 run on radon NC** — but read that with the instrument's own limits: with the refresh radon's b² is 0.0018–0.0020 against floors of 0.0026–0.0029 (a pass), while the ablation's radon cells at the same warmup carry floors of 0.0054–0.0060 and are unresolvable. The same nominal cell changes class between runs. The task initially argued the same benefit is cheaper by running the baseline at W=200; **that is refuted, and harder than this report first said.** Corrected provenance (the numbers were cited as "its own rows"; they are `T1__r1_sweep.jsonl`, arm `int:covraw` — covariance + `raw`, no refresh): every no-refresh radon cell **fails resolvably**, 6 of 6:
+
+   | radon NC, no refresh (`int:covraw`) | seed 1 b² (× floor) | seed 2 b² (× floor) | grads/chain |
+   |---|---|---|---|
+   | W=50 | 3.00032 (618×) | 0.22330 (45×) | 260 / 485 |
+   | W=100 | 0.42792 (81×) | 0.03272 (6.5×) | 458 / 842 |
+   | W=200 | 0.02339 (4.9×) | 0.00709 (1.7×) | 954 / 1,521 |
+
+   Quadrupling warmup to W=200 buys 2.4–6.3× the gradients and still lands 1.7–4.9× **above** its own floor. The earlier wording here ("both seeds unresolvable at W=100") was the superseded gate's verdict — under the shipped floor these are ordinary failures. The task accepted the correction.
 2. **One estimator clears the kill clause, and this report previously said none did.** Re-derived from the rows (the earlier sentence was inherited from the implementation SUMMARY without checking, which is the failure mode this run exists to catch): gradients/chain at W=50, median over seeds —
 
 | estimator | 8 Schools | GEV | logistic | radon NC | vs plain diagonal (logistic, radon) | verdict |
@@ -126,7 +134,7 @@ The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); th
    - **The re-seed is essentially the whole cost.** Removing it collapses a 4.9–9.7× penalty, and the no-re-seed rows keep a sane trajectory length (L = 14–27, verified — so this is *not* a degenerate "L stuck at 1" saving).
    - **The refresh still fails its own accept rule.** The plan accepts it if gradients per chain *fall* on ≥ 3 of 4 models; against T1 controls at identical settings (same orientation, iterate, `pf_draws`, `init_pick` — verified from the rows, so a clean single-factor comparison) it improves **0 of 4**, and its overhead **grows with warmup**: radon 650 → 1,182 (1.82×) at W=100 and 1,238 → 3,340 (2.70×) at W=200.
 
-   What it does buy is narrow and real: **radon NC's bias**. On the 3-seed A/B at W=50 (medians, PASS = b² below that arm's own floor): no-refresh radon reads **2.852** (range 0.223–3.000, floor 0.0049) and passes **0 of 3 seeds**; with the refresh it reads **0.00224** (0.00208–0.00261, floor 0.00282) and passes **3 of 3**. Logistic moves the same way, 0.00354 → 0.00057 (1.45× floor → 0.50×, 1/3 → 3/3). The re-seed is not free on accuracy either: dropping it costs radon 3.9× (0.00224 → 0.00877, back to 0/3) and logistic 3.6×. **GEV is the counter-example — the refresh does not help it** (1.02× floor → 1.54× floor, 1/3 pass either way) and 8 Schools is a wash in absolute bias (0.00084 → 0.00097, i.e. slightly worse, its "pass" margin coming from the refresh's own looser floor). Verdict: **reject the refresh as an efficiency measure; keep it as a metric-quality-keyed accuracy rescue at ~1.5× cost, in the very-short-warmup regime only, and only on the high-d correlated models.**
+   What it does buy is narrow and real: **radon NC's bias** — and on the shipped gate it is the *only* cell in the whole A/B that changes class. At W=50, `g_r1` per seed: no-refresh radon **FAIL 3/3** (b² 3.000 / 0.223 / 2.852); refresh **with** re-seed **pass 3/3** (0.0026 / 0.0021 / 0.0022); refresh **without** re-seed **not resolvable 3/3** (0.0088 / 0.0081 / 0.0136 against floors 0.0054–0.0060, which exceed the 0.005 coarseness bar, so the gate refuses to call them either way). Every other model passes in every arm — 8 Schools, GEV and logistic are inside 0.01 everywhere — so the refresh's accuracy case rests on radon alone, and the no-re-seed arm never *demonstrates* a radon pass, it only fails to demonstrate a failure. In absolute terms the refresh helps logistic 6.2× (0.00354 → 0.00057 median) and dropping the re-seed costs radon 3.9× (0.0022 → 0.0088) and logistic 3.6×. **GEV gains nothing** (0.0016 → 0.0016, and 9.55× the gradients), and 8 Schools is a wash in absolute bias (0.00084 → 0.00097, slightly worse). Verdict: **reject the refresh as an efficiency measure; keep it as a radon-specific accuracy rescue at ~1.5× cost (2.1× on radon), in the very-short-warmup regime only.**
 
 4. **A merge interaction means the refresh cannot currently be enabled.** `wp/wp5` stopped stacking warmup positions (that stack was the warmup memory wall at C=1,024); `wp/wp4`'s refresh reads them. Resolved in favour of the memory win, with the refresh failing loud — verified on the merged tree: the default path runs (20.8 s, six `sample_stats` fields) and `metric_refresh="sample_diag"` raises `RuntimeError` in 2.2 s naming the cause and workaround. Not silent, not usable; the named fix is a `stack_positions` flag (`results/LEDGER.md`).
 
@@ -144,10 +152,10 @@ Tripling warmup to W=200 cuts b² by 20% and raises the floor, while costing **5
 
 Every R1 number above was measured with `pathfinder_kwargs.draws = 1`. Production defaults to **4,000 draws per chain**, which makes the start pool `chains × draws` = **4,096,000 rows** at C=1,024. Measured at the R1 shape (C=1,024 × D=10, W=50, covariance, `iterate=raw`, `init_pick=stratified`), `results/runs/T1__prodpool.jsonl` 15 rows:
 
-| model (d) | uncapped pool — pool array | result |
+| model (d) | uncapped pool — pool array | result (verdict = shipped `g_r1`) |
 |---|---|---|
-| GEV (4) | 131 MB | runs: b² 0.00152 / 0.00012 vs floors 0.00115 / 0.00100 (seed 1 fail, seed 2 pass), peak 782 MiB |
-| 8 Schools (8) | 262 MB | runs: 0.00072 / 0.00144 vs 0.00117 / 0.00119 (pass, fail), peak 2,076 MiB |
+| GEV (4) | 131 MB | runs: b² 0.00152 / 0.00012 vs floors 0.00115 / 0.00100 — **pass, pass**; peak 782 MiB |
+| 8 Schools (8) | 262 MB | runs: 0.00072 / 0.00144 vs 0.00117 / 0.00119 — **pass, pass**; peak 2,076 MiB |
 | logistic (25) | 819 MB | **RESOURCE_EXHAUSTED** — 797.25 MiB allocation refused, 0 rows scored |
 | radon NC (175) | 5.73 GB | **RESOURCE_EXHAUSTED** — 5.36 GiB refused |
 
@@ -155,17 +163,17 @@ The failing op is `f64[20,4096000] = jit(matmul)/dot_general(f64[4096000,175], f
 
 WP5's `pf_pool_cap` (`sampler.py:471`) is the remedy and it **defaults to `None`**, i.e. the uncapped historical behaviour; `tools/r1_bias.py` had no flag for it, so `--pf-pool-cap` was added to reach it. Capping to `4C` = 4,096 rows makes every model run:
 
-| model | b² (capped, seeds 1 / 2) | floor | verdict | grads/chain | peak, uncapped → capped |
+| model | b² (capped, seeds 1 / 2) | floor | `g_r1` verdict | grads/chain | peak, uncapped → capped |
 |---|---|---|---|---|---|
-| radon NC | **2.4449 / 2.3165** | 0.0052 / 0.0051 | **fail 2/2** | 276 / 291 | OOM → 653 MiB |
-| logistic | 0.00385 / 0.00446 | 0.0024 / 0.0024 | fail 2/2 | 335 / 319 | OOM → 581 MiB |
-| GEV | 0.00179 / 0.00007 | 0.0011 / 0.0010 | fail / pass | 447 / 578 | 782 → 288 MiB |
-| 8 Schools | — / 0.00151 | — / 0.0012 | — / fail | — / 1,061 | 2,076 → **224** MiB |
+| radon NC | **2.4449 / 2.3165** | 0.0052 / 0.0051 | **FAIL / FAIL** | 276 / 291 | OOM → 653 MiB |
+| logistic | 0.00385 / 0.00446 | 0.0024 / 0.0024 | pass / pass | 335 / 319 | OOM → 581 MiB |
+| GEV | 0.00179 / 0.00007 | 0.0011 / 0.0010 | pass / pass | 447 / 578 | 782 → 288 MiB |
+| 8 Schools | — / 0.00151 | — / 0.0012 | — / pass | — / 1,061 | 2,076 → **224** MiB |
 
 **Two conclusions.**
 
-1. **The cap is verdict-neutral, so it is a safe default.** The three cells measurable both ways keep their class: 8 Schools s2 fail→fail (0.00144 → 0.00151), GEV s1 fail→fail (0.00152 → 0.00179), GEV s2 pass→pass (0.00012 → 0.00007), while peak memory falls **9×** on 8 Schools and 2.7× on GEV.
-2. **The production pool changes no R1 conclusion.** Against the matched 1-draw control (`ab:baseline`: identical `init_pick`, orientation, iterate, C, D, W — the single difference is pool size), radon fails either way (1-draw b² median **2.852**, 0/3 seeds; production pool **2.445 / 2.316**, 0/2) at ~275 grads/chain in both; logistic fails either way (0.00354 median vs 0.00385 / 0.00446); GEV and 8 Schools are mixed either way. **No R1 verdict in this report is an artifact of the single-draw start.** The item that flagged this as the run's biggest untested variable is resolved in both directions: the start policy does not move the bias result, and it does move the memory result — by 5.7 GB at d=175, which is a hard failure rather than a tuning question.
+1. **The cap is verdict-neutral, so it is a safe default.** Under the shipped gate all three cells measurable both ways pass either way (8 Schools s2, GEV s1, GEV s2), and on the stricter b²-versus-own-floor ratio the class is still unchanged in all three: 0.00144 → 0.00151 (above floor both ways), 0.00152 → 0.00179 (above floor both ways), 0.00012 → 0.00007 (below floor both ways). Peak memory falls **9×** on 8 Schools and 2.7× on GEV.
+2. **The production pool changes no R1 conclusion — cell for cell.** Against the matched 1-draw control (`ab:baseline`: identical `init_pick`, orientation, iterate, C, D, W — the single difference is pool size), `g_r1` agrees on all four models: 8 Schools pass/pass, GEV pass/pass, logistic pass/pass, **radon FAIL either way** (1-draw b² 3.000 / 0.223 / 2.852, 0/3; production pool 2.445 / 2.316, 0/2) at ~275 grads/chain in both. Logistic's absolute bias is also unchanged (0.00354 median vs 0.00385 / 0.00446). **No R1 verdict in this report is an artifact of the single-draw start.** The item that flagged this as the run's biggest untested variable is resolved in both directions: the start policy does not move the bias result, and it does move the memory result — by 5.7 GB at d=175, which is a hard failure rather than a tuning question.
 
 ## 4. Decisions taken in this run
 

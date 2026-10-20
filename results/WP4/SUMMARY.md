@@ -41,20 +41,28 @@ Full suite **112 passed** forced CPU (was 99 on `pf-r1-int`).
 (g = gradients/chain, warmup+sampling. Every refresh cell passes — including radon, where the
 baseline fails.)
 
-### The re-seed cost (PENDING — running)
-The refresh's 1.2–15× gradient cost traces to the trajectory length: the re-seed
+### The re-seed cost (measured — filled in by the lead from `WP4__reseed_ab.jsonl`, 42 rows)
+The refresh's 1.35–20× gradient cost traces to the trajectory length: the re-seed
 `T=(π/2)·√λ_max` on a 50-step ensemble metric lands at frozen **L=23–402** versus the baseline's
 well-adapted **L=10–27** (λ_max of a short-phase estimate is noise-dominated). The A/B
-(`WP4__reseed_ab.jsonl`, C=1,024 D=10 W=50 seeds 1,2,3) isolates it:
+(`WP4__reseed_ab.jsonl`, C=1,024 D=10 W=50 seeds 1,2,3 — 3 rows per cell) isolates it:
 
-| arm | 8 Schools g | logistic g | GEV g | radon g | radon pass (3 seeds) |
+| arm | 8 Schools g | logistic g | GEV g | radon g | radon `g_r1` (3 seeds) |
 |---|---|---|---|---|---|
-| `ab:baseline` (no refresh) | _running_ | _running_ | _running_ | _running_ | _running_ |
-| `ab:sample_diag` (re-seed) | _running_ | _running_ | _running_ | _running_ | _running_ |
-| `ab:sample_diag_noreseed` | _running_ | _running_ | _running_ | _running_ | _running_ |
+| `ab:baseline` (no refresh) | 967 | 329 | 567 | 275 | **FAIL ×3** (b² 3.000 / 0.223 / 2.852) |
+| `ab:sample_diag` (re-seed) | 1,304 = 1.35× | 2,381 = 7.24× | 5,417 = **9.55×** | 5,513 = **20.05×** | **pass ×3** (0.0026 / 0.0021 / 0.0022) |
+| `ab:sample_diag_noreseed` | 1,309 = 1.35× | 487 = 1.48× | 841 = **1.48×** | 579 = 2.11× | **not resolvable ×3** (0.0088 / 0.0081 / 0.0136, floors 0.0054–0.0060 > 0.005) |
 
-CPU smoke already shows the direction: the no-re-seed arm freezes at **L≈4** vs **L≈109–231**
-re-seeded on the same model.
+Reads: the re-seed is **essentially the whole cost** on GEV (9.55× → 1.48×) and logistic (7.24× → 1.48×), and
+none of it on 8 Schools (1.35× either way — that is the intrinsic two-phase overhead). But radon is the only
+cell in the A/B that changes class at all, and dropping the re-seed moves it from **pass ×3** to **not
+resolvable ×3** — the cheap arm never demonstrates a radon pass, it only fails to demonstrate a failure. Every
+other model passes in every arm. So the re-seed is expensive and, for radon, load-bearing; `T=(π/2)·√λ_max` is
+not a good universal re-seed (it over-shoots L to 98–283 on GEV), and a radon-specific stabiliser is the open
+question. No re-seed constant other than on/off was tried.
+
+The CPU-smoke expectation recorded here earlier is confirmed: the no-re-seed arm freezes at **L = 12–35** against
+**25–283** re-seeded (98–283 on GEV), i.e. the saving is not a degenerate "L stuck at 1" artifact.
 
 ## 4. Frozen ε / L and realised steps
 Baseline (no refresh) at W=50 freezes at ε 0.32–0.59, L 10–27 (well-adapted by the raw iterate).
@@ -67,9 +75,13 @@ smoke: L≈4).
   logistic / GEV (it costs more at equal W=50). The re-seed A/B decides whether the cost is
   intrinsic or the re-seed's fault.
 - **Does the refresh help where the baseline fails?** **Yes, decisively, on radon NC.** The
-  no-refresh baseline fails radon on seed 1 at *every* warmup tested (b² 3.00/0.43/0.023 at
-  W=50/100/200); the refresh passes all seeds at W=50. So the refresh is the only reliable R1
-  fix for radon and **stays, opt-in**.
+  no-refresh baseline fails radon at *every* warmup and seed — **6 of 6 cells, resolvable** (b² 3.000 / 0.223 at
+  W=50, 0.428 / 0.033 at W=100, 0.023 / 0.007 at W=200, i.e. 618× → 1.7× their own floors). *Provenance note,
+  corrected by the lead:* the W=50 pair is `ab:baseline` in this WP's own file; the W=100/200 numbers are
+  `T1__r1_sweep.jsonl` arm `int:covraw` (same configuration — covariance, `raw`, no refresh — different run), and
+  they are **fails**, not the "unresolvable" this SUMMARY earlier called them. Quadrupling warmup to W=200 costs
+  2.4–6.3× the gradients and still lands above its floor. The refresh passes all seeds at W=50, so the refresh is
+  the only reliable R1 fix for radon and **stays, opt-in**.
 - Accept/kill per estimator (plan §WP4): the kill criterion is "does not beat plain diagonal by
   1.2× on the correlated models (logistic, radon)." `fisher_diag` beats `sample_diag` on logistic
   (1,352 vs 2,386 g) and radon (3,886 vs 5,612 g) — but the A/B is needed before any estimator is
@@ -81,8 +93,8 @@ smoke: L≈4).
   the baseline's — the dominant source of the refresh's gradient cost. This is the finding the
   A/B quantifies.
 - **The refresh is a convergence fix for radon, not a gradient win.** Early in the run I
-  mis-read this as "just raise the baseline warmup"; the rows refute it (the baseline fails radon
-  seed 1 at every W). Recorded and corrected in the LEDGER.
+  mis-read this as "just raise the baseline warmup"; the rows refute it — the no-refresh arm fails radon in all
+  6 cells across both seeds and all three warmups (§5). Recorded and corrected in the LEDGER.
 
 ## 7. Library-first exceptions (A6)
 The estimators wrap the fork's `metric_estimators`; the only hand-written numerics are the

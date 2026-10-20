@@ -842,3 +842,59 @@ would have found nothing. The five files are now copied onto `pf-r1` and §8 sta
 This is the same failure class as the "124 tests" number: a citation that was true when written and was never
 re-checked against its source. The difference is that a broken file pointer is silently unrecoverable, so the
 check now runs over every cited file rather than the one I happened to doubt.
+
+---
+
+## 2026-10-20 14:05 — I scored the last two hours of results with the wrong gate; the WP4 task's own final message is refuted by its own file
+
+### 1. My error, and what it changed
+
+Every verdict I wrote since 13:20 used **b² < that row's floor** as pass/fail. That is not the run's gate. The
+shipped rule is `g_r1` (`tools/r1_bias.py`): `floor > 0.005` → *fail* only if `b² > max(0.01, 3·floor)`, else
+**not resolvable**; `floor ≤ 0.005` → *pass* iff `b² < 0.01`. Re-scoring everything:
+
+* **Production pool (§3f).** Under `g_r1`, 8 Schools **passes both seeds**, GEV **passes both seeds both arms**,
+  logistic (capped) **passes both seeds**; only radon fails (2/2). I had written "logistic fail 2/2", "GEV
+  fail/pass", "8 Schools fail". The *conclusion survives and gets stronger*: the capped production pool reproduces
+  the matched 1-draw control's verdict on **all four models, cell for cell** — including radon FAIL either way.
+* **WP4 A/B (§3e).** Radon is the **only cell in the whole A/B that changes class**. Baseline FAIL ×3 → refresh
+  with re-seed **pass ×3** → refresh without re-seed **not resolvable ×3** (floors 0.0054–0.0060 breach the 0.005
+  coarseness bar). I had written that dropping the re-seed puts radon "back to 0/3 [fail]" — it does not; the
+  cheap arm never demonstrates a pass *or* a failure.
+* Consequence for reading any floor ratio in this run: `b²` vs floor is diagnostic, **not** the gate. The gate has
+  an absolute 0.01 bar and an explicit "we cannot tell" state.
+
+### 2. The WP4 task's final message: two refutations, and its recommendation is not adopted
+
+`wp4-ensemble-metric` reported (WP4 was already merged): radon without re-seed = "**PASS, PASS, FAIL**",
+with re-seed = "unres ×3", and recommended shipping `metric_refresh_reseed=False` as default because radon's
+benefit "is seed-fragile and doesn't justify a 9.5× GEV cost".
+
+* **Its own committed file says otherwise.** `3442623:results/runs/WP4__reseed_ab.jsonl` — radon
+  `ab:sample_diag_noreseed` = `(1, 0.00877, FAIL), (2, 0.00807, FAIL), (3, 0.01364, FAIL)`, i.e. **0/3**, not
+  "PASS, PASS, FAIL"; and under `g_r1` those three are *not resolvable*, while the with-re-seed arm is
+  **pass ×3**, not "unres ×3". The task inverted both columns of its own table.
+* **Its recommendation is therefore not adopted.** The rows say the re-seed is the only arm that *demonstrates* a
+  radon pass, so defaulting it off would ship the arm that cannot show the feature working — on the one model the
+  feature exists for. `pfcheeshmc/sampler.py:925` keeps `metric_refresh_reseed` default `True`. This is moot in
+  practice anyway: `metric_refresh` cannot be enabled at all until the `stack_positions` seam is fixed (§7 item 1),
+  so the default is not load-bearing yet. What the task got right stands: the re-seed is the whole cost on GEV
+  (9.55× → 1.48×) and logistic (7.24× → 1.48×), none of it on 8 Schools (1.35× either way), `T=(π/2)·√λ_max`
+  over-shoots (L 98–283 on GEV), and no constant other than on/off was tried.
+* **Its citation was wrong even where its conclusion was right.** "baseline fails radon 3.00 / 0.43 / 0.023 at
+  W=50/100/200": 3.00 is `ab:baseline`; **0.42792 and 0.02339 are `T1__r1_sweep.jsonl` arm `int:covraw`**, a
+  different run — and `WP4__r1.jsonl` has no radon rows above W=50 at all. My own §3e had repeated this as "its
+  own rows", and had called the W=100 cells "unresolvable" when they are resolvable fails at 81× and 6.5× the
+  floor. Both corrected, in the report and in the merged SUMMARY, with the full 6-of-6 ladder: 618× → 1.7× floor
+  while costing 2.4–6.3× the gradients.
+
+### 3. The merged `results/WP4/SUMMARY.md` shipped with `_running_` placeholders
+
+Its re-seed A/B table was committed as `_running_` in five columns because the task's final commit (`3442623`)
+is **not in `pf-r1`'s history** — the branch tip that merged predates it. So the tree carried a document claiming
+its own central measurement was still in flight while the rows had been on disk and merged for hours. The table is
+now filled from the rows and the stale "CPU smoke L≈4 / L≈109–231" expectation replaced with measured L.
+
+Rule for any future merge here: after merging a branch, grep its committed SUMMARY/docs for `_running_`, `TBD`,
+`PENDING` and placeholder cells — a merged document that describes unfinished work is a live false statement in
+the tree, and branch-tip-vs-task-tip drift makes it silent.
