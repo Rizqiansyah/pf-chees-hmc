@@ -460,3 +460,24 @@ Kernel slot 2 is `ξ_interval__` and slot 3 is `σ_log__`, so the permuted arm p
 Two of the four models are identity cases (logistic, 8 Schools), so the permutation's measured effect exists only where the ordering actually differs — which is the whole point of the defect, and also why it survived the project's test suite for so long: 8 Schools, the repo's everyday benchmark, is one of the identity cases.
 
 **`pf-r1` after merging `wp/wp1`: 61 passed in 120.8 s, forced CPU.**
+
+---
+
+## 2026-10-20 — WP4 acceptance: the trajectory-length re-seed, not the refresh, was the cost (R4)
+
+`results/runs/WP4__ablation.jsonl`, 12 rows, 4 models x 3 arms (no-refresh R1, refresh+re-seed, refresh no-re-seed), W=50, C=32, 3 seeds, GPU, git_sha d457a17, scored through the WP3 harness against the CPU NUTS references. Pre-stated rule: keep the re-seed removed if the no-re-seed arm is within 1.5x of the baseline and passes G-R1.
+
+| model | baseline grads/ESS | refresh + re-seed | **refresh, no re-seed** | verdict |
+|---|---|---|---|---|
+| 8 Schools | 974 | 1,292 | **1,309** | passes G-R1 on all 3 seeds |
+| GEV | 557 | 4,804 | **841** | passes on all 3 |
+| logistic | 324 | 2,386 | **487** | passes on all 3 |
+| radon NC | 372 | 5,612 | **579** | b2 0.0081-0.0136 with floor 0.0054 -> **unresolvable** at W=50, not a pass |
+
+Cost of adding trajectory-length learning drops from **3.7-15x** the baseline to **1.34-1.55x**. The re-seed's noise-dominated `L` was the mechanism: the frozen `L` from a 50-step window is garbage, and ChEES then spends the sampling phase on it. The W-ladder for radon (W=100, 200) is running to settle whether radon passes at a resolvable warmup; until it does the claim is limited to three of four models.
+
+## 2026-10-20 — instrumentation defect: every wall_s includes an O(W) device-sync loop
+
+`tools/r1_bias.py:344` computes `frozen_L_nominal` by calling `integration_steps_fn(i)` once per warmup step in a Python loop, each with a `float(np.asarray(...))` device sync, and it runs **inside** the timed region (timer at :436, `wall_s` stamped at :499). At W=2,000 that is 2,000 synchronisations per cell, on every arm.
+
+Consequence: absolute `wall_s` and therefore ESS/s in the T-tables are overstated by the same mechanism on all arms — so equal-W arm-vs-arm comparisons are approximately fair (the inflation cancels) but absolute times and cross-W comparisons are not. Gradient counts, the run's primary objective, are unaffected. A direct measurement of the size of the effect is running; the fix is to move the nominal-L computation outside the timer.
