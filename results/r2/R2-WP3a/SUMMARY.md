@@ -8,7 +8,7 @@ none so far.
 |---|---|---|
 | 4. `tools/t3_cpu_nuts.py` | DONE (smoke below) | `tools/t3_cpu_nuts.py` |
 | 5. `summarise_rows.py smallest-pass` | PENDING (code written, untested, not committed) | `tools/summarise_rows.py` |
-| Test 1. floor regression (score_ensemble + t3 scorer) + mutation | PENDING | `tests/test_t3_cpu.py` |
+| Test 1. floor regression (score_ensemble + t3 scorer) + mutation | DONE | `tests/test_t3_cpu.py:50` (score_ensemble), `:62` (t3 scorer) |
 | Review-checklist items (T3 driver, floor) | PENDING | |
 
 ## Item 4 -- t3_cpu_nuts.py
@@ -37,3 +37,22 @@ grads_per_chain_total 2504.91, divs_per_1k 0.0, warmup_divs 99, d 10, b2_max 0.0
 b2_floor 0.014886, g_r1 "not eligible (C*D < 2000)", target_accept 0.8, scored_vars [mu, tau_log__, theta],
 git_sha 4e07b45, schema pf-r2/v1, step M5, cpu_contended false, loadavg_start [1.26,1.30,0.93],
 loadavg_end [1.26,1.30,0.93] (kernel average, 3 s run).
+
+## Test 1 -- floor regression (`tests/test_t3_cpu.py`)
+- Tests: `test_floor_is_squared_through_score_ensemble[0,1,2]` (`:50`), `test_floor_is_squared_through_the_t3_scorer[0,1,2]`
+  (`:62`, from an InferenceData through `t3.score_idata`), `test_t3_scorer_calls_score_ensemble_and_g_r1_not_its_own_scorer`
+  (spy on `rb.score_ensemble` / `rb.g_r1`), plus driver pieces: sampler settings, value-var names from the posterior
+  (tuned draws not read; missing name -> KeyError mentioning include_transformed), gradients include tuning and are exact,
+  and a real 2-chain toy `run_cell` that scores `s_log__`.
+- Band: +-30% of `2 ln(10)/(C*D)` on iid N(0,1), (C,D,d) = (256, 40, 5), reference 80,000 iid rows. No deviation: the
+  formula in `r1_bias.bias` is `max_f(mcse_f^2/var_ref_f) * 2 ln(2d)`, and with d=5 that is exactly `2 ln(10)`.
+  Measured ratio over 10 seeds (probe, same instrument): 0.926-0.989 (floor 4.16e-4 - 4.45e-4 vs expected 4.497e-4).
+- The unsquared T3 value is `2 ln(10)/sqrt(C*D)` = 0.0455, i.e. sqrt(C*D) = 101x the correct floor (the plan's "about
+  sqrt of that" is loose; either way it is far outside the band, and the test asserts that).
+- Mutation (removes both squares in `r1_bias.bias`, i.e. the run-1 `MCSE/sd` floor; reverted with `git checkout`, `r1_bias.py`
+  is unmodified in the branch):
+  `sed -i 's|... ** 2 / den|... / np.sqrt(den)|' tools/r1_bias.py` (both lines), then
+  `pytest tests/test_t3_cpu.py` gives `6 failed, 5 passed`:
+  `E assert 0.04410858822391871 <= (1.3 * np.float64(0.0004497236509753996))` (3 x score_ensemble, 3 x t3 scorer; the other
+  5 tests do not depend on the floor).
+- Unmutated: `11 passed in 5.22s`.
