@@ -1095,3 +1095,38 @@ has not been run and is now the named next experiment.
 **Also notable:** logistic has 9 of 25 coordinates below 0.5 with a median of 0.557 — the broadest
 under-dispersion of the four — and logistic is the model where the corrected orientation *helped* most
 (417 → 1,048 ESS/s). So start dispersion and orientation benefit are not simply related either.
+
+---
+
+## 2026-10-20 15:35 — the pool-cap default broke two tests; the fix pins the pool, and the test's teeth were re-proved
+
+Full suite after `cc75289` (dimension-aware pool default): **2 failed, 123 passed in 169.23 s** — both in
+`tests/test_metric_orientation.py::test_every_imm_source_hands_the_kernel_the_same_ordered_array[mc-*]`,
+i.e. the tests that guard this run's P0 permutation fix.
+
+**Cause, measured not guessed.** The fixture's `_inject_pool_with_known_covariance` draws exactly
+`num_samples` rows from a known-variance normal. Before the change the pool was `chains*draws` = 1,024 rows;
+the new default on that d=4 / C=8 fixture is `max(4C, 4d²)` = **64 rows**, and an MC variance from 64 draws
+carries a relative standard error of ~`sqrt(2/64)` ≈ 18 %, right at the test's 20 % tolerance. So the arm
+was failing on **estimator noise, not a permutation defect** — the logic under test was fine.
+
+**Fix chosen deliberately:** `pf_pool_cap=0` is passed in that one test, with the reason in a comment.
+Tolerance was **not** loosened (that would silently delete the test's resolution), and the default was not
+reverted (the default is justified by the radon rank-deficiency measurement). Coordinate order is
+pool-size independent, so pinning the pool removes an irrelevant variable rather than hiding a real one.
+
+**Then the test was proven to still bite**, because "passing again" is not evidence of teeth: the exact
+historical bug was injected on the current tree (`PfCheesHMC._metric_to_kernel_order` → identity, the single
+choke point all three arms share) and the test failed with its declared signature —
+`diag(imm)=[9.88e-05, 1.006e4, 1.001e4, 9.69e3]` against expected `[1e4, 1e4, 1e4, 1e-4]`, **max rel err
+9.7e7**, "the 1e4 at index 0 = the tuple→dict permutation was never applied". Note the runner-script trap:
+running the *current* test file against the legacy tree is **not** a valid teeth check anymore, because
+legacy `_run_pathfinder` rejects the new kwargs and would fail with a TypeError for reasons unrelated to
+ordering. Mutation on the current tree is the correct form now.
+
+After the fix: **17 passed in 55.68 s** in that file. Suite count for the run is re-run at the end.
+
+**Residual, stated:** this is the second time in this run that a change to a *default* silently degraded a
+test's statistical resolution (the first was the `g_r1` floor masking). Anything that changes sample counts,
+pool sizes, or warmup length should be followed by a check of the tolerance-vs-SE of every assertion that
+consumes the affected quantity — a green suite does not prove that.

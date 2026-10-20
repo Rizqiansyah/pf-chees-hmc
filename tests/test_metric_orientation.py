@@ -166,8 +166,15 @@ def test_every_imm_source_hands_the_kernel_the_same_ordered_array(odd_order_mode
     _inject_pool_with_known_covariance(monkeypatch, PF_ORDER_VAR)
     if imm_source != "mc":
         _inject_low_rank_metric(monkeypatch, np.sqrt(PF_ORDER_VAR))
+    # pf_pool_cap=0 pins the pool to chains*draws = 1,024 rows. The property under test is coordinate
+    # ORDER, which is pool-size independent, but the fixture's injected pool draws exactly
+    # `num_samples` rows from a known-variance normal, so the estimator's diagonal has relative SE
+    # ~sqrt(2/N). Since `cc75289` the default pool is max(4C, 4d^2) = 64 rows on this d=4 fixture
+    # (~18% SE), which is at the tolerance below -- the arm would then fail on estimator noise, not on
+    # a permutation defect, and a test that cannot resolve its own signal has no teeth. Tolerance is
+    # NOT loosened; the pool is pinned instead.
     diag = np.diag(_imm(odd_order_model, imm_source=imm_source, max_rank=1,
-                        imm_orientation=orientation))
+                        imm_orientation=orientation, pf_pool_cap=0))
     expected = KERNEL_ORDER_VAR if orientation == "covariance" else 1.0 / KERNEL_ORDER_VAR
     rel = np.abs(diag - expected) / expected
     assert rel.max() < 0.2, (
