@@ -25,6 +25,33 @@ Usage (timed cells must be under the GPU lock):
 G-R1 (plan §6): pass = b2_max < 0.01 on every seed with C*D >= 2,000. b2_max has its own Monte-Carlo
 floor, max_f (mcse_f^2 / var_ref_f) * 2 ln(2d), which is printed with every cell: a cell whose floor
 is above 0.005 is NOT RESOLVABLE, not a pass.
+
+Rows (schema pf-r2/v1 = pf-r1/v1 plus `effective`, `pooled`, `step`, and the two refresh scalars
+`metric_refresh_T0` / `metric_refresh_lmax_whitened`, null without a refresh):
+
+  * Sampler defaults pass through. `--orientation --iterate --pf-draws --pf-pool-cap --init-pick
+    --imm-source --start-scale` default to None = not passed, the sampler decides. `effective` is
+    json.loads(idata.attrs["config"]), what the sampler RESOLVED; a flag that `effective`
+    contradicts raises ConfigMismatch (after the row is written). What the harness still injects on
+    its own: `progressbar=False` (display only), `keep_untransformed=True` (force_unconstrained: the
+    scoring space), and, with a refresh on, `metric_refresh_warmup = max(2, W // 2)` unless
+    --metric-refresh-warmup is given (the sampler's own default is a W-independent 50).
+  * `--pool-seeds` adds one row per (model, arm, W, rep) with `pooled: true`, `seed: "pooled"`,
+    chains = S*C: G-R1-pool, a diagnostic and never a gate.
+
+`grads_per_chain_total` is grads_per_chain_warmup + grads_per_chain_sampling, per chain. Each is an
+exact sum of HMCInfo.num_integration_steps (one leapfrog step = one gradient evaluation) divided by
+the chain count; the warmup count spans both phases of a two-phase (refresh) run. The accounting the
+plan asks for is warmup + sampling + step-size-search probes + refresh-pool gradients, per chain.
+The row's sum is the first two only. FLAG:
+  (a) the 32-probe step-size search (before warmup and, with a refresh, again at the swap) runs
+      inside blackjax's find_reasonable_step_size, which reports no count; it is C-independent, so
+      per chain it shrinks like 1/C;
+  (b) `fisher_diag` evaluates `metric_refresh_pool` gradients per chain at the swap
+      (`_pool_gradients`; effective.metric_refresh_pool, default min(W_A, 20)), also not in the sum.
+      The other estimators evaluate none.
+Pathfinder's own L-BFGS gradients are shared by all chains and belong in `pf_grads_total`; no
+harness fills that field in, so it is null in every row.
 """
 
 import argparse
@@ -814,6 +841,10 @@ def main():
                     choices=["none", "sample_diag", "fisher_diag", "dense_shrunk", "diag_lowrank"],
                     help="WP4 two-phase ensemble metric refresh (none = the T1 single-phase arm; "
                          "also the sampler's default, so nothing is passed for it)")
+    ap.add_argument("--metric-refresh-warmup", type=int, default=None,
+                    help="phase-A length (steps) of the metric refresh; needs --metric-refresh. "
+                         "Default None = max(2, W // 2) (the sampler clamps it to [2, W - 2]); the "
+                         "resolved value is in effective.metric_refresh_warmup")
     ap.add_argument("--metric-refresh-reseed", dest="metric_refresh_reseed", default=None,
                     action="store_const", const=True,
                     help="re-seed phase-B trajectory length at (pi/2)*sqrt(l_max). Default: not "
@@ -843,6 +874,8 @@ def main():
                     help="run the WP0.2 load-time contract check on --models and exit (no sampling)")
     args = ap.parse_args()
     args.superchains = args.superchains or None
+    if args.metric_refresh_warmup is not None and args.metric_refresh == "none":
+        ap.error("--metric-refresh-warmup needs --metric-refresh (there is no phase A without one)")
 
     if args.check_references_only:
         for model_name in [m.strip() for m in args.models.split(",")]:
