@@ -504,3 +504,21 @@ No headline conclusion changes — the corrected radon arm was already reported 
 ## 2026-10-20 — process error by the lead, reverted
 
 I merged `wp/wp8` into `pf-r1` believing its two A4 reviews were on file, on the strength of my own session summary rather than the directory. They had never been written — `results/reviews/` contained no `WP8-*`. The merge commit message therefore asserted evidence that did not exist, which is the same failure mode that already voided two task reports in this run. Reverted at `60302b2`; the merge and the revert both stay in history. Review coverage is now counted from disk, not from memory: wp0refs 2, wp1 4, wp2 1, wp3 1, wp4 0, wp5 0, wp8 0, wp9docs 0.
+
+---
+
+## 2026-10-20 — review-task reliability: 5 of 7 tasks delivered no file, and their blockers were wrong
+
+Every review task launched since 23:54 either wrote nothing or wrote claims that a 20-second test refutes.
+
+| task | delivered a file? | status of its BLOCKING items |
+|---|---|---|
+| wp3-stats | no (message only) | its blocking item ("no radon cell is resolvable, so '3 of 4 pass' counts unresolvable as pass") **refuted**: radon floors run 0.0037–0.0071 and 6 of 12 cells are resolvable |
+| wp4-code | no (message only) | both blockers **refuted**: `tests/test_ensemble_metric.py` exists, 13 tests pass in 24.0 s, and it contains the degenerate-input and ε-re-search cases they said were missing |
+| wp5-code (1st) | no | died on a pytest timeout, reported nothing |
+| wp5-code (2nd) | no (message only) | **3 of 4 blockers refuted**: the claimed `WarmupScanInfo` contract break, the `trace=None` TypeError and the `len(None)` TypeError do not exist in the source; its "8 Schools got 4.3x slower" number is unsupportable because the before-probe rows carry **no wall times at all** |
+| wp1-code-l2 | yes | the only task whose findings held up |
+
+What the tasks did get right: WP5's memory-provenance critique (peaks are process-cumulative, `peak_mem_bytes` is 0 in the probe rows, no after-probe at C=128) and its finding that `pm_chains` is not plumbed into the sampler while `pf_pool_cap=4096` is effectively **no cap** at the acceptance configuration — so WP5's stated *mechanism* for the capacity win is wrong even though the win is real (radon runs at C=1,024: 528.79 s cold / 42.94 s warm).
+
+**Standing rule for the rest of the run:** a task's BLOCKING item is not actionable until reproduced against source or by running the named test. The refuted items above cost less to check than to fix, and acting on them would have "fixed" three functions that were never broken.
