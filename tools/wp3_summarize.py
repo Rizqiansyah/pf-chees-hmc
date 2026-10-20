@@ -32,6 +32,8 @@ def per_cell(rows, warm_only=True):
     for r in rows:
         if r["warmup"] in (None, 0) or r["b2_max"] is None:
             continue                      # pf_starts rows and error rows are not warmup cells
+        if r.get("pooled") is True or r.get("seed") == "pooled":
+            continue                      # pf-r2/v1 G-R1-pool row: a diagnostic, not a seed
         if warm_only and r["rep"] == 0:
             continue
         out[(r["model"], r["arm"], r["warmup"], r["seed"])] = r
