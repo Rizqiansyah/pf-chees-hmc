@@ -1204,3 +1204,28 @@ sd, scored on gradients-to-R̂ < 1.01) is named and unrun.
 default was contaminated by the old metric; that was about the *historical* cells. This measurement is direct, on
 the merged tree, and points the same way — but it reframes the story from "one bad coordinate on GEV" to "the
 whole start ellipsoid is too small, worst by far on radon".
+
+---
+
+## 2026-10-20 15:58 — two drivers I had believed dead finished and appended; both files reconciled and verified
+
+`T1__r2_poolcap.jsonl` grew from 4 to **8 rows** (the first R2 pass completing after I thought I had killed it)
+and `START__dispersion.jsonl` gained two **duplicate** cells (the abandoned dispersion driver and its
+replacement both wrote `8schools/pf_draws=4000` and `gev/pf_draws=4000`).
+
+Checks, not assumptions:
+
+* **The dispersion duplicates are the same measurement.** They differ only in `git_sha` / `ts` /
+  `peak_mem_bytes` / `device`; the assertion enforcing that failed loudly on nothing and the rows were reduced
+  10 → 8, one per `(model, pf_draws)`. Had they disagreed on any value, the script would have raised instead of
+  silently choosing a winner.
+* **`T1__r2_poolcap.jsonl`'s eight rows are unambiguous and comparable.** All three `git_sha`s in it
+  (`3face50`, `fdaa7d5`, `1333f0e`) are **ancestors of `cc75289`**, so `pf_pool_cap=None` in those rows genuinely
+  means *uncapped* — after that commit the same `None` means the dimension-aware default, which is the ambiguity
+  I hit earlier and this file happens to sit on the safe side of. `git diff 3face50 1333f0e -- pfcheeshmc/` is
+  empty, so the sampler is identical across them. It is now the complete 2-arm × 4-model set and is the source
+  of the radon `4C` figure b² 2.34860 / R̂ 1.2121 cited in §7-6a, independently replicated at 2.1479 / 1.1947 in
+  `T1__r2_poolcap3.jsonl`.
+
+Final tree state: suite **125 passed in 176.88 s**, GPU idle, no jobs running, `pf-r1` ahead of `main`, nothing
+pushed.
