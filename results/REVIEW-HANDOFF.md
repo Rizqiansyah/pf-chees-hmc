@@ -22,6 +22,10 @@ Suite: **125 passed in 169.28 s** forced-CPU at `f95e491` (122 at merge + 2 pool
 | CPU NUTS reference cannot resolve b² at these shapes | `T3__cpu_nuts.jsonl` (12) | `resolvable` field: 12/12 False. **Re-derived.** |
 | warmup-output costs (stack, callback) | `T5b__stepcost.jsonl` | `t_warmup_s`, `t_with_stack_s`, `t_with_bar_s` |
 | GEV `xi_interval__` starts under-dispersed | `START__dispersion.jsonl` | start sd ÷ reference sd per coordinate, kernel order asserted on both sides |
+| pool-size default (three arms × 4 models, with ESS) | `T1__r2_poolcap3.jsonl` (12) + `T1__r2_poolcap.jsonl` (8, the earlier pass) | `grads_per_ess_worst`, `ess_s_worst`, `min_tail_ess`, `max_rhat` by (model, arm); all rows share sampler code (`git diff -- pfcheeshmc/`) |
+| refresh runs at C=1,024; what it costs | `WP4__refresh_capacity.jsonl` (3) | `grads_per_chain_total`, `peak_mem_bytes`, `g_r1` |
+| warmup-output cost (stack, callback) | `T5b__stepcost.jsonl` (5; radon NOT MEASURED, 2 rows marked superseded) | `t_warmup_s`, `t_with_stack_s`, `t_with_bar_s`, `gpu_other_procs`, `timing_void` |
+| start dispersion vs reference | `START__dispersion.jsonl` (8) | `start_sd_over_ref_sd_coldest_first`, `n_coords_below_half`, kernel-order leaf assert |
 | historical doc claims retracted / confounded | `results/WP9/CLAIM-INVENTORY.md` (40 rows), `results/reviews/` | every row carries `file:line` and the deciding row ids |
 
 ## 2. Scoring rules — do not invent a third
