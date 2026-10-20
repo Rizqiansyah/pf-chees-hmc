@@ -898,3 +898,61 @@ now filled from the rows and the stale "CPU smoke L≈4 / L≈109–231" expecta
 Rule for any future merge here: after merging a branch, grep its committed SUMMARY/docs for `_running_`, `TBD`,
 `PENDING` and placeholder cells — a merged document that describes unfinished work is a live false statement in
 the tree, and branch-tip-vs-task-tip drift makes it silent.
+
+---
+
+## 2026-10-20 14:30 — the refresh seam is not a blocker; and two claims of mine were wrong about the shipped tree
+
+### 1. §7 item 1 and §3e item 4 were stale: `metric_refresh` works at C=1,024
+
+`stack_positions` was wired in `f2055aa` (blocked-scan routing, default path unaffected) and
+`test_reshare_is_not_a_silent_noop` passes — **13 passed in 23.4 s**. I had written "no configuration may
+enable `metric_refresh`" and repeated it in the handoff. Measured on GPU (`WP4__refresh_capacity.jsonl`,
+production pool capped at `4C`, covariance, `iterate=raw`, seed 1):
+
+| model | W | b² | floor | `g_r1` | grads/chain | wall | peak |
+|---|---|---|---|---|---|---|---|
+| radon NC | 50 | 0.00267 | 0.00256 | **pass** | 6,402 | 90.8 s | 653 MiB |
+| radon NC | 2,000 | 0.00181 | 0.00318 | **pass** | **173,586** | 506.6 s | **1,506 MiB** |
+| 8 Schools | 2,000 | 0.00038 | 0.00193 | pass | 31,718 | 44.5 s | 224 MiB |
+
+The blocker was never capacity. At W=50 the position stack is free (653 MiB, identical to no-refresh); at
+W=2,000 it adds **+853 MiB** measured against **1.43 GB predicted** by `W_A·C·d·8 B` — the arithmetic
+over-predicts ~1.7×, so the published "~14 GB" style reasoning-by-arithmetic pattern bit again. What kills
+the refresh is gradients: 173,586 per chain on radon at W=2,000.
+
+### 2. The orientation default was already flipped, and my handoff said it was awaiting sign-off
+
+`sampler.py:703` defaults to `covariance` since `08357db` (owner-approved 2026-10-20, ruling recorded in
+`results/STATUS.md` at `503071a`), merged inside `wp/wp1`. REPORT §4 decision 1 still read "default
+unchanged for now / owner-gated", and T6's inventory header said the shipped default is still `precision`.
+Both corrected. This one matters for review: the flip and the permutation are one indivisible change —
+shipping the permutation while holding `precision` would have released the config that fails R̂ ≤ 1.01 on
+GEV in 5/5 seeds.
+
+### 3. Why the per-step velocity attribution could not be measured at all
+
+While building the GEV divergence probe I found the shipped warmup no longer returns the quantities the
+analysis needs: WP5 projected the scan output to
+`WarmupScanInfo(num_integration_steps, is_divergent, acceptance_rate)` (`pfcheeshmc/utils.py`), because the
+full `HMCInfo`'s `proposal.*` leaves were ~4× the states and were the C=1,024 warmup memory wall. So
+**momentum and proposal positions do not exist in any delivered row or object** — a per-coordinate velocity
+at the divergent transition is not obtainable without changing the hot path, and the probe says so instead
+of quietly substituting a different quantity. The measurable half — start dispersion versus the reference
+posterior — is what `tools/gev_divergence_probe.py` produces, and at C=8 it already shows
+`ξ_interval__` starting at **0.082×** the reference sd (the only coordinate below 0.5).
+
+### 4. Two instruments added, both API-verified before any GPU time was spent
+
+- `tools/t5_step_cost.py` — the two user-selectable warmup outputs, ablated directly
+  (`stack_positions`, `progressbar`), with integration-vs-adaptation attributed from the production sampling
+  stage rather than a hand-built kernel. A standalone `blackjax.hmc` control was written, smoke-tested, and
+  **rejected**: four API mismatches on BlackJAX 1.7.1 (`hmc.init(position, logdensity_fn)`, kernel order
+  `step_size` before `inverse_mass_matrix`, `num_integration_steps` an int not a callable, no
+  `pfcheeshmc.set_config`), and even if it ran it would not have reproduced the metric/momentum/divergence
+  semantics of the real path. CPU smoke: callback **+12.0 %**, history **+1.4 %** on 8 Schools (C=4, W=25).
+- `tools/gev_divergence_probe.py` — start sd / reference sd per coordinate, both flattened in kernel order
+  with a label-mismatch assert so a wrong pairing raises instead of reporting a plausible number.
+
+Both write rows under `_common` provenance (`git_sha`, `branch`, `device`, `peak_mem_bytes`) and require the
+GPU lock. The `--pf-pool-cap` flag from earlier today is pinned by `tests/test_pool_cap_rows.py`.
