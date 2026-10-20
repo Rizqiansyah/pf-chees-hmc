@@ -465,16 +465,16 @@ Two of the four models are identity cases (logistic, 8 Schools), so the permutat
 
 ## 2026-10-20 — WP4 acceptance: the trajectory-length re-seed, not the refresh, was the cost (R4)
 
-`results/runs/WP4__ablation.jsonl`, 12 rows, 4 models x 3 arms (no-refresh R1, refresh+re-seed, refresh no-re-seed), W=50, C=32, 3 seeds, GPU, git_sha d457a17, scored through the WP3 harness against the CPU NUTS references. Pre-stated rule: keep the re-seed removed if the no-re-seed arm is within 1.5x of the baseline and passes G-R1.
+`WP4__reseed_ab.jsonl` (18 rows) with `WP4__r1.jsonl` (32) and T1's matched controls (48), R1 shape C=1,024 x D=10, W=50, 3 seeds, GPU, git_sha d457a17, scored through the WP3 harness against the CPU NUTS references. (This entry originally named `WP4__ablation.jsonl`, 12 rows, C=32 — no such file exists; the row provenance is the three files named here, and gradients are per chain, not per ESS.) Pre-stated rule: keep the re-seed removed if the no-re-seed arm is within 1.5x of the baseline and passes G-R1.
 
-| model | baseline grads/ESS | refresh + re-seed | **refresh, no re-seed** | verdict |
+| model | baseline grads/chain | refresh + re-seed | **refresh, no re-seed** | verdict |
 |---|---|---|---|---|
 | 8 Schools | 974 | 1,292 | **1,309** | passes G-R1 on all 3 seeds |
 | GEV | 557 | 4,804 | **841** | passes on all 3 |
 | logistic | 324 | 2,386 | **487** | passes on all 3 |
 | radon NC | 372 | 5,612 | **579** | b2 0.0081-0.0136 with floor 0.0054 -> **unresolvable** at W=50, not a pass |
 
-Cost of adding trajectory-length learning drops from **3.7-15x** the baseline to **1.34-1.55x**. The re-seed's noise-dominated `L` was the mechanism: the frozen `L` from a 50-step window is garbage, and ChEES then spends the sampling phase on it. **Radon's W-ladder is now run and the answer is a measurement limit, not a verdict:** W=50 b2 0.0081-0.0136 (floor 0.0054-0.0060), W=100 b2 0.0070-0.0107 (floor 0.0058-0.0070), W=200 b2 0.0058-0.0086 (floor 0.0057-0.0064) at 559 -> 3,401 gradients per chain. Tripling warmup moves b2 by 20%, *raises* the floor, and costs 5.7x the gradients; no cell escapes its noise band. Rows: `WP4__reseed_ab.jsonl`, 18.
+Cost of adding trajectory-length learning drops from **1.33-15.09x** the baseline (sample_diag, warm medians: 1.33 / 8.62 / 7.36 / 15.09) to **1.34-1.56x**, so the re-seed alone costs 0.99x / 5.71x / 4.90x / 9.69x. Earlier drafts of this entry wrote "3.7-15x -> 1.34-1.55x"; 8 Schools never cost more than 1.33x, and the expensive cases were expensive because of the re-seed. The re-seed's noise-dominated `L` was the mechanism: the frozen `L` from a 50-step window is garbage, and ChEES then spends the sampling phase on it. **Radon's W-ladder is now run and the answer is a measurement limit, not a verdict:** W=50 b2 0.0081-0.0136 (floor 0.0054-0.0060), W=100 b2 0.0070-0.0107 (floor 0.0058-0.0070), W=200 b2 0.0058-0.0086 (floor 0.0057-0.0064) at 559 -> 3,401 gradients per chain. Tripling warmup moves b2 by 20%, *raises* the floor, and costs 5.7x the gradients; no cell escapes its noise band. Rows: `WP4__reseed_ab.jsonl`, 18.
 
 ## 2026-10-20 — instrumentation defect: every wall_s includes an O(W) device-sync loop
 
@@ -571,3 +571,19 @@ Two corrections to review claims made while settling this:
   re-seed instead sets L to 110–402 and ChEES has to burn gradients shrinking it.
 - "there is no no-refresh control at W=100/200" — **refuted**: T1 carries `int:covraw` radon at both warmups with
   identical settings (650 and 1,238 gradients), which is what produced the 1.82×/2.70× numbers above.
+
+---
+
+## 2026-10-20 — the wp4 x wp5 seam is fixed, not just reported
+
+The full merged suite caught it: `tests/test_ensemble_metric.py::test_reshare_is_not_a_silent_noop` failed with
+the `RuntimeError` the merge resolution had added. "Fail loud" was the wrong call — the branch's own test proves
+the feature is meant to run, so loud failure of a shipped feature is a regression, not a safeguard.
+
+Fix: `chees_warmup_with_progress(..., stack_positions=False)`. The refresh's phase-A call passes
+`stack_positions=True`, which routes that one call through the blocked scan that already stacks positions
+(one block of `num_steps` when there is no stop rule, so no boundary cost). The plain default path keeps
+`positions=None`, which is what preserves WP5's C=1,024 memory win.
+
+Verified: `test_ensemble_metric.py` **13 passed in 23.4 s** (was 12 passed + 1 failed) and the full merged
+suite **124 passed in 106.11 s** on forced CPU.

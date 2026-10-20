@@ -133,6 +133,9 @@ def chees_warmup_with_progress(
     iterate="ma",              # "ma" = installed BlackJAX behaviour (default); "raw" =
                              #     paper-faithful Adam on the raw log-T iterate, moving
                              #     average used only at the freeze. pfcheeshmc/chees.py.
+    stack_positions=False,    # True = also stack warmup positions (WP4's two-phase metric
+                             #     refresh reads phase-A draws from them). Off by default:
+                             #     the position stack is the warmup memory wall at C=1,024.
     t0=None,                   # initial trajectory length in time units (paper: pi/2);
                              #     None keeps the installed initialisation (step_size)
     single_step_iters=0,       # run L=1 for this many steps while the step size settles
@@ -337,11 +340,15 @@ def chees_warmup_with_progress(
                   f"-> {'STOP' if met else 'continue'}", flush=True)
         return met, {"rhat": rhat, "accept": hm, "eps_gap": eps_gap}
 
-    if stop_rule:
-        block = int(stop_rule.get("block", 250))
+    if stop_rule or stack_positions:
+        # `stack_positions` is WP4's metric-refresh need, routed through the same blocked scan that
+        # already stacks positions. With no stop rule there is exactly one block of num_steps, so
+        # this costs one extra scan trace and no boundary overhead; positions stay None on the plain
+        # default path, which is what keeps WP5's C=1,024 memory win intact.
+        block = int(stop_rule.get("block", 250)) if stop_rule else num_steps
         # Default window = the whole block. A 50-draw window made split-R-hat read 1.04 on a unit
         # Normal no matter how long warmup ran; 250 draws per chain reads 1.003-1.010.
-        window = int(stop_rule.get("window", block))
+        window = int(stop_rule.get("window", block)) if stop_rule else num_steps
         carry = (init_states, adaptation_state)
         done = 0
         stopped_at = None
@@ -354,10 +361,10 @@ def chees_warmup_with_progress(
             if bar is not None:
                 bar.n = done
                 bar.refresh()
-            if done < num_steps and _stop_met(
+            if stop_rule and done < num_steps and _stop_met(
                     jax.tree_util.tree_map(lambda p: p[-window:], pos_blk), info_blk, carry[1])[0]:
                 stopped_at = done
-            if stop_rule.get("debug"):
+            if stop_rule and stop_rule.get("debug"):
                 print(f"    block {done:5d}: scan {_t_scan:6.2f} s", flush=True)
             if stopped_at is not None:
                 break

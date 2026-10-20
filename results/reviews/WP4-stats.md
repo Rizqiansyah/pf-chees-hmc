@@ -20,6 +20,12 @@ The branch's central claim **holds**: dropping the trajectory-length re-seed col
 nothing, and refresh cost falls to 1.34–1.55× of no-refresh. It was also overstated in the report (3.7–15×),
 which is corrected here — 8 Schools never cost more than 1.34×.
 
+*Reconciliation note:* the "refresh + re-seed" column above is the median across **all four estimators**
+(`wp4:*`), which is why GEV reads 4,298 there. Pairing **the same estimator** on both sides of the re-seed
+(`wp4:sample_diag` vs `ab:sample_diag_noreseed`) gives 1,292 / 4,804 / 2,386 / 5,612, i.e. re-seed costs
+0.99× / **5.71×** / 4.90× / **9.69×**. `results/REPORT.md` §3e uses the same-estimator pairing, which is the
+correct comparison; both are shown so neither is mistaken for the other.
+
 A task's contrary summary ("re-seed cost 1.32× / 0.99× / 1.81× / 0.92×, therefore the ablation fails its own
 rule") **cannot be reproduced from the rows** in any pairing I can construct, and it contradicts the same
 task's own three-column table, which matches the numbers above. Verdict: the ablation stands; the summary did not.

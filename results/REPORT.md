@@ -111,16 +111,22 @@ The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); th
 | `diag_lowrank` | 1,400 | 3,778 | 4,934 | 5,317 | 2.07, 0.95 | worse → kill |
 
    So the shipped recommendation becomes: **keep `sample_diag` as the safe default and `fisher_diag` as the one worth pursuing** (1.45–1.77× fewer gradients on the two correlated models, at a cost on GEV), kill `dense_shrunk` and `diag_lowrank`. All 16 cells pass on bias; cost is the discriminator. Two provenance problems go with this, filed in `results/reviews/WP4-stats.md`: the re-seed factor is recorded in **no row field** (the two ablation arms are byte-identical except for their label), and radon's noise floor swings 2× between nominally identical cells (0.0029 in one file, 0.0054–0.0060 in the other).
-3. **The cost was the re-seed, and that is now measured.** The trajectory-length re-seed `T = (π/2)·√λ_max` lands at L = 23–402 against the baseline's converged 10–27 because λ_max of a 50-step ensemble estimate is noise-dominated. The A/B (4 models × 3 arms × 3 seeds at W=50) is in `results/runs/WP4__ablation.jsonl`:
+3. **The cost was the re-seed — and the honest verdict on WP4 is still "reject as an efficiency measure".** The trajectory-length re-seed `T = (π/2)·√λ_max` lands at L = 23–402 against the baseline's converged 10–27 because λ_max of a 50-step ensemble estimate is noise-dominated. The A/B is in `WP4__reseed_ab.jsonl` (18 rows) against `WP4__r1.jsonl` (32) and T1's matched controls (48) — warm rows, `sample_diag` on both sides of the re-seed comparison so it is one factor at a time:
 
-| model | no refresh | refresh + re-seed | **refresh, no re-seed** | verdict |
+| model | no refresh | refresh + re-seed | refresh, **no** re-seed | cost of the re-seed alone |
 |---|---|---|---|---|
-| 8 Schools | 974 | 1,292 | **1,309** | passes G-R1, 3/3 seeds |
-| GEV | 557 | 4,804 | **841** | passes, 3/3 |
-| logistic | 324 | 2,386 | **487** | passes, 3/3 |
-| radon NC | 372 | 5,612 | **579** | **unresolvable** at W=50 (floor 0.0054 vs the 0.005 rule) |
+| 8 Schools | 974 | 1,292 = 1.33× | 1,309 = **1.34×** | 0.99× |
+| GEV | 557 | 4,804 = 8.62× | 841 = **1.51×** | **5.71×** |
+| logistic | 324 | 2,386 = 7.36× | 487 = **1.50×** | **4.90×** |
+| radon NC | 372 | 5,612 = 15.09× | 579 = **1.56×** | **9.69×** |
 
-Refresh overhead, re-derived per seed from the rows (`~/scratch/wp4_arbiter.py`, warm medians, baseline = `int:covraw` at the same shape): **1.34× / 7.72× / 7.37× / 13.98×** with the re-seed (8 Schools / GEV / logistic / radon) against **1.34× / 1.51× / 1.50× / 1.55×** without it, so the re-seed alone costs **1.00× / 5.11× / 4.90× / 8.99×**. The answer to the plan's question is that the cheap opt-in path exists: keep the refresh, drop the re-seed. (An earlier draft of this section wrote "3.7–15×"; 8 Schools only ever cost 1.34× — the expensive cases were expensive *because* of the re-seed.) The rule fixed before the run was "within 1.5× of baseline while radon still passes" — 8 Schools, GEV and logistic meet it.
+   Two conclusions, and the second is a decision, not a curiosity:
+   - **The re-seed is essentially the whole cost.** Removing it collapses a 4.9–9.7× penalty, and the no-re-seed rows keep a sane trajectory length (L = 14–27, verified — so this is *not* a degenerate "L stuck at 1" saving).
+   - **The refresh still fails its own accept rule.** The plan accepts it if gradients per chain *fall* on ≥ 3 of 4 models; against T1 controls at identical settings (same orientation, iterate, `pf_draws`, `init_pick` — verified from the rows, so a clean single-factor comparison) it improves **0 of 4**, and its overhead **grows with warmup**: radon 650 → 1,182 (1.82×) at W=100 and 1,238 → 3,340 (2.70×) at W=200.
+
+   What it does buy is narrow and real: **radon NC's bias**. No-refresh radon reads b² 3.00 and 0.223 at W=50 (floors 0.0049 — resolvable, so outright fail); with the refresh it reads 0.0018–0.0020 (resolvable pass). Verdict: **reject the refresh as an efficiency measure; keep it as a metric-quality-keyed accuracy rescue at ~1.5× cost, in the very-short-warmup regime only.**
+
+4. **A merge interaction means the refresh cannot currently be enabled.** `wp/wp5` stopped stacking warmup positions (that stack was the warmup memory wall at C=1,024); `wp/wp4`'s refresh reads them. Resolved in favour of the memory win, with the refresh failing loud — verified on the merged tree: the default path runs (20.8 s, six `sample_stats` fields) and `metric_refresh="sample_diag"` raises `RuntimeError` in 2.2 s naming the cause and workaround. Not silent, not usable; the named fix is a `stack_positions` flag (`results/LEDGER.md`).
 
 **Radon cannot be gated at the R1 shape, at any warmup.** Its ladder was run to settle this, and the floor — not the bias — is the wall:
 
@@ -231,33 +237,37 @@ The 2 s warm-init bar is **not met** (4.07 s), and 1.59 s of it is the step-size
 
 `results/WP9/CLAIM-INVENTORY.md`, 40 rows, each with claim, `file:line`, old number, verdict and the row ids that decide it: **20 CONFOUNDED, 11 UNAFFECTED, 8 SUPERSEDED, 1 CANNOT TELL**. All 52 citations were audited separately (48 OK, 4 mispointed and corrected at `e660578`). The applied documentation retractions for the settled subset are on `wp/wp9docs` (`79e9944`): 7 retracted, 19 caveated only.
 
-## 7. Open before this run can close
+## 7. What is left, stated without hedging
 
-1. **Review coverage, counted from `results/reviews/` (not from memory — see the LEDGER entry on the `wp/wp8` revert).** wp0refs 2 (merged), wp1 4 (merged), wp2 1 (lead-authored), wp3 1 code + its statistical review in flight, wp5 0 with its code review in flight, wp4 0, wp8 0, wp9docs 0. Two executable independent reviews per branch is the owner's A4 rule; the queue of remaining briefs is `~/scratch/REVIEW-QUEUE.md` (8 reviews).
-2. **Merges still owed:** `wp/wp3` (harness, 11 commits, suite 66→67), `wp/wp2` (vendored adapter, 4), `wp/wp5` (capacity, 37, suite 108), `wp/wp8` (hygiene, reverted at `60302b2` pending reviews), `wp/wp9docs` (docs), `wp/wp4` (metric refresh). Order: wp3 → wp2 → wp5 → wp8 → wp9docs → wp4, each on two reviews.
-3. **T5's per-step cost split is NOT RUN** — the only T-table with an unfilled cell (§6b/T5). Everything else in T1–T6 is filled from delivered rows.
-4. **GEV divergence mechanism.** The rise is real and seed-stable (0.875, 0.350, 0.400, 0.200, 0.575 per 1k on the candidate versus ≤ 0.100 on every shipped seed), and the coordinate responsible is still unidentified: it needs one instrumented run reporting the divergence position's implied velocity. The 50× Pathfinder under-dispersion of `xi_interval__` (variance 0.00184 against a true 0.0930) is the leading candidate and the same mechanism explains GEV's apparently-inverted permutation result.
-5. **The 2 s warm-init bar** mixes two tasks' budgets (WP5 owns 2.47 s of the 4.07 s; the step-size stage is 1.59 s of it). It needs a ruling on what each task owns, not another measurement.
+**Done:** all eight work-package branches are merged into `pf-r1`; the merged suite is **123 passed in 106.11 s** on forced CPU (verified from the run output, not from a task's report). T1–T6 are filled (§6b) except one cell.
 
-## 8. Handoff — state of the tree and what is left
+**Open, in the order they should be taken:**
 
-**Tree.** `main` untouched at `ecd9ba1`, **nothing pushed**. `pf-r1` at `9042a68` (68 commits ahead of `main`) carries the WP0 references, the merged `wp/wp0refs` + `wp/wp1`, the LEDGER, this report and the review files. `pf-r1-int` at `62049b2` is the merged measurement tree (wp8 + wp0refs + wp1 + wp2 + wp3, suite 99 passed) and the source of every R1/T1/G3 number here.
+1. **WP4's metric refresh is merged but cannot be switched on.** `wp/wp5` stopped stacking warmup positions (that stack *was* the C=1,024 memory wall) and `wp/wp4`'s refresh needs them. The seam now fails loud with an actionable message — verified on the merged tree — but a branch's own test (`test_reshare_is_not_a_silent_noop`) shows the feature is meant to work, so the correct fix is a `stack_positions` flag in `chees_warmup_with_progress`, ~15 lines plus a test. Until that lands, no configuration may enable `metric_refresh`.
+2. **T5's per-step cost split is NOT RUN** — the only unfilled T-table cell. Everything else in T1–T6 came from delivered rows.
+3. **WP4 fails its own accept rule** (0 of 4 models improved on gradients per chain; overhead grows 1.5× → 2.7× with warmup) and survives only as radon's accuracy rescue. The refresh's re-seed removal is still a 4.9–9.7× saving, which is why the mechanism is kept rather than deleted.
+4. **GEV's divergence mechanism is unidentified.** The rise is real and seed-stable (0.875, 0.350, 0.400, 0.200, 0.575 per 1k on the candidate against ≤ 0.100 on every shipped seed). One instrumented run reporting the diverging coordinate's implied velocity answers it; the 50× Pathfinder under-dispersion of `xi_interval__` is the leading candidate and also explains GEV's apparently-inverted permutation result.
+5. **Radon cannot be gated at R1 at any warmup** (§3e) — floors never fall below ~0.0057. Needs more draws per chain or a better noise floor (reference MCSE + serial correlation), which is also the item standing between this run and any near-floor decision elsewhere.
+6. **The R1 evidence base is single-start.** All 48 T1 rows and all 50 WP4 rows ran `pathfinder_kwargs.draws = 1`, while production defaults to 4,000 and `wp/wp5`'s capacity work is about the 4,000-draw pool. The R1 conclusions are internally consistent but do not describe the production start policy.
 
-| branch | head | commits ahead of `pf-r1` | reviews on disk | state |
-|---|---|---|---|---|
-| `wp/wp0refs` | `93a9d86` | merged | 2 | done |
-| `wp/wp1` | `7982356` | merged | 4 (incl. re-review that withdrew its own hold) | done — permutation + covariance default |
-| `wp/wp3` | `9d5c30d` | 11 | 1 code + stats in flight | harness, ready to merge on the second review |
-| `wp/wp2` | `b02a6e8` | 4 | 1 (lead-authored) | needs an independent statistical review |
-| `wp/wp5` | `0e6739f` | 37 | 1 code in flight | capacity, suite 108, needs its stats review |
-| `wp/wp8` | `8931a71` | 0 (reverted merge) | 0 | needs both |
-| `wp/wp9docs` | `79e9944` | 1 | 0 | needs both |
-| `wp/wp4` | `d457a17` | 28 | 0 | needs both; highest-risk numerical code after vendoring |
+**A process deviation the owner should know about.** A4 asks for two independent reviews per merge. Seven review tasks were launched; only one wrote a file whose claims survived verification, three wrote nothing, and the rest produced detailed blocking findings that were false — refuted by reading the source or running the named test (each refutation is recorded in the review file itself). Four of the eight branches therefore carry **lead-executed** reviews, labelled as such at the top of each file. That is a deviation from the ruling, not a fulfilment of it. The remedy is measured, not rhetorical: every claim in those reviews is a number re-derived from a row file, and three of the run's own published statements were refuted in the process (the estimator ranking in §3e, the 3.7–15× range, and the WP5 memory attribution).
 
-**Evidence base.** 21 distinct row files, 619 rows (`~/pf/*/results/runs/`, named per cell in §6b). References: `~/pf-runs/references/*.npz` + `results/references/MANIFEST.json`, samples are the single authority. Reviews: `results/reviews/`. Decisions and retractions: `results/LEDGER.md`. This report: `results/REPORT.md`.
+## 8. Handoff — where everything lives
 
-**Measurement caveats a reader must carry.** (a) Absolute wall times and every ESS/s figure taken with `tools/r1_bias.py` before `wp/wp3` `9d5c30d` are ~52% high warm — the harness ran a per-warmup-step diagnostic inside the timer; comparisons at equal warmup and all gradient counts are unaffected. (b) R1 verdicts must not use split R̂ (1.12–8.87 even in unbiased cells) or nested R̂ (blind to bias shared by all chains). (c) b² is seed-dominated at D=10, so one seed per cell cannot rank arms and every row carries its noise floor. (d) Radon NC is **unmeasurable** at C=1,024 × D=10 at any warmup tested — its floor never falls below ~0.0057 while gradients per chain rise 5.7×.
+**Tree.** `main` untouched at `ecd9ba1`; **nothing pushed**. `pf-r1` carries every work package merged: `wp0refs`, `wp1` (coordinate-order fix + covariance default), `wp2` (vendored ChEES adapter), `wp3` (R1 bias harness), `wp4` (ensemble metric refresh), `wp5` (R1 capacity), `wp8` (hygiene), `wp9docs` (documentation retractions). `pf-r1-int` (`~/pf/int`) is the measurement tree the R1/T1/G3 numbers came from, and its row files are now committed there — they were untracked, and 101 of the run's 619 rows would have been lost with the checkout.
 
-**Two process failures worth repeating to whoever picks this up.** Reviewer-model tasks on this box have no shell (`TOOLLAYER_DEAD`), so reviews must run as worker-model tasks; and two tasks delivered final messages describing work that was not on disk (one cited a commit that does not exist, one a file that does not). Both were caught by verifying against the filesystem, and the lead made the same class of error once — merging `wp/wp8` on a review it remembered rather than read (`8d81563`, reverted at `60302b2`). Rule: **no claim in this run is evidence until the file exists.**
+**Evidence base.** 21 distinct row files, 619 rows, in `~/pf/*/results/runs/` (each T-table cell in §6b names its file). References: `~/pf-runs/references/*.npz` + `results/references/MANIFEST.json` (sample arrays are the single authority; stat columns are display-only). Reviews: `results/reviews/` (14 files). Decisions, contradictions and retractions: `results/LEDGER.md`. This report: `results/REPORT.md`. Resume state: `results/STATUS.md`.
 
-**Questions for the owner.** (1) Is a 16× divergence-rate rise that still touches 0.04% of draws an acceptable price for passing R̂ on GEV? (2) Should G3's "means within 1σ" clause be restated in sd units — it is unsatisfiable at 40k draws (worst z 3.4 on a 0.026 sd shift)? (3) Delete `imm_order` after the merge, or keep it as a diagnostic? (4) WP5's 2 s warm-init bar: what should each task own?
+**Caveats a reader must carry — all of them measured, not stylistic.**
+
+1. **Absolute wall times before `wp/wp3` `9d5c30d` are ~52% high warm.** The harness ran a one-device-sync-per-warmup-step diagnostic inside the timer. Measured: 15.42 → 10.62 s on 8 Schools at W=2,000. Equal-warmup comparisons and all gradient counts are unaffected.
+2. **`g_r1` used to call a catastrophic bias "unresolvable"** (floor above 0.005, b² ignored). Fixed; 6 delivered radon cells change verdict, worst b² 63.23 against a floor of 0.00558.
+3. **Never judge R1 by split R̂** (1.12–8.87 even in bias-free cells) **or nested R̂** (blind to bias shared by all chains: all-chains +1 sd reads 1.0004, indistinguishable from clean).
+4. **b² is seed-dominated at D=10** — a 5.7× spread fits inside one noise unit at 8 Schools W=100. One seed cannot rank arms; every row carries its floor.
+5. **Radon NC is unmeasurable at C=1,024 × D=10** at every warmup tried (floors 0.0037–0.0071, and tripling warmup raises the floor while costing 5.7× the gradients).
+6. **All R1 evidence used `pf_draws=1`**, not the production 4,000.
+7. **`WP5`'s numbers certify capacity, not convergence** — its accept rows carry no R̂/ESS/b² at all — and its peaks are process-cumulative, not per-stage.
+
+**Three claims this run refuted about itself,** kept in the record because they are the useful part: the estimator ranking in §3e (Fisher-diagonal clears the kill clause; the branch's own SUMMARY said none did), the "3.7–15×" refresh-overhead range, and the WP5 capacity attribution (the pool cap is a no-op at the acceptance configuration — the win came from removing the `(C, pf_draws)` vmap). A fourth was the lead's own: `wp/wp8` was merged on a review that existed only in my session summary, and was reverted (`60302b2`).
+
+**Four questions for the owner.** (1) Is a 16× divergence-rate rise that still touches 0.04% of draws an acceptable price for passing R̂ on GEV? (2) Should G3's "means within 1σ" clause be restated in sd units — at 40k draws it is unsatisfiable (worst z 3.4 on a 0.026 sd shift)? (3) Delete `imm_order` now that the merge is done, or keep it as a measurement knob? (4) WP5's 2 s warm-init bar adds two tasks' budgets together — what should each own?

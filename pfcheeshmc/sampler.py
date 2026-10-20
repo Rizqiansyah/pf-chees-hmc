@@ -884,6 +884,7 @@ class PfCheesHMC:
             target_acceptance_rate=kwargs["target_accept"],
             max_leapfrog_steps=kwargs["max_leapfrog_steps"],
             progressbar=False, stop_rule=None,
+            stack_positions=True,      # phase A must keep its draws for the ensemble estimate
             iterate=kwargs.get("iterate", "ma"))
         pos_hist = getattr(info_A, "positions", None)
         if pos_hist is None:
