@@ -35,8 +35,9 @@ pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" python -m pytest
 
 ## Deliverables
 1. Commits on `r2/<wp>`. Messages end with a blank line and a commit trailer.
-2. `$WT/results/r2/<WP>/SUMMARY.md` (for example `results/r2/R2-WP1/SUMMARY.md`), committed on your
-   branch, containing:
+2. A SUMMARY for `results/r2/<WP>/SUMMARY.md`. The subtask harness refuses report-file writes, so
+   do not write this file. Return its content as the last section of your final reply, and the
+   lead will commit it. It contains:
    - **DEVIATIONS** (first; "none" if none);
    - each numbered plan item for your WP → DONE / DEVIATED / SKIPPED, with `file:line`;
    - the formula you implemented, restated verbatim, with `file:line` (code WPs with a ⟦VERBATIM⟧
@@ -46,5 +47,8 @@ pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" python -m pytest
    - smoke or measurement numbers, with the exact command that produced them;
    - the full-suite result line, **copied from the command's own output**;
    - anything you could not verify, marked `UNVERIFIED`.
-3. Your final reply to the lead: at most 15 lines. Give the branch head sha, the suite line
-   verbatim, the item statuses, and any open issue. Do not paste diffs.
+3. Your final reply to the lead: a header of at most 15 lines (the branch head sha, the
+   suite line verbatim, the item statuses, any open issue), then the SUMMARY section. Do not paste
+   diffs.
+4. Commit work in progress at every milestone. If your time budget runs short, stop at the last
+   commit and mark the remaining items PENDING.

@@ -42,3 +42,27 @@ is carried forward and checked against the plan, not discarded. R2-WP3 is split 
 passthrough/pool-seeds, after R2-WP2 merges) so the file-disjoint half starts in wave 1.
 
 Baseline suite on `pf-r2` at `4e07b45` (forced CPU, A3 command), copied from the command's own output: `125 passed in 165.79s (0:02:45)`.
+
+## 2026-10-20 — R2-WP1 merged (`07575bc`)
+
+Lead review APPROVE (`results/r2/reviews/R2-WP1-code.md`). Suite after merge (own output):
+`130 passed in 174.33s (0:02:54)`.
+
+**Contradiction (A6 protocol, recorded, continued).** The CPU smoke acceptance band (re-seed L within
+0.5–2× of no-re-seed L) was missed on `logit_1000x25`: 29.7 / 9.7 = 3.07×. 8schools was 1.07×. The
+A6 BLOCK needs > 3× on ≥ 2 models, so **no BLOCK, and M2b runs**.
+
+| logit arm | integration time T = eps·L, seeds 1/2/3 |
+|---|---|
+| re-seed on | 4.8 / 5.3 / 5.5 |
+| no refresh (dense Pathfinder metric) | 4.9 / 4.9 / 4.5 |
+| re-seed off | 1.9 / 1.5 / 1.9 |
+
+Lead reading: in integration time the re-seeded arm matches the no-refresh arm. The
+no-re-seed control under-grows from L=1 in 25 phase-B steps. The L gap comes from `sample_diag`
+being unable to absorb logit's correlation (whitened lmax 5.4–6.8). It is not the run-1 unit defect,
+whose signature was 8–10× L. M2b reports both numbers at C=1,024.
+
+**Plan error found by R2-WP4 (E3c).** The plan says radon `covraw` "fails resolvably 6/6". Row
+`T1__r1_sweep.jsonl` `int:covraw` W=200 seed 2 has b² 0.00709 / floor 0.00413, which `g_r1` passes.
+The erratum was narrowed to "fails resolvably at W=50/100, mixed at W=200". The task was right.
