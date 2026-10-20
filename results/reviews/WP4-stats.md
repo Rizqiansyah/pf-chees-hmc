@@ -71,14 +71,36 @@ current shape", and that is what §3e now says.
   internally consistent.
 - `T5b` (per-step cost split) genuinely does not exist: `ls ~/pf/*/results/runs/T5b*` → nothing.
 
-## 5. What is confounded, stated once
+**BLOCKING:**
+1. `metric_refresh_reseed` is recorded in **no** row field. Every other factor *is* recorded inside `kwargs`
+   (`pathfinder_kwargs.imm_orientation`, `chees_kwargs.iterate`, `chees_kwargs.metric_refresh`,
+   `pathfinder_kwargs.draws`, `init_pick`), so the two ablation arms — which differ *only* by the re-seed — are
+   byte-identical in everything the data says about them. One line in the harness fixes it.
 
-Any comparison between a `WP4__r1` arm and a T1 arm moves orientation and iterate together with the refresh,
-because the T1 arms are `int:covraw`/`int:shipped` and WP4's arms run covariance+raw by driver flag. Within-file
-comparisons (estimator vs estimator; re-seed vs no re-seed) are clean. So: **the re-seed result and the
-estimator ranking are attributable; "the refresh versus today's default sampler" is not**, and the single arm
-that would settle it is `wp4:norefresh` run with `--iterate raw --orientation covariance` at W=50 on all four
-models.
+## 5. Attribution: the refresh comparison is **clean**, and this corrects an earlier draft of this review
+
+Reading the recorded `kwargs` of the actual rows (8 Schools, W=50, cold):
+
+| source | arm | pf_draws | init_pick | orientation | iterate | metric_refresh | grads/chain |
+|---|---|---|---|---|---|---|---|
+| T1 | `int:covraw` | 1 | stratified | covariance | raw | — | 993, 955 |
+| WP4 | `wp4:sample_diag` | 1 | stratified | covariance | raw | sample_diag | 1,304, 1,281 |
+| WP4 | `ab:sample_diag_noreseed` | 1 | stratified | covariance | raw | sample_diag | 1,309, 1,291 |
+
+So **refresh vs no-refresh is a single-factor comparison** — same orientation, same iterate, same start policy,
+same chains/draws/warmup/seeds. The task's claim that "any T1-vs-WP4 comparison moves orientation and iterate
+too, so the gain is not attributable" is **REFUTED by the rows**, and the earlier draft of this review repeated
+it; that draft is superseded by this section. The only unattributable axis left is the re-seed (§BLOCKING 1),
+and the only missing control is `wp4:norefresh` at W=100/200.
+
+## 6. The caveat that applies to every R1 number in this run
+
+All 48 T1 rows and all 50 WP4 rows run with **`pathfinder_kwargs.draws = 1`** — one Pathfinder draw — while the
+production default is 4,000 and `wp/wp5`'s capacity work is precisely about the 4,000-draw pool. The R1 bias
+evidence therefore describes a *single-start* regime: it does not include the start dispersion that production
+uses, and it is not the configuration WP5 made fit at C=1,024. Any statement of the form "R1 passes at
+C=1,024" must carry that. It does not change the refresh/re-seed conclusion (both sides share the setting), but
+it is the largest single untested variable in the R1 story.
 
 ## Verdict
 
@@ -87,7 +109,8 @@ models.
    columns so the refresh evidence is self-describing.
 
 **NON-BLOCKING:**
-2. Add the no-refresh control at the same iterate/orientation as the refresh arms (one arm, four models).
+2. Add the no-refresh control at W=100/200 on all four models — the only warmup points where the refresh has no
+   comparison at all.
 3. Run `dense_shrunk` / `fisher_diag` on radon in the no-re-seed configuration — the kill clause is currently
    decidable on logistic only for those two.
 4. Add rows at 2–3× the ablation's runtime so cold/warm can be separated; every ablation row is cold.

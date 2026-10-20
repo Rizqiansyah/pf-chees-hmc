@@ -18,7 +18,7 @@ from .ensemble_metric import (
     ENGLISH_NAMES as _METRIC_REFRESH_NAMES,
 )
 
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, NamedTuple
 from datetime import date
 import io
 import re
@@ -26,6 +26,33 @@ import logging
 import contextlib
 
 __all__ = ["sample_pf_chees_hmc"]
+
+
+class _SampledState(NamedTuple):
+    """The sampling scan's state output: only the leaves a consumer reads.
+
+    `position` feeds the posterior, `logdensity` feeds sample_stats `lp`.
+    `momentum` / `logdensity_grad` are not needed after the step and used to be
+    stacked for every (draw, chain) anyway.
+    """
+
+    position: Any
+    logdensity: Any
+
+
+class _SampledInfo(NamedTuple):
+    """The sampling scan's info output: exactly the six sample_stats fields minus lp.
+
+    Field names match blackjax's HMCInfo so `_to_inference_data` reads them unchanged.
+    The dropped fields (momentum, proposal.*) duplicate the state leaves at ~2x their
+    volume -- the whole point of the projection.
+    """
+
+    is_divergent: Any
+    acceptance_rate: Any
+    is_accepted: Any
+    num_integration_steps: Any
+    energy: Any
 
 def _stratified_pool_idx(logp_subset, subset_idx, n_pick):
     """Equally spaced ranks by log-density, chosen from a scored subset of the draw pool.
@@ -426,6 +453,27 @@ class PfCheesHMC:
         pm_init = kwargs.get("pm_init", "adapt_diag")          # or "jitter+adapt_diag"
         pm_tune = kwargs.get("pm_tune", 500)
         pm_seed = kwargs.get("pm_seed", seed)
+        # WP5: how many PyMC init points to build. pm.init_nuts runs a short NUTS metric
+        # adaptation PER chain, so this is the slowest C-dependent work in the init path.
+        # The points only seed Pathfinder (and serve as the init_source="adapt_diag"
+        # fallback), so one point shared by all chains is enough; chain diversity comes
+        # from the PF pool. Default 1 = the R1 fix; pass pm_chains=chains for the old
+        # per-chain behaviour.
+        pm_chains = int(kwargs.get("pm_chains", 1))
+        if not 1 <= pm_chains <= chains:
+            raise ValueError(f"pm_chains must be in [1, chains={chains}], got {pm_chains}")
+
+        # WP5: cap on the PF start pool (chains*draws rows). At C=1,024 with the default
+        # draws=4,000 the pool is 4.1M rows -- ~5.7 GB at d=175 -- and it feeds both the
+        # covariance estimate and the start picks; 4C candidates serve both. None (default)
+        # keeps the historical uncapped pool, so existing behaviour is untouched unless
+        # a caller opts in.
+        pf_pool_cap = kwargs.get("pf_pool_cap", None)
+        # WP5: block size for the vmapped log-density scorings below (peak memory is
+        # O(block), not O(pool or chains)).
+        score_chunk = int(kwargs.get("score_chunk", 1024))
+        if score_chunk < 1:
+            raise ValueError(f"score_chunk must be >= 1, got {score_chunk}")
 
         # finite-start knobs
         pf_jitter_eps     = kwargs.get("pf_jitter_eps", 1e-8)
@@ -437,28 +485,55 @@ class PfCheesHMC:
         key = jax.random.key(seed)
         key_fix, key_pf, key_samp, key_pick, key_choose = jax.random.split(key, 5)
 
-        # 0) Ask PyMC for feasible-ish starts
+        # 0) Ask PyMC for feasible-ish starts -- one point shared by all chains by default
         init_stack = self._pymc_adapt_diag_start(
-            chains, init=pm_init, tune=pm_tune, random_seed=pm_seed
+            pm_chains, init=pm_init, tune=pm_tune, random_seed=pm_seed
         )
 
-        # 1) Ensure every chain's init is finite (handles xi=0 -> -inf cases)
-        init_stack = self._ensure_finite_inits(
-            init_stack, key_fix,
-            jitter_eps=pf_jitter_eps,
-            max_backtracks=pf_max_backtracks,
-            max_restarts=pf_max_restarts,
-            center=pf_center,
-            restart_radius=pf_restart_radius,
-        )
+        # 1) Ensure every init is finite (handles xi=0 -> -inf cases). With a shared point the
+        #    check and any repair run once on the unique points, then the result is broadcast --
+        #    the same finite-gradient guard as before, without evaluating it C times on C
+        #    identical rows.
+        if pm_chains < chains:
+            init_stack = self._ensure_finite_inits(
+                init_stack, key_fix,   # split inside, into pm_chains subkeys
+                jitter_eps=pf_jitter_eps,
+                max_backtracks=pf_max_backtracks,
+                max_restarts=pf_max_restarts,
+                center=pf_center,
+                restart_radius=pf_restart_radius,
+            )
+            init_stack = {
+                n: jnp.broadcast_to(a, (chains,) + a.shape[1:])
+                for n, a in init_stack.items()
+            }
+        else:
+            init_stack = self._ensure_finite_inits(
+                init_stack, key_fix,
+                jitter_eps=pf_jitter_eps,
+                max_backtracks=pf_max_backtracks,
+                max_restarts=pf_max_restarts,
+                center=pf_center,
+                restart_radius=pf_restart_radius,
+            )
 
-        # 2) Choose a single finite seed for PF optimizer: the chain with highest logp
-        def _score_chain(c):
-            x = {n: init_stack[n][c] for n in self.rvs}
-            return float(self.ld_fn(x))
-        scores = [(_score_chain(c), c) for c in range(chains)]
-        scores = [(s if jnp.isfinite(jnp.asarray(s)) else -jnp.inf, c) for s, c in scores]
-        c_best = max(scores, key=lambda t: t[0])[1]
+        # 2) Choose a single finite seed for PF optimizer: the chain with highest logp.
+        # One vmapped, chunked scoring pass instead of one eager call per chain: the old
+        # loop was C device syncs (the C-dependent wall of the init path at large C), and
+        # the argmax of the finite scores is exactly what it computed.
+        n_inits = int(next(iter(init_stack.values())).shape[0])
+        lp_inits = jnp.empty(n_inits, dtype=jnp.float32)
+        def _score_block(s0, s1):
+            sub = {n: init_stack[n][s0:s1] for n in self.rvs}
+            return jax.vmap(lambda x: self.ld_fn(x))(sub)
+        first = _score_block(0, min(score_chunk, n_inits))
+        lp_inits = jnp.empty(n_inits, dtype=first.dtype)
+        lp_inits = lp_inits.at[: first.shape[0]].set(first)
+        for s0 in range(score_chunk, n_inits, score_chunk):
+            lp_inits = lp_inits.at[s0:s0 + score_chunk].set(
+                _score_block(s0, min(s0 + score_chunk, n_inits)))
+        lp_inits = jnp.where(jnp.isfinite(lp_inits), lp_inits, -jnp.inf)
+        c_best = int(jnp.argmax(lp_inits))
         x0_pf = {n: init_stack[n][c_best] for n in self.rvs}
 
         # 3) Fit Pathfinder
@@ -468,13 +543,21 @@ class PfCheesHMC:
             logdensity_fn=self.ld_fn,
         )
 
-        # 4) Draw ONE batch (chains*draws) and reshape to (chains, draws, ...)
+        # 4) Draw the start pool. Historically chains*draws rows (default draws=4,000): at
+        # C=1,024 that is 4.1M rows, ~5.7 GB at d=175 -- the R1 OOM. `pf_pool_cap` bounds it
+        # (plan WP5: ~4C serves both the covariance estimate and the start picks). Default
+        # None keeps the uncapped pool, i.e. the historical behaviour.
         total = chains * draws
+        if pf_pool_cap is not None:
+            total = min(total, int(pf_pool_cap))
+            if total < chains:
+                raise ValueError(
+                    f"pf_pool_cap={int(pf_pool_cap)} must be >= chains={chains}")
         samples_flat, _ = bj.vi.pathfinder.sample(key_samp, pf_state, total)
-        samples_cd = jax.tree_util.tree_map(
-            lambda x: x.reshape((chains, draws) + x.shape[1:]),
-            samples_flat
-        )
+        # samples_flat is the whole pool in flat (total, ...) order; the chunk axis is just
+        # how Pathfinder emitted the draws, so any row may seed any chain. (The old code
+        # reshaped to (chains, draws) and back; the round trip was a no-op kept for a reader.)
+        samples_total = samples_flat
 
         # 5) Choose *chain* initial positions
         if init_source == "pf":
@@ -482,12 +565,22 @@ class PfCheesHMC:
             if pick == "iid":
                 pick_global = jax.random.randint(key_pick, shape=(chains,), minval=0, maxval=total)
             elif pick == "stratified":
-                # Score a strided subset -- ranking the whole 128k-draw pool would cost more than
-                # the benefit, which only exists at short warmup.
+                # Score a strided subset -- ranking the whole uncapped pool would cost more than
+                # the benefit, which only exists at short warmup. With the pool capped at ~4C the
+                # stride is 1 and the whole pool is scored, chunked to keep the vmapped
+                # log-density activation at O(score_chunk) rows (a single 65,536-row vmap was
+                # the second R1 OOM, ~500 MiB at d=25).
                 stride = max(total // max(chains * 64, 1), 1)
                 subset_idx = jnp.arange(0, total, stride)
-                lp_sub = jax.vmap(lambda i: self.ld_fn(
-                    jax.tree_util.tree_map(lambda x: x[i], samples_flat)))(subset_idx)
+                def _score_pool(idx):
+                    return jax.vmap(lambda i: self.ld_fn(
+                        jax.tree_util.tree_map(lambda x: x[i], samples_flat)))(idx)
+                first = _score_pool(subset_idx[: min(score_chunk, subset_idx.shape[0])])
+                lp_sub = jnp.empty(subset_idx.shape, dtype=first.dtype)
+                lp_sub = lp_sub.at[: first.shape[0]].set(first)
+                for s0 in range(score_chunk, subset_idx.shape[0], score_chunk):
+                    lp_sub = lp_sub.at[s0:s0 + score_chunk].set(_score_pool(
+                        subset_idx[s0:s0 + score_chunk]))
                 pick_global = _stratified_pool_idx(lp_sub, subset_idx, chains)
             else:
                 raise ValueError(f"init_pick must be 'iid' or 'stratified', got {pick!r}")
@@ -508,18 +601,33 @@ class PfCheesHMC:
                 pick_global = jnp.repeat(pick_global[:K], chains // K)
             pf_inits_tree = jax.tree_util.tree_map(lambda x: x[pick_global], samples_flat)
         elif init_source == "adapt_diag":
-            # use the repaired adapt_diag starts as chain inits
+            # use the repaired adapt_diag starts as chain inits. With a shared base point
+            # (pm_chains < chains) add a tiny per-chain relative jitter so the option does not
+            # degenerate to C identical starts -- identical starts read R-hat 1.000 while
+            # stuck, which no diagnostic flags. The base point is guard-validated; a 1e-3
+            # relative move of a finite-gradient point stays finite in practice.
             pf_inits_tree = init_stack
+            if pm_chains < chains:
+                jkey = jax.random.split(key_choose, len(self.rvs))
+                # Relative AND absolute jitter: a purely relative move cannot budge a
+                # coordinate that is exactly 0.0 (common in initial points), and zero
+                # coordinates would keep those chains tied together.
+                pf_inits_tree = {
+                    n: init_stack[n] * (1.0 + 1e-3 * jax.random.normal(
+                            jkey[i], init_stack[n].shape, dtype=init_stack[n].dtype))
+                        + 1e-6 * jax.random.normal(
+                            jax.random.fold_in(jkey[i], 1), init_stack[n].shape,
+                            dtype=init_stack[n].dtype)
+                    for i, n in enumerate(self.rvs)
+                }
         else:
             raise ValueError("init_source must be 'pf' or 'adapt_diag'")
 
         # 6) Dense covariance from ALL PF samples. This is a COVARIANCE in Pathfinder's own tuple
         # order; whether it is handed to the kernel as-is or inverted is the `imm_orientation` choice
         # decided in step 6c, and the reorder to kernel order happens in step 8.
-        samples_total = jax.tree_util.tree_map(
-            lambda x: x.reshape((total,) + x.shape[2:]),
-            samples_cd
-        )
+        # (samples_total is samples_flat, already (total, ...); the old reshape round trip
+        # through (chains, draws) was a no-op.)
         def _flatten_i(i):
             sliced = jax.tree_util.tree_map(lambda x: x[i], samples_total)
             flat, _ = ravel_pytree(sliced)
@@ -780,8 +888,11 @@ class PfCheesHMC:
         pos_hist = getattr(info_A, "positions", None)
         if pos_hist is None:
             raise RuntimeError(
-                "two-phase metric refresh requires WarmupInfo.positions; the installed utils "
-                "predates WP4")
+                "two-phase metric refresh needs phase-A warmup positions, and none were stacked. "
+                "utils.chees_warmup_with_progress returns positions=None on the default path (WP5 "
+                "stopped stacking them: the position stack is the warmup memory wall at C=1,024), so "
+                "the refresh currently runs only with stop_rule set, which stacks them. Pass "
+                "stop_rule=..., or run without metric_refresh.")
 
         # Ensemble pool: the last `pool` phase-A steps, flattened in kernel order.
         pool = int(kwargs.get("metric_refresh_pool", min(W_A, 20)))
@@ -1012,7 +1123,15 @@ class PfCheesHMC:
                 window_div_next = lax.cond(should_cb, do_cb, dont_cb, operand=None)
             else:
                 window_div_next = window_div.astype(window_div.dtype)
-            return (new_state, window_div_next), (new_state, info)
+            # Projection: keep only what _to_inference_data reads (position + logdensity for
+            # the posterior/lp, and the five sample_stats fields). momentum, proposal.position,
+            # proposal.momentum and proposal.logdensity_grad duplicate state leaves and are the
+            # bulk of the scan volume.
+            return (new_state, window_div_next), (
+                _SampledState(new_state.position, new_state.logdensity),
+                _SampledInfo(info.is_divergent, info.acceptance_rate, info.is_accepted,
+                             info.num_integration_steps, info.energy),
+            )
 
         rng, key_sample = jax.random.split(rng)
         step_keys = jax.random.split(key_sample, num_draws)
