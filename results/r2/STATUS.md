@@ -1,27 +1,19 @@
 # STATUS — run 2 (live)
 
-**Current step:** handover to Code lead (see LEDGER). Wave 1 tasks: R2-WP1 (finish the task), R2-WP2, R2-WP3a, R2-WP4; baseline suite re-run.
-`tools/legacy/t3_cpu.py` quarantined behind an execution guard. Baseline suite running on `pf-r2`.
+**Current step:** M1 (closed form vs MC covariance) running on the GPU from `eee10ae`; driver
+`results/r2/drivers/run_step.sh M1 results/r2/drivers/M1.cmds`, logs `~/pf-runs/r2-logs/M1/`.
 
-**Next:** Wave 1 tasks — R2-WP1 (fast-tier, re-seed fix), R2-WP2 (fast-tier, closed-form Pathfinder
-covariance + `pf_start_scale` + `attrs["config"]`), R2-WP4 (steady-tier, errata). Then R2-WP3 (fast-tier,
-harness + T3 driver) and one code review per WP as a fast-tier slot frees.
+**Done:** R2-WP0..WP4 merged into `pf-r2` (WP1 `07575bc`, WP2 `62c7620`, WP3 `353c02f`, WP4 `25d2618`).
+Lead: the lead with fast/steady tasks, run one at a time from WP3b on (owner).
+
+**Next:** D2 evaluation → M2a → M2b → (M2c if triggered) → M3 → D1 → M4; M5-cpu between GPU steps.
 
 **Blocked:** nothing.
 
-**Discipline in force (plan A3/A5):**
-
-- GPU only via `tools/gpu_run.sh timeout N <cmd>` — the timeout goes *inside* the lock.
-- One process per (model, arm) for any row whose peak memory or warm wall-clock is quoted.
-- Quoted wall clocks come only from a `--repeat 2` rep-1 row; no clock from a `--repeat 1`, cold or
-  contended row.
-- Code frozen during a measurement step: no merge into `pf-r2` while any row of that step is queued or
-  running, because `flock` grants are not FIFO.
-- Before comparing two row sets, assert `git diff --name-only <sha1> <sha2> -- pfcheeshmc tools` is empty,
-  or name the difference.
-- `g_r1` is the gate. G-R1-pool is a labelled diagnostic, never a gate. "b² < floor" is never reported as
-  PASS/FAIL.
+**Discipline in force (plan A3/A5):** GPU only via `tools/gpu_run.sh timeout N <cmd>`; one process per
+(model, arm); quoted walls only from `--repeat 2` rep-1 rows; code frozen during a step (the driver
+aborts if `pfcheeshmc/` or `tools/` change); `g_r1` is the gate, G-R1-pool a labelled diagnostic.
 
 | branch | head | suite | GPU | pushed |
 |---|---|---|---|---|
-| `pf-r2` (base `pf-r1` `cca5407`) | `934e576` | baseline running | idle | never |
+| `pf-r2` | `eee10ae` | re-run after WP3+WP4 merge (log `~/pf-runs/r2-logs/suite-after-wp3wp4.txt`) | M1 | never |

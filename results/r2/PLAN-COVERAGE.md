@@ -34,21 +34,21 @@ contract items. An item that is silently absent counts as a run failure (plan A4
 | WP2.8 | R2-WP2 test 3: G-ORDER fixture passes with pf_closed; fails when choke point mutated | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
 | WP2.9 | R2-WP2 test 4: pool rows 4,096 at C=1024 for pf_closed vs max(4C,4d^2) for mc | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
 | WP2.10 | R2-WP2 test 5: pf_start_scale 1.0 bit-identical, 2.0 doubles start sd (1e-12) | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
-| WP3.1 | R2-WP3 item 1: defaults pass through (None -> sampler decides) + effective recorded + disagree -> raise | r2/wp3 | PENDING |
-| WP3.2 | R2-WP3 item 2: --pool-seeds pooled row (G-R1-pool diagnostic, never a gate) | r2/wp3 | PENDING |
-| WP3.3 | R2-WP3 item 3: --metric-refresh-warmup recorded | r2/wp3 | PENDING |
-| WP3.4 | R2-WP3 item 4: tools/t3_cpu_nuts.py (score_ensemble, include_transformed, exact grads incl. tune) | r2/wp3 | PENDING |
-| WP3.5 | R2-WP3 item 5: summarise_rows.py smallest-pass | r2/wp3 | PENDING |
-| WP3.6 | R2-WP3 item 6: document grads_per_chain_total composition + pf_grads_total | r2/wp3 | PENDING |
-| WP3.7 | R2-WP3 test 1: floor regression +/-30% of 2ln(10)/(C.D), squared units, via both scorers | r2/wp3 | PENDING |
-| WP3.8 | R2-WP3 test 2: passthrough -> effective.imm_orientation == covariance with no flags | r2/wp3 | PENDING |
-| WP3.9 | R2-WP3 test 3: pooled seeds same b2, floor/3 (+/-5%) | r2/wp3 | PENDING |
-| WP4.1 | R2-WP4 item 1: apply E1-E7 inline | r2/wp4 | PENDING |
-| WP4.2 | R2-WP4 item 2: Errata (run 2) block E1-E12 + inline void tags | r2/wp4 | PENDING |
-| WP4.3 | R2-WP4 item 3: do not rewrite run-1 numbers | r2/wp4 | PENDING |
-| WP4.4 | R2-WP4 item 4: results/r2/RUN1-COVERAGE.md | r2/wp4 | PENDING |
+| WP3.1 | R2-WP3 item 1: defaults pass through (None -> sampler decides) + effective recorded + disagree -> raise | r2/wp3 | DONE (merged 353c02f; R2-WP3a/3b SUMMARY) |
+| WP3.2 | R2-WP3 item 2: --pool-seeds pooled row (G-R1-pool diagnostic, never a gate) | r2/wp3 | DONE (merged 353c02f; R2-WP3a/3b SUMMARY) |
+| WP3.3 | R2-WP3 item 3: --metric-refresh-warmup recorded | r2/wp3 | DONE (merged 353c02f; R2-WP3a/3b SUMMARY) |
+| WP3.4 | R2-WP3 item 4: tools/t3_cpu_nuts.py (score_ensemble, include_transformed, exact grads incl. tune) | r2/wp3 | DONE (merged 353c02f; R2-WP3a/3b SUMMARY) |
+| WP3.5 | R2-WP3 item 5: summarise_rows.py smallest-pass | r2/wp3 | DONE (merged 353c02f; R2-WP3a/3b SUMMARY) |
+| WP3.6 | R2-WP3 item 6: document grads_per_chain_total composition + pf_grads_total | r2/wp3 | DEVIATED 353c02f: documented as is; total excludes eps probes + fisher pool grads (SUMMARY 3b) |
+| WP3.7 | R2-WP3 test 1: floor regression +/-30% of 2ln(10)/(C.D), squared units, via both scorers | r2/wp3 | DONE (merged 353c02f; R2-WP3a/3b SUMMARY) |
+| WP3.8 | R2-WP3 test 2: passthrough -> effective.imm_orientation == covariance with no flags | r2/wp3 | DONE (merged 353c02f; R2-WP3a/3b SUMMARY) |
+| WP3.9 | R2-WP3 test 3: pooled seeds same b2, floor/3 (+/-5%) | r2/wp3 | DONE (merged 353c02f; R2-WP3a/3b SUMMARY) |
+| WP4.1 | R2-WP4 item 1: apply E1-E7 inline | r2/wp4 | DEVIATED 25d2618: E6 deleted (no row file), E3c narrowed (plan wrong) |
+| WP4.2 | R2-WP4 item 2: Errata (run 2) block E1-E12 + inline void tags | r2/wp4 | DONE (merged 25d2618; R2-WP4 SUMMARY) |
+| WP4.3 | R2-WP4 item 3: do not rewrite run-1 numbers | r2/wp4 | DONE (merged 25d2618; R2-WP4 SUMMARY) |
+| WP4.4 | R2-WP4 item 4: results/r2/RUN1-COVERAGE.md | r2/wp4 | DONE (merged 25d2618; R2-WP4 SUMMARY) |
 | WP4.5 | R2-WP4 item 5: confirm .gitignore (, ref clean) | lead | DONE |
-| M1 | M1 closed form vs MC covariance (R2 3 seeds, R1 +pool-seeds, radon memory) | steady-tier runner | PENDING |
+| M1 | M1 closed form vs MC covariance (R2 3 seeds, R1 +pool-seeds, radon memory) | steady-tier runner | RUNNING (from eee10ae) |
 | D2 | D2 rule evaluation (a)-(d) recorded row by row | lead | PENDING |
 | M2a | M2a R1 iterate sweep: 4 models x 2 arms x W{25..300} x 3 seeds = 120 cells | steady-tier runner | PENDING |
 | M2b | M2b R1 refresh with fixed re-seed (diag / diag_norese / fisher) | steady-tier runner | PENDING |
