@@ -888,12 +888,17 @@ class PfCheesHMC:
             iterate=kwargs.get("iterate", "ma"))
         pos_hist = getattr(info_A, "positions", None)
         if pos_hist is None:
+            # Unreachable on the current routing: the phase-A call above passes stack_positions=True,
+            # which sends that one call through the blocked scan that stacks positions (f2055aa).
+            # Kept as a regression tripwire -- if the routing is ever changed back to the plain
+            # default path the refresh would silently build its ensemble from nothing, and a stale
+            # metric is worse than no refresh.
             raise RuntimeError(
-                "two-phase metric refresh needs phase-A warmup positions, and none were stacked. "
-                "utils.chees_warmup_with_progress returns positions=None on the default path (WP5 "
-                "stopped stacking them: the position stack is the warmup memory wall at C=1,024), so "
-                "the refresh currently runs only with stop_rule set, which stacks them. Pass "
-                "stop_rule=..., or run without metric_refresh.")
+                "two-phase metric refresh asked for phase-A positions (stack_positions=True) and got "
+                "None. This is a routing regression in utils.chees_warmup_with_progress, not a "
+                "configuration the user can set: the plain default path returns positions=None on "
+                "purpose (that stack is WP5's C=1,024 memory win), and the refresh must not be "
+                "routed through it.")
 
         # Ensemble pool: the last `pool` phase-A steps, flattened in kernel order.
         pool = int(kwargs.get("metric_refresh_pool", min(W_A, 20)))
