@@ -91,3 +91,39 @@ WT=~/pf/wp5
 # rep 1 for the warm init wall; BEFORE attribution:
 # tools/wp5_memprobe.py --model <m> --chains <C> --draws 10 --warmup 2000 --pf-draws 4000
 ```
+
+---
+
+## Corrections after review (lead, 2026-10-20)
+
+`results/reviews/WP5-code.md` and `results/reviews/WP5-stats.md` checked this branch's claims against the
+row files. Three statements above need correcting; the measured result — radon non-centered completing at
+C=1,024 × D=10 — is not among them and stands.
+
+1. **The pool cap is not the mechanism at the acceptance configuration.** `pf_pool_cap` resolves to
+   `min(pf_draws, 4*chains)`, so at C=1,024 with the default `pf_draws=4,000` it yields **4,096 — larger than
+   the pool**, i.e. no cap at all. What removed the wall is `pm_chains=1` plus the chunked scorings, which
+   deleted the `(C, pf_draws)` vmap that was actually allocating. Any statement that "capping the pool fixed
+   radon" is wrong as written.
+2. **`pm_chains` is a harness concept, not a sampler option.** `PfCheesHMC` never forwards it to
+   `_run_pathfinder`, which calls `model.point()` itself. It is currently inert as a public knob: plumb it or
+   delete it. The `model_fn` `kwargs.pop("pm_chains")` also removes the key from the live sampler instance, so
+   it is not repeatable within a process.
+3. **Every peak in the "after" table is process-cumulative, not per-stage.** This box has no
+   `reset_memory_stats()`, so `peak_bytes_in_use` accumulates across stages and reps. The radon **warm** row's
+   653.3 MiB therefore includes the 528.79 s cold run in the same process; the before-side radon C=1,024
+   figure (653.5 MiB) is the cumulative allocation at death, whose failure message asked for **5.36 GiB**.
+   Do not read either number as the pool's steady-state footprint.
+
+Two additions the review asked for that are recorded rather than done:
+
+- **Capacity is proven, validity is not.** `WP5__accept.jsonl` carries no `max_rhat`, `min_bulk_ess` or
+  `b2_max` — only wall, peak, stage times and `divs_per_1k`. So it establishes "the process runs", and
+  quality at C=1,024 comes from the T1 bias rows, where radon is **unresolvable** at every warmup.
+- **The largest under-reported result is 8 Schools' memory, not radon's capacity:** cumulative peak
+  **2,314 MiB → 224 MiB** at C=1,024 (`WP5__memprobe_before.jsonl` `kwargs.peak_bytes_in_use` versus
+  `WP5__accept.jsonl` `peak_mem_bytes`), roughly 10×, from trimming the warmup scan.
+
+Also: `_score_chain` has no remaining callers, `pf_pool_cap` on the sampling side is inert because that call
+sits outside the chain vmap, and `tools/wp5_accept.sh` runs `gpu_run.sh pixi run pixi run env …` with a
+doubled `pixi run`.
