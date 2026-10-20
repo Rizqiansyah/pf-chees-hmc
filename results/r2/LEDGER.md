@@ -94,3 +94,5 @@ Lead review APPROVE (`results/r2/reviews/R2-WP2-code.md`).
 M2a is therefore the **first** R1 measurement of `raw` on the single-phase path. R2-WP3's
 `effective` check (flag vs `attrs["config"]`) is the guard that would have caught this.
 Suite after the R2-WP2 merge (`62c7620`, own output): `159 passed in 271.65s (0:04:31)`.
+
+Suite after the R2-WP3 + R2-WP4 merges (`25d2618` code; run before M1, own output): `191 passed, 4 warnings in 285.91s (0:04:45)`. M1 started from code trees of `eee10ae`; no code change since.
