@@ -140,6 +140,18 @@ Also closed: five row files cited by the report's T-tables (`T1__r1_sweep`, `T3_
 `ORDER__radon_noncentered`, `ORDER__logit_1000x25`) lived only on the divergent `pf-r1-int` branch and are now on
 `pf-r1`; every cited row count was re-checked against its file and is correct.
 
-**Still open, in order:** (1) ~~WP4's refresh cannot be enabled~~ **CLOSED** — `stack_positions` landed in `f2055aa`; the refresh runs at C=1,024 and clears G-R1 on radon at W=50 and W=2,000 (6,402 and 173,586 gradients/chain, peak +853 MiB rather than the 1.43 GB arithmetic predicts). Cost, not capacity, is what blocks it — ~15
-lines plus a test; (2) T5's per-step cost split; (3) GEV's diverging coordinate; (4) the noise-floor improvement;
-(5) the two `ORDER__` order-A/B files need a re-run on `pf-r1` to count as current-tree evidence.
+**Still open, in order:**
+
+1. **`pf_pool_cap`'s dimension-aware default is provisional.** `max(4C, 4d²)` is in place (plain `4C` was
+   measured to give a rank-deficient radon metric: b² 2.349, R̂ 1.212), but the three-arm A/B has to confirm
+   that shrinking the pool on low-`d` models costs nothing.
+2. **T5's kernel-vs-adaptation quarter is bounded, not separated** — warmup runs at 0.41–0.46× sampling's
+   cost per gradient, so the planned subtraction goes negative. Settling it needs a `sample_stats` ablation.
+3. **GEV's diverging coordinate.** Start dispersion is measured (`ξ_interval__` 0.156×, and 8 Schools' `mu` is
+   colder at 0.159× with no divergence problem, so it is a pattern not a cause). The discriminating run — same
+   target, that coordinate re-dispersed — has not been done. Per-step velocity is unobtainable while the
+   warmup output stays projected to `WarmupScanInfo`.
+4. **The noise-floor improvement** (reference MCSE + serial correlation), which is also what makes radon
+   not gateable at R1.
+5. **The two `ORDER__` row files** need a re-run on `pf-r1` to count as current-tree evidence (their shas are
+   not in `pf-r1`'s history).
