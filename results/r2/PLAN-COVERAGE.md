@@ -24,16 +24,16 @@ contract items. An item that is silently absent counts as a run failure (plan A4
 | WP1.6 | R2-WP1 test 5: delete test_reseed_matches_closed_form (pins the defect) | r2/wp1 | DONE 9742363 |
 | WP1.7 | R2-WP1 CPU smoke: 8schools+logit C=64 D=10 W=50, reseed on/off, L within 0.5-2x | r2/wp1 | DEVIATED 9942ac0: band missed on logit (3.07x), not A6 BLOCK; LEDGER |
 | WP1.8 | R2-WP1 mutation proof: test 1 fails against the OLD formula | lead | DONE (task mutation: 3 failed; SUMMARY) |
-| WP2.1 | R2-WP2 item 1: imm_source="pf_closed" via lbfgs_inverse_hessian_formula_1, no ridge, PD assert | r2/wp2 | PENDING |
-| WP2.2 | R2-WP2 item 2: pool sizing conditional on imm_source (non-mc -> 4C) | r2/wp2 | PENDING |
-| WP2.3 | R2-WP2 item 3: do NOT change imm_source default (D2 decides after M1) | r2/wp2 | PENDING |
-| WP2.4 | R2-WP2 item 4: pf_start_scale kwarg, 1.0 bit-identical | r2/wp2 | PENDING |
-| WP2.5 | R2-WP2 item 5: idata.attrs["config"] write (resolved sampler config) | r2/wp2 | PENDING |
-| WP2.6 | R2-WP2 test 1: exact algebra vs lbfgs_inverse_hessian_to_low_rank_metric, 4 models | r2/wp2 | PENDING |
-| WP2.7 | R2-WP2 test 2: MC consistency N=50,000 on 8schools+gev | r2/wp2 | PENDING |
-| WP2.8 | R2-WP2 test 3: G-ORDER fixture passes with pf_closed; fails when choke point mutated | r2/wp2 | PENDING |
-| WP2.9 | R2-WP2 test 4: pool rows 4,096 at C=1024 for pf_closed vs max(4C,4d^2) for mc | r2/wp2 | PENDING |
-| WP2.10 | R2-WP2 test 5: pf_start_scale 1.0 bit-identical, 2.0 doubles start sd (1e-12) | r2/wp2 | PENDING |
+| WP2.1 | R2-WP2 item 1: imm_source="pf_closed" via lbfgs_inverse_hessian_formula_1, no ridge, PD assert | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
+| WP2.2 | R2-WP2 item 2: pool sizing conditional on imm_source (non-mc -> 4C) | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
+| WP2.3 | R2-WP2 item 3: do NOT change imm_source default (D2 decides after M1) | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
+| WP2.4 | R2-WP2 item 4: pf_start_scale kwarg, 1.0 bit-identical | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
+| WP2.5 | R2-WP2 item 5: idata.attrs["config"] write (resolved sampler config) | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
+| WP2.6 | R2-WP2 test 1: exact algebra vs lbfgs_inverse_hessian_to_low_rank_metric, 4 models | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
+| WP2.7 | R2-WP2 test 2: MC consistency N=50,000 on 8schools+gev | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
+| WP2.8 | R2-WP2 test 3: G-ORDER fixture passes with pf_closed; fails when choke point mutated | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
+| WP2.9 | R2-WP2 test 4: pool rows 4,096 at C=1024 for pf_closed vs max(4C,4d^2) for mc | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
+| WP2.10 | R2-WP2 test 5: pf_start_scale 1.0 bit-identical, 2.0 doubles start sd (1e-12) | r2/wp2 | DONE (merged 62c7620; SUMMARY) |
 | WP3.1 | R2-WP3 item 1: defaults pass through (None -> sampler decides) + effective recorded + disagree -> raise | r2/wp3 | PENDING |
 | WP3.2 | R2-WP3 item 2: --pool-seeds pooled row (G-R1-pool diagnostic, never a gate) | r2/wp3 | PENDING |
 | WP3.3 | R2-WP3 item 3: --metric-refresh-warmup recorded | r2/wp3 | PENDING |
@@ -66,3 +66,4 @@ contract items. An item that is silently absent counts as a run failure (plan A4
 | T6 | R2-T6 errata applied + coverage counts | lead | PENDING |
 | OPEN | Open questions for the owner: at most 5, each with the settling measurement | lead | PENDING |
 | A9 | A9 done-checks + print branch, log range, REPORT path | lead | PENDING |
+| E13 | New run-1 defect: single-phase _run_chees ignored iterate (found in R2-WP2) | r2/wp2 | DONE 5982ee7; LEDGER |
