@@ -178,3 +178,21 @@ are noisier: the floor roughly doubles against no-refresh raw (0.0027–0.0037).
 - Against the default `ma` arm it fails as well: 1.14×, 1.20×, 1.21×, and radon none.
 
 **Recommendation: refresh OFF for R1.** The default stays off; it was never changeable in run 2.
+
+## 2026-10-21 — new run-1 defect E14: WP1 R2 rows undercount sampling gradients about 40×; M4x added (owner request)
+
+In `WP1__rebaseline*.jsonl` and `WP1__covarm.jsonl` (shas 4460dc7, 6fa5cd1, 60c1baa, 7033037,
+d4779fa, f7aa1ca), `grads_per_chain_sampling / (1250 · frozen_L_nominal)` is 0.013 in every row. In
+every later R2 row (T1__r2_poolcap*, WP1__gev_2x2, run 2) it is 0.50–0.56, which is the Halton mean
+of 0.5·L steps per draw. So those WP1 rows count about 1/39 of the sampling gradients. The run-1
+R2 headline grads/ESS figures are both built on them, and are therefore void as absolute numbers:
+- "35.5 / 71.2 / 46.1 / 182.3 vs legacy 58.2 / 73.4 / 151.7 / 501.9";
+- A2 "still valid" bullet 2.
+The lead's run-1 review re-derived the arithmetic, not the inputs. The current harness
+counts the legacy tree correctly: a CPU smoke with `--legacy ~/pf/legacy` gives ratio 0.56.
+
+**Owner asked for a pre- vs post-run-1 performance comparison**, so M4x is added (DEVIATED: not in
+the plan). It runs after M4:
+- the legacy tree `ecd9ba1` against the current default at R2 (3 seeds, `--repeat 2`, so warm walls
+  and exact gradients);
+- legacy at R1 over the M2a W grid with `--pf-draws 1` (legacy's uncapped pool OOMs otherwise).

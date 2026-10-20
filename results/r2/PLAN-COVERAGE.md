@@ -67,3 +67,5 @@ contract items. An item that is silently absent counts as a run failure (plan A4
 | OPEN | Open questions for the owner: at most 5, each with the settling measurement | lead | PENDING |
 | A9 | A9 done-checks + print branch, log range, REPORT path | lead | PENDING |
 | E13 | New run-1 defect: single-phase _run_chees ignored iterate (found in R2-WP2) | r2/wp2 | DONE 5982ee7; LEDGER |
+| M4x | Owner request: legacy ecd9ba1 vs current default (R2 warm, R1 grid) | lead | QUEUED after M4 (DEVIATED: added) |
+| E14 | New run-1 defect: WP1 R2 rows undercount sampling grads ~39x | lead | DONE (LEDGER) |
