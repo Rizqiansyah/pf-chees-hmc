@@ -205,7 +205,7 @@ After `wp/wp5` (pool capped at `4C`, chunked scoring, one shared init point, tri
 | GEV | runs | 288 MiB | 50.4 s | — |
 | 8 Schools | runs | 224 MiB | 38.7 s | — |
 
-The 2 s warm-init bar is **not met** (4.07 s), and 1.59 s of it is the step-size stage owned outside WP5. Cold walls are compile-dominated; every figure above is labelled cold or warm in the rows.
+The 2 s warm-init bar is **not met** (4.07 s), and 1.59 s of it is the step-size stage owned outside WP5. Cold walls are compile-dominated; every figure above is labelled cold or warm in the rows. **Side effect worth more than the headline:** 8 Schools' cumulative peak fell from 2,314 MiB (before, same single-process basis) to **224 MiB** — a ~10× memory reduction at a chain count that already fitted — because the warmup scan no longer stacks the full HMCInfo. No before/after *wall* comparison is possible: the before-probe rows carry no `wall_s` at all.
 
 ### T5 — per-step cost and the XLA flag, `T5a__cmdbuf.jsonl` 10 rows
 

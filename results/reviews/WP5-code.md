@@ -57,6 +57,16 @@ A before/after wall comparison cannot be built from the delivered files at all, 
 and none is refuted. The report's T4 table therefore states before-side peaks only and after-side walls only,
 with the labels on the face of the table.
 
+**Also refuted, and this corrects the lead's own earlier note:** the task's after-side memory numbers
+— 8 Schools `2,314.2 → 571.5 MiB`, radon single-process peak `107.9 MiB` — **appear in no delivered row**
+(every memory value in every row file was enumerated; neither number exists). There is no after-probe file at
+all. The only after-side peaks that exist are in `WP5__accept.jsonl`: radon 653.5 / 653.3 MiB, logistic
+581.4 MiB, GEV 288.1 MiB, 8 Schools 224.1 MiB. Against the before-side cumulative maxima from
+`WP5__memprobe_before.jsonl` `kwargs.peak_bytes_in_use` (8 Schools 2,314.1 MiB — with 1,378.2 MiB already at
+the pool-chain stage; GEV 946.4 MiB; radon 2,575.7 MiB at C=64), the real 8 Schools improvement is
+**2,314 → 224 MiB (~10×)**, larger than the task claimed but from different numbers than it quoted. The
+direction was right; the figures were not.
+
 ## 6. Cold/warm and cumulative-peak hygiene — accepted
 
 `WP5__accept.jsonl` has radon warm and cold pairs plus GEV / 8 Schools / logistic **cold only**. The warm row
