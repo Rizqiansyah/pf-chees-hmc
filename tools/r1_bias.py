@@ -33,6 +33,8 @@ import os
 import sys
 import time
 
+SCHEMA_R2 = "pf-r2/v1"      # pf-r1/v1 + `effective`, `pooled`, `step` (and the two refresh scalars)
+
 os.environ.setdefault("PYTENSOR_FLAGS", "blas__ldflags=-llapack -lblas -lcblas -lm")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -405,6 +407,109 @@ def score_ensemble(unc, ref, chains, draws, superchains, nested_limit):
             "nested_pass": None if nested is None else bool(nested < nested_limit)}
 
 
+class ConfigMismatch(RuntimeError):
+    """The sampler resolved a different configuration from the one the harness asked for."""
+
+
+# knob the harness passes -> key of the same knob in idata.attrs["config"] (PfCheesHMC._config_record)
+_PF_CONFIG_KEYS = {"draws": "pf_draws", "init_pick": "init_pick", "superchains": "superchains",
+                   "imm_orientation": "imm_orientation", "pf_pool_cap": "pf_pool_cap",
+                   "imm_source": "imm_source", "pf_start_scale": "pf_start_scale"}
+_CHEES_CONFIG_KEYS = {"draws": "num_warmup", "iterate": "iterate", "metric_refresh": "metric_refresh",
+                      "metric_refresh_warmup": "metric_refresh_warmup",
+                      "metric_refresh_reseed": "metric_refresh_reseed"}
+
+
+def pathfinder_kwargs_from(args):
+    """`pathfinder_kwargs` for the sampler. A flag left at None adds NO key: the sampler decides.
+
+    Run 1 injected `--pf-draws 1`, `--orientation precision` and `--iterate ma` as harness defaults,
+    so "the default arm" was never the sampler's default arm (plan Part B 1.3). Anything the harness
+    does pass is checked against `idata.attrs["config"]` by `check_effective`.
+    """
+    pairs = (("pf_draws", "draws"), ("init_pick", "init_pick"), ("superchains", "superchains"),
+             ("orientation", "imm_orientation"), ("pf_pool_cap", "pf_pool_cap"),
+             ("imm_source", "imm_source"), ("start_scale", "pf_start_scale"))
+    return {key: getattr(args, flag) for flag, key in pairs if getattr(args, flag, None) is not None}
+
+
+def refresh_warmup_for(args, W):
+    """Phase-A length of the metric refresh: `--metric-refresh-warmup`, else max(2, W // 2)."""
+    given = getattr(args, "metric_refresh_warmup", None)
+    return int(given) if given is not None else max(2, W // 2)
+
+
+def chees_kwargs_from(args, W):
+    """`chees_kwargs` for the sampler (`draws` is the warmup length W). None flags add no key.
+
+    One value is injected on purpose, plan item 3: with a refresh on, `metric_refresh_warmup` is
+    max(2, W // 2) unless --metric-refresh-warmup says otherwise, where the sampler's own default is
+    a W-independent 50. The resolved value is recorded in `effective.metric_refresh_warmup` and
+    checked by `check_effective`.
+    """
+    kw = {"draws": W}
+    if getattr(args, "iterate", None) is not None:
+        kw["iterate"] = args.iterate
+    if args.metric_refresh != "none":
+        kw["metric_refresh"] = args.metric_refresh
+        kw["metric_refresh_warmup"] = refresh_warmup_for(args, W)
+        if getattr(args, "metric_refresh_reseed", None) is not None:
+            kw["metric_refresh_reseed"] = args.metric_refresh_reseed
+    return kw
+
+
+def effective_from(idata):
+    """`json.loads(idata.attrs["config"])`, or None for a tree that predates R2-WP2 (`--legacy`)."""
+    cfg = idata.attrs.get("config")
+    return json.loads(cfg) if cfg else None
+
+
+def expected_config(pf_kw, ch_kw, chains=None, draws=None, seed=None, W=None):
+    """{config key: value} that `effective` must show, from the kwargs ACTUALLY passed.
+
+    A knob that was not passed is not constrained (the sampler decides), except that the harness
+    assumes "no refresh" and "no superchains" when it does not ask for them. `ch_kw=None` is a
+    Pathfinder-only check (the --starts-only rows).
+    """
+    want = {_PF_CONFIG_KEYS[k]: v for k, v in pf_kw.items()}
+    want.setdefault("superchains", None)
+    if ch_kw is not None:
+        want.update({_CHEES_CONFIG_KEYS[k]: v for k, v in ch_kw.items()})
+        want.setdefault("metric_refresh", "none")
+        if "metric_refresh_warmup" in want and W is not None:
+            # the sampler clamps phase A to [2, W - 2] (_run_chees_two_phase)
+            want["metric_refresh_warmup"] = max(2, min(int(want["metric_refresh_warmup"]), int(W) - 2))
+    for key, val in (("chains", chains), ("num_draws", draws), ("seed", seed)):
+        if val is not None:
+            want[key] = val
+    return want
+
+
+def _same(a, b):
+    if isinstance(a, bool) or isinstance(b, bool) or a is None or b is None:
+        return a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return float(a) == float(b)
+    return a == b
+
+
+def check_effective(effective, want):
+    """Raise ConfigMismatch if the sampler's resolved config disagrees with what was asked for.
+
+    This is the guard that would have caught the run-1 `iterate` bug (LEDGER E13): single-phase
+    `_run_chees` ignored `chees_kwargs["iterate"]`, so every "raw" cell without a refresh silently ran
+    "ma", and nothing in the row said so. `effective is None` (a tree without the config attr) skips
+    the check; the row then carries `effective: null`.
+    """
+    if effective is None:
+        return
+    bad = [f"{k}: asked {v!r}, sampler ran {effective.get(k, '<absent>')!r}"
+           for k, v in sorted(want.items()) if k not in effective or not _same(v, effective[k])]
+    if bad:
+        raise ConfigMismatch("sampler config disagrees with the harness flags -- "
+                             + "; ".join(bad))
+
+
 def run_cell(bl, model_name, args, W, seed, rep, cold):
     from _common import banner, new_row, require_gpu_lock, stages, write_row
 
@@ -426,39 +531,39 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
 
     model = build_model(model_name)
     names = [v.name for v in model.value_vars]
+    pf_kw, ch_kw = pathfinder_kwargs_from(args), chees_kwargs_from(args, W)
     row = new_row(wp=args.wp, arm=args.arm, model=model_name, chains=args.chains,
                   draws_per_chain=args.draws, warmup=W, seed=seed, rep=rep, cold=cold,
-                  superchains=args.superchains,
+                  superchains=args.superchains, schema=SCHEMA_R2,
                   kwargs=json.dumps({"sampler_fn": "sample_pf_chees_hmc",
                                      "metric_refresh": args.metric_refresh,
-                                     "metric_refresh_reseed": args.metric_refresh_reseed,
+                                     "metric_refresh_reseed": getattr(args, "metric_refresh_reseed",
+                                                                      None),
                                      "chains": args.chains, "draws": args.draws, "warmup": W,
-                                     "pathfinder_kwargs": {"draws": args.pf_draws,
-                                                           "init_pick": args.init_pick,
-                                                           "imm_orientation": args.orientation,
-                                                           "pf_pool_cap": args.pf_pool_cap,
-                                                           "superchains": args.superchains},
-                                     "chees_kwargs": {"draws": W, "iterate": args.iterate,
-                                                              "metric_refresh": args.metric_refresh},
+                                     # exactly what was passed: an absent key means "sampler decides"
+                                     "pathfinder_kwargs": pf_kw, "chees_kwargs": ch_kw,
                                      "progressbar": False,
                                      "ref_stats_check": "skipped"
                                      if args.allow_collapsed_reference_stats else "strict"},
                                     sort_keys=True))
+    # pf-r2/v1 = pf-r1/v1 + these. `effective` is what the sampler RESOLVED (idata.attrs["config"]);
+    # the two refresh scalars are null for a run without a refresh.
+    row.update(step=getattr(args, "step", None), pooled=False, effective=None,
+               metric_refresh_T0=None, metric_refresh_lmax_whitened=None)
     INSTR["t"], INSTR["chees"] = {}, {}
     t0 = time.perf_counter()
+    fatal = None
     try:
         idata = sample_pf_chees_hmc(
             model, chains=args.chains, draws=args.draws, random_seed=seed, progressbar=False,
-            pathfinder_kwargs=dict(draws=args.pf_draws, init_pick=args.init_pick,
-                                   superchains=args.superchains,
-                                   imm_orientation=args.orientation,
-                                   pf_pool_cap=args.pf_pool_cap),
-            chees_kwargs=dict(draws=W, iterate=args.iterate,
-                            **({"metric_refresh": args.metric_refresh,
-                                "metric_refresh_warmup": max(2, W // 2),
-                                "metric_refresh_reseed": args.metric_refresh_reseed}
-                               if args.metric_refresh != "none" else {})),
+            pathfinder_kwargs=pf_kw, chees_kwargs=ch_kw,
         )
+        effective = effective_from(idata)
+        row["effective"] = effective
+        if effective is None and (pf_kw or set(ch_kw) - {"draws"}):
+            print("[r1_bias] WARNING: idata.attrs has no 'config' (a tree older than R2-WP2): the "
+                  "flags cannot be checked against what ran", flush=True)
+        check_effective(effective, expected_config(pf_kw, ch_kw, args.chains, args.draws, seed, W))
         import arviz as az
 
         unc = {}
@@ -484,6 +589,8 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
         row.update(
             frozen_eps=attrs.get("frozen_step_size", ch.get("frozen_eps")),
             frozen_L_nominal=attrs.get("frozen_L_nominal"),   # ch-side thunk runs after wall_s
+            metric_refresh_T0=attrs.get("metric_refresh_T0"),
+            metric_refresh_lmax_whitened=attrs.get("metric_refresh_lmax_whitened"),
             steps_mean=float(steps.mean()) if steps.size else None,
             grads_per_chain_warmup=attrs.get(
                 "warmup_grad_evals_per_chain",
@@ -508,8 +615,10 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
             warmup=t.get("_run_chees", 0.0),
             sampling=t.get("_run_dynamic_hmc", 0.0),
             postproc=t.get("_to_inference_data", 0.0)))
-    except Exception:                    # a failed cell is a row, not a gap in the record
+    except Exception as exc:             # a failed cell is a row, not a gap in the record
         import traceback
+        if isinstance(exc, ConfigMismatch):
+            fatal = exc                  # a harness/sampler disagreement voids the whole run
         tb = traceback.format_exc().strip().splitlines()
         where = [l.strip() for l in tb if "line " in l and ("r1_bias" in l or "sampler.py" in l)]
         row.update(error=f"{tb[-1]} | {where[-1] if where else ''}"[:400],
@@ -556,12 +665,16 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
     write_row(args.out, row)
     verdict = g_r1(row["b2_max"] or np.inf, row["b2_floor"] or np.inf, args.chains * args.draws) \
         if row["error"] is None else "error"
+    eff = row["effective"] or {}
     print(f"  [{model_name} {args.arm} W={W} seed={seed} rep={rep}] b2_max={row['b2_max']} "
           f"floor={row['b2_floor']} argmax={row['b2_argmax']} G-R1={verdict} "
+          f"eff={eff.get('imm_source')}/{eff.get('imm_orientation')}/{eff.get('iterate')} "
           f"nRhat={row['nested_rhat_max']} eps={row['frozen_eps']} L={row['frozen_L_nominal']} "
           f"grads/chain={row['grads_per_chain_warmup']}+{row['grads_per_chain_sampling']} "
           f"divs/1k={row['divs_per_1k']} splitRhat={row['max_rhat']} wall={row['wall_s']}s "
           f"peak={row['peak_mem_bytes']} err={row['error']}", flush=True)
+    if fatal is not None:
+        raise fatal                      # after the row is on disk: the evidence is kept
     return row
 
 
@@ -574,10 +687,11 @@ def run_starts(bl, model_name, args, rep, cold):
     model = build_model(model_name)
     names = [v.name for v in model.value_vars]
     s = PfCheesHMC(model, seed=int(args.seeds.split(",")[0]))   # int: the CLI value is a string
+    pf_kw = pathfinder_kwargs_from(args)
     t_start = time.perf_counter()
-    pos, imm = s._run_pathfinder(chains=args.chains, draws=args.pf_draws,
-                                 init_pick=args.init_pick, superchains=args.superchains,
-                                 pf_pool_cap=args.pf_pool_cap)
+    pos, imm = s._run_pathfinder(chains=args.chains, **pf_kw)
+    effective = dict(s._resolved["pathfinder"])        # Pathfinder-stage subset of attrs["config"]
+    check_effective(effective, expected_config(pf_kw, None))
     # one start per chain => "draws" = 1 for the shape contract
     ens, labels = flatten_run({n: np.asarray(v) for n, v in pos.items()}, args.chains, 1)
     reff, rlabels = flatten_ref(load_reference(model_name, names))
@@ -585,13 +699,12 @@ def run_starts(bl, model_name, args, rep, cold):
         raise KeyError(f"start/reference leaf mismatch {labels[:4]} vs {rlabels[:4]}")
     b2_max, k, _, _, _ = bias(ens, reff, np.zeros(ens.shape[1]), np.zeros(ens.shape[1]))
     row = new_row(wp=args.wp, arm="pf_starts", model=model_name, chains=args.chains,
-                  draws_per_chain=1, warmup=0, seed=s.seed, rep=rep, cold=cold,
+                  draws_per_chain=1, warmup=0, seed=s.seed, rep=rep, cold=cold, schema=SCHEMA_R2,
                   wall_s=round(time.perf_counter() - t_start, 2),
                   b2_max=b2_max, b2_argmax=argmax_name(labels, k), d=ens.shape[1],
-                  kwargs=json.dumps({"chains": args.chains, "draws": args.pf_draws,
-                                     "init_pick": args.init_pick,
-                                     "pf_pool_cap": args.pf_pool_cap,
-                                     "superchains": args.superchains}, sort_keys=True))
+                  kwargs=json.dumps({"chains": args.chains, "pathfinder_kwargs": pf_kw},
+                                    sort_keys=True))
+    row.update(step=getattr(args, "step", None), pooled=False, effective=effective)
     write_row(args.out, row)
     banner(model=model_name, cold=cold, wp=args.wp, arm="pf_starts")
     print(f"  [{model_name} pf_starts] b2_max={b2_max:.3f} at {row['b2_argmax']}", flush=True)
@@ -610,23 +723,44 @@ def main():
     ap.add_argument("--wp", default="WP3")
     ap.add_argument("--out", default=os.path.join(os.getcwd(), "results", "runs",
                                                   "WP3__selftest.jsonl"))
-    ap.add_argument("--pf-draws", type=int, default=1,
-                    help="Pathfinder draws per chain; the pool is chains*this (4000 OOMs at C=1024)")
+    ap.add_argument("--step", default=None,
+                    help="plan step label (e.g. M2a), written into every row as `step`")
+    # Sampler-default passthrough (R2-WP3): None = do NOT pass the kwarg, the sampler decides. Every
+    # row's `effective` (idata.attrs["config"]) records what ran, and an explicitly passed value
+    # that `effective` contradicts aborts the run.
+    ap.add_argument("--pf-draws", type=int, default=None,
+                    help="Pathfinder draws per chain (pathfinder_kwargs draws). Default: not passed "
+                         "(the sampler's 4000); the pool the start picks come from is bounded by "
+                         "--pf-pool-cap / the sampler's cap, not by chains*this.")
     ap.add_argument("--pf-pool-cap", type=int, default=None,
-                    help="WP5: bound the PF start pool to this many rows (production pool is"
-                         " chains*pf_draws = 4.1M rows at C=1024, 5.7 GB at d=175). None = uncapped.")
-    ap.add_argument("--init-pick", default="stratified", choices=["stratified", "iid"])
+                    help="bound the PF start pool to this many rows; 0 = uncapped. Default: not "
+                         "passed (the sampler resolves it from --imm-source: 4C, or max(4C, 4d^2) "
+                         "for mc)")
+    ap.add_argument("--init-pick", default=None, choices=["stratified", "iid"],
+                    help="how chain starts are picked from the pool. Default: not passed "
+                         "(the sampler's stratified)")
     # WP1/WP2 knobs, forwarded so the R1 sweep can vary them without a per-arm harness.
-    ap.add_argument("--orientation", default="precision", choices=["precision", "covariance"])
-    ap.add_argument("--iterate", default="ma", choices=["ma", "raw"])
+    ap.add_argument("--orientation", default=None, choices=["precision", "covariance"],
+                    help="imm_orientation. Default: not passed (the sampler's covariance)")
+    ap.add_argument("--iterate", default=None, choices=["ma", "raw"],
+                    help="ChEES iterate. Default: not passed (the sampler's default)")
+    ap.add_argument("--imm-source", default=None,
+                    choices=["mc", "pf_closed", "lbfgs_lowrank", "fisher_lowrank"],
+                    help="where the inverse mass matrix comes from. Default: not passed "
+                         "(the sampler's)")
+    ap.add_argument("--start-scale", type=float, default=None,
+                    help="pf_start_scale: chain starts become mu_pf + scale*(x - mu_pf). Default: "
+                         "not passed (the sampler's 1.0)")
     ap.add_argument("--metric-refresh", default="none",
                     choices=["none", "sample_diag", "fisher_diag", "dense_shrunk", "diag_lowrank"],
-                    help="WP4 two-phase ensemble metric refresh (none = the T1 single-phase arm)")
-    ap.add_argument("--metric-refresh-reseed", dest="metric_refresh_reseed", default=True,
-                    action="store_true",
-                    help="re-seed phase-B trajectory length at (pi/2)*sqrt(l_max) (default)")
+                    help="WP4 two-phase ensemble metric refresh (none = the T1 single-phase arm; "
+                         "also the sampler's default, so nothing is passed for it)")
+    ap.add_argument("--metric-refresh-reseed", dest="metric_refresh_reseed", default=None,
+                    action="store_const", const=True,
+                    help="re-seed phase-B trajectory length at (pi/2)*sqrt(l_max). Default: not "
+                         "passed (the sampler re-seeds)")
     ap.add_argument("--no-metric-refresh-reseed", dest="metric_refresh_reseed",
-                    action="store_false",
+                    action="store_const", const=False,
                     help="skip the trajectory-length re-seed on the metric swap (phase B starts at L=1)")
     ap.add_argument("--superchains", type=int, default=0, help="K (superchains); 0 = off")
     ap.add_argument("--nested-limit", type=float, default=1.01)
