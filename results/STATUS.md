@@ -108,7 +108,7 @@ Several tool calls were unavailable in that session. So the review of `wp/wp2` t
 1. When a stats task lands: verify its blockers by running the named test (20–40 s each) before acting; file under `results/reviews/`.
 2. Merge in this order on two clean reviews: **wp2 → wp4 → wp8 → wp9docs → wp5** (wp5 needs its attribution fix first).
 3. Launch the 4 missing reviews (wp8 code+stats, wp9docs code+stats) as steady-tier tasks with the same anti-fabrication rules.
-4. Remaining work items: **T5 per-step cost split (NOT RUN — the only unfilled T-table cell)**; GEV divergence coordinate diagnosis (one instrumented run); floor improvement (reference MCSE + autocorrelation) before any near-floor gate decision; WP4's refresh needs a package-level `metric_refresh_reseed` option + test (today it is a harness flag, so "refresh without re-seed" is measured, not shipped).
+4. Remaining work items: **T5 cost split — history and callback measured (+3.3% / +0.3% / +64.2% stack, ~2–8% callback); kernel-vs-adaptation bounded but not separable, because warmup is cheaper per gradient than sampling**; GEV divergence coordinate diagnosis (one instrumented run); floor improvement (reference MCSE + autocorrelation) before any near-floor gate decision; WP4's refresh needs a package-level `metric_refresh_reseed` option + test (today it is a harness flag, so "refresh without re-seed" is measured, not shipped).
 
 **Numbers that must not be re-litigated:** wall times in rows produced before `wp/wp3` `9d5c30d` are ~52% high warm (fixed, measured 15.42→10.62 s). `g_r1` masking fix changed 6 delivered cells (all radon, b² up to 63 vs floor 0.0056). Radon NC is **unmeasurable** at R1 (floors 0.0037–0.0071; W=200 costs 5.7× gradients for a 20% b² change). CPU NUTS T3: all 12 cells `resolvable=False`. Command buffers: −12%, not shipped. WP5 memory: 8 Schools 2,314 → 224 MiB (~10×); radon runs at C=1,024 (528.79 s cold / 42.94 s warm); no before/after wall comparison exists because the before-probe has no `wall_s`.
 
@@ -116,7 +116,7 @@ Several tool calls were unavailable in that session. So the review of `wp/wp2` t
 
 # FINAL STATE — 2026-10-20
 
-**All eight work packages are merged into `pf-r1`. Merged suite: 122 passed in 178.77 s (forced CPU).**
+**All eight work packages are merged into `pf-r1`. Merged suite: 125 passed in 169.28 s (forced CPU, at `f95e491`).**
 `main` untouched at `ecd9ba1`; nothing pushed. Working tree clean.
 
 Merged: wp0refs · wp1 · wp2 · wp3 · wp4 · wp5 · wp8 · wp9docs. (`wp/wp8` was merged once on an imagined review,
@@ -140,6 +140,6 @@ Also closed: five row files cited by the report's T-tables (`T1__r1_sweep`, `T3_
 `ORDER__radon_noncentered`, `ORDER__logit_1000x25`) lived only on the divergent `pf-r1-int` branch and are now on
 `pf-r1`; every cited row count was re-checked against its file and is correct.
 
-**Still open, in order:** (1) WP4's refresh is merged but cannot be enabled — needs a `stack_positions` flag, ~15
+**Still open, in order:** (1) ~~WP4's refresh cannot be enabled~~ **CLOSED** — `stack_positions` landed in `f2055aa`; the refresh runs at C=1,024 and clears G-R1 on radon at W=50 and W=2,000 (6,402 and 173,586 gradients/chain, peak +853 MiB rather than the 1.43 GB arithmetic predicts). Cost, not capacity, is what blocks it — ~15
 lines plus a test; (2) T5's per-step cost split; (3) GEV's diverging coordinate; (4) the noise-floor improvement;
 (5) the two `ORDER__` order-A/B files need a re-run on `pf-r1` to count as current-tree evidence.

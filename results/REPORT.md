@@ -323,7 +323,7 @@ The four-way split the plan asked for (kernel / adaptation / history / callback)
 
 ## 7. What is left, stated without hedging
 
-**Done:** all eight work-package branches are merged into `pf-r1`; the merged suite is **122 passed in 178.77 s** on forced CPU (122 tests collected; confirmed by three runs, and after an earlier figure of "124" that was asserted without reading its source file — see `results/LEDGER.md`). T1–T6 are filled (§6b) except one cell.
+**Done:** all eight work-package branches are merged into `pf-r1`; the merged suite is **125 passed in 169.28 s** on forced CPU (122 at the merges, +3 added after: two pinning the production-pool row contract, one from splitting the capacity test when the pool default changed its contract) (122 tests collected; confirmed by three runs, and after an earlier figure of "124" that was asserted without reading its source file — see `results/LEDGER.md`). T1–T6 are filled (§6b) except one cell.
 
 **Open, in the order they should be taken:**
 
