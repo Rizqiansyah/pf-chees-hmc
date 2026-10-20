@@ -632,3 +632,29 @@ measurement — it is a fabricated one that arrives dressed as confirmed.
 Three independent counts agree on **122**: the collection list, the pre-fix run (121 + 1 failure), and the
 post-fix run. That is what makes the stray "124" definitively not from this tree, and the reason the corrected
 number stands in `REPORT.md` §7, `STATUS.md` and the two ledger lines above.
+
+---
+
+## 2026-10-20 — wp2 independent review lands late, refuting the lead twice
+
+`wp2-stats-review-z` finished after I had closed the run and written a 10 KB independent review to
+`results/reviews/WP2-stats.md` — the path where my own lead-authored version sat. The independent file
+is now the record; mine was never committed and is superseded. Its B1 finding is correct and I verified it
+against the rows before accepting it:
+
+1. **`WP2__lgrowth.jsonl` is 1 seed × 2 devices, not 2 seeds.** Distinct seeds `{43}`; distinct devices
+   `{NVIDIA RTX A2000:0, cpu:0}`. My own earlier reading of these rows described them as "bimodal seeds"
+   (78 s vs 17 s on logistic) — that was **CPU versus GPU**, not seed noise. Any seed-spread statement drawn
+   from that misreading is void; the run's WP2 conclusion happens not to depend on one.
+2. **The "2.1× warmup saving" for `iterate="raw"` was misattributed — including in my own report.** The pair
+   that yields 2.1× (A 16.72 s → C 7.86 s) changes **orientation and iterate together**. Isolating the iterate
+   (B 7.30 → C 7.86) makes raw **7.6% slower on GPU** and 14.6% slower on CPU, because raw starts warmup at a
+   larger L (L@100 25–42 vs 8.3) and pays for it. Corrected in `results/REPORT.md` §2.5/§6b and in
+   `results/WP2/SUMMARY.md` line 45 (merged at `176ad10`).
+
+Still standing from the same review: the accept/kill verdict (raw worse on one model of two, inside the
+reproducibility floor → **NOT ESTABLISHED**, default stays `ma`), and the metric-versus-iterate separation
+(frozen T moves 1.42–72.8× under the metric, 0.91–1.01× under the iterate). Its note that the `9d5c30d` timer
+bug does **not** affect WP2's rows is also right: WP2's harness has no per-step diagnostic inside the timer.
+
+No code changed in this correction, so the merged suite count stands at **122 passed**.

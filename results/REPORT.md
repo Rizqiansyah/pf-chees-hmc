@@ -142,7 +142,7 @@ Tripling warmup to W=200 cuts b² by 20% and raises the floor, while costing **5
 
 1. `imm_orientation` is an explicit, tested parameter (default unchanged for now); `imm_order` likewise. The default flip is owner-gated (G3) — recommendation and remaining evidence in §7.
 2. **Nested R̂ is not a convergence gate in R1.** It reads 1.0040 on a cell with b² 0.4100. Measured reason: it is blind to bias shared by all chains (all-chains +1 sd reads 1.0004, identical to clean; every-other-superchain +1 sd reads 1.1135 at K=8). R1 Pathfinder deficit *is* common-mode, so G-R1 (b²) is the only gate; nested R̂ stays as a differential-drift/multimodality alarm. A proposed "precision ceiling at K" was refuted by the same measurement.
-3. Vendored ChEES adapter with `iterate="raw"|"ma"` (default `ma`, behaviour-preserving). The raw iterate reaches the plateau trajectory length by ~step 100 (logistic L@100: 25–42 vs 8.3) without worsening the frozen value at W=2,000 (25.0 vs 26.8); `t0=π/2` adds nothing.
+3. Vendored ChEES adapter with `iterate="raw"|"ma"` (default `ma`, behaviour-preserving). The raw iterate reaches the plateau trajectory length by ~step 100 (logistic L@100: 25–42 vs 8.3) without worsening the frozen value at W=2,000 (26.0 vs 27.5); `t0=π/2` adds nothing. **It is not a speed win:** isolating the iterate makes warmup ~8% slower on GPU (the 2.1× sometimes quoted for it is the metric change, not the iterate) — see §6b/T2.
 4. **Merged-tree rule.** `wp/wp1` + `wp/wp2` alone crashed every run (`WarmupInfo` vs `num_integration_steps`) while each branch was green alone. Since then, accept/kill decisions are re-verified on `pf-r1-int`.
 
 ## 5. Gates
@@ -187,7 +187,7 @@ Two limits stated on the face of the table: the arms move orientation **and** ad
 | order A/B on real models (orientation pinned) | gradients/ESS | radon **4.7× win**; GEV reverse (explained by a 50× Pathfinder under-dispersion of `xi_interval__`); logistic and 8 Schools **bit-identical** (identity permutation) | `ORDER__radon_noncentered.jsonl` 10, `ORDER__logit_1000x25.jsonl` 10 |
 | Pathfinder as init vs as warmup (R2) | gradients/ESS | **no benefit at any budget**, 5 seeds × 4 models | §3 |
 | metric refresh at W=50 | gradients/ESS | costs **1.34–13.98×**; **1.34–1.55×** once the trajectory-length re-seed is dropped | `WP4__r1.jsonl` 32, `WP4__reseed_ab.jsonl` 18 |
-| ChEES raw `log T` iterate | warmup wall | logistic 16.7 → 7.9 s (**2.1×**), frozen L not worse | `WP2__lgrowth.jsonl` 32 |
+| ChEES raw `log T` iterate | warmup wall | **no saving — it costs ~8%.** The 2.1× on logistic (16.72 → 7.86 s) is the **metric** change; isolating the iterate (B cov,ma → C cov,raw) gives **+7.6% GPU / +14.6% CPU slower**, because raw starts at a larger L (L@100 25–42 vs 8.3) and pays for it. Frozen L is not worse (−5.3% logistic, +4.0% 8 Schools, inside the reproducibility floor) | `WP2__lgrowth.jsonl` 32 rows = **1 seed × 2 devices** |
 | XLA command buffers | wall | **not shipped** — see T5 | `T5a__cmdbuf.jsonl` 10 |
 
 ### T3 — CPU NUTS (32 chains on 32 cores) time to reach b² < 0.01, `T3__cpu_nuts.jsonl`, 12 rows
