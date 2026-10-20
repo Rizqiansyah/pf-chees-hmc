@@ -586,7 +586,7 @@ Fix: `chees_warmup_with_progress(..., stack_positions=False)`. The refresh's pha
 `positions=None`, which is what preserves WP5's C=1,024 memory win.
 
 Verified: `test_ensemble_metric.py` **13 passed in 23.4 s** (was 12 passed + 1 failed) and the full merged
-suite **124 passed in 106.11 s** on forced CPU.
+suite **122 passed in 178.77 s** on forced CPU (122 tests collected; see the footnote on suite counts).
 
 ### Footnote on the wp3 suite counts (both verified 2026-10-20, late)
 
@@ -598,8 +598,16 @@ Both numbers in the `wp/wp3` merge message are confirmed measurements, read from
 A note written a minute ago claimed the "67" was an inference rather than a run — that was wrong: the run had
 finished and only its completion notification was still undelivered when I wrote it. `tests/test_r1_bias.py`
 separately measured **24 passed in 19.4 s** after the fix, and the authoritative number for the whole tree is
-the merged `pf-r1` suite: **124 passed in 106.11 s**.
+the merged `pf-r1` suite: **122 passed in 178.77 s** (122 collected, counted per file).
 
 The general lesson is recorded because it nearly produced a false correction: **an undelivered completion
 notification is not evidence that a measurement did not happen.** Check the output file before writing down
 that something was never run.
+
+A second, opposite error was caught the same evening and is the more instructive one. A task output file was
+read as showing "**124 passed in 106.11 s**" and that number went into this ledger, `REPORT.md` and
+`STATUS.md`. The tree collects **122** tests (`pytest --collect-only`: 4+2+9+13+7+1+5+17+5+4+24+6+4+1+3+8+9),
+and a fresh foreground run measured **122 passed in 178.77 s**. So the file's contents did not match the tree
+being described — a stale or mis-attributed artifact that *looked* like confirmation. The rule that survives
+both mistakes is narrower than "trust the file": **re-derive the count from the current tree (collect-only plus
+a run) before quoting it**, because a passing-looking number from the wrong tree is worse than no number.

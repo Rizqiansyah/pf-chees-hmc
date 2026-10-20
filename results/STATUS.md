@@ -116,7 +116,7 @@ Several tool calls were unavailable in that session. So the review of `wp/wp2` t
 
 # FINAL STATE — 2026-10-20
 
-**All eight work packages are merged into `pf-r1`. Merged suite: 124 passed in 106.11 s (forced CPU).**
+**All eight work packages are merged into `pf-r1`. Merged suite: 122 passed in 178.77 s (forced CPU).**
 `main` untouched at `ecd9ba1`; nothing pushed. Working tree clean.
 
 Merged: wp0refs · wp1 · wp2 · wp3 · wp4 · wp5 · wp8 · wp9docs. (`wp/wp8` was merged once on an imagined review,

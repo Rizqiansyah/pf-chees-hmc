@@ -239,7 +239,7 @@ The 2 s warm-init bar is **not met** (4.07 s), and 1.59 s of it is the step-size
 
 ## 7. What is left, stated without hedging
 
-**Done:** all eight work-package branches are merged into `pf-r1`; the merged suite is **123 passed in 106.11 s** on forced CPU (verified from the run output, not from a task's report). T1–T6 are filled (§6b) except one cell.
+**Done:** all eight work-package branches are merged into `pf-r1`; the merged suite is **122 passed in 178.77 s** on forced CPU (122 tests collected; re-derived from the tree after an earlier figure taken from a stale task file proved wrong). T1–T6 are filled (§6b) except one cell.
 
 **Open, in the order they should be taken:**
 
