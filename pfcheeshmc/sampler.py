@@ -1524,6 +1524,9 @@ class PfCheesHMC:
         self._resolved = {}
         pf_samples, inverse_mass_matrix = self._run_pathfinder(**pathfinder_kwargs)
         eps0 = self._run_step_size_tune(pf_samples, inverse_mass_matrix, **step_size_tune_kwargs)
+        # Snapshot: the two-phase refresh re-searches eps through the same method, with the CHEES
+        # kwargs, and overwrites this entry. The re-search's own entry is read after warmup.
+        eps0_record = dict(self._resolved["step_size"])
         chees_states, chees_parameters, chees_info = self._run_chees(
             pf_samples,
             inverse_mass_matrix,
@@ -1575,10 +1578,10 @@ class PfCheesHMC:
             if _k in chees_parameters:
                 idata.attrs[_k] = chees_parameters[_k]
         # R2-WP2: the resolved configuration, one JSON string (key list: see _config_record).
-        idata.attrs["config"] = self._config_record(idata, chees_parameters, eps0)
+        idata.attrs["config"] = self._config_record(idata, chees_parameters, eps0, eps0_record)
         return idata
 
-    def _config_record(self, idata, chees_parameters, eps0) -> str:
+    def _config_record(self, idata, chees_parameters, eps0, eps0_record) -> str:
         """JSON string for ``idata.attrs["config"]``: what the sampler RESOLVED, not what was asked.
 
         Every value is the one the code applied, defaults filled in, so a harness can compare it with
@@ -1592,7 +1595,9 @@ class PfCheesHMC:
             ``init_pick``, ``superchains`` (null = not set), ``pm_chains``, ``pm_init``, ``pm_tune``,
             ``score_chunk``.
         Step-size search (``_run_step_size_tune``)
-            ``eps0_probes`` (number of probe positions) and ``eps0`` (the step size it returned).
+            ``eps0_probes`` (number of probe positions) and ``eps0`` (the step size it returned) for
+            the search before warmup; with a refresh, the re-search on the new metric reads its own
+            ``metric_refresh_eps_probes`` from the CHEES kwargs (not the step-size kwargs).
         Warmup (``_run_chees``)
             ``num_warmup`` (configured warmup length) and ``warmup_steps_used`` (ran; differs only
             with a stop rule), ``iterate``, ``adam_lr``, ``target_accept``, ``max_leapfrog_steps``,
@@ -1601,7 +1606,8 @@ class PfCheesHMC:
             ``metric_refresh`` ("none" or the estimator name that ran) and, when one ran,
             ``metric_refresh_warmup`` (phase-A steps after clamping), ``metric_refresh_pool``,
             ``metric_refresh_reseed``, ``metric_refresh_ridge``, ``metric_refresh_shrink``,
-            ``metric_refresh_rank``; all null when ``metric_refresh`` is "none" (not applicable).
+            ``metric_refresh_rank``, ``metric_refresh_eps_probes``; all null when ``metric_refresh``
+            is "none" (not applicable).
         Sampling (``_run_dynamic_hmc``)
             ``chains``, ``num_draws``.
         Frozen at the end of warmup
@@ -1613,7 +1619,7 @@ class PfCheesHMC:
         positive-definiteness check, depends on it.
         """
         r = self._resolved
-        pf, ss, wu, sm = r["pathfinder"], r["step_size"], r["warmup"], r["sampling"]
+        pf, ss, wu, sm = r["pathfinder"], eps0_record, r["warmup"], r["sampling"]
         refreshing = wu["metric_refresh"] != "none"
         cfg = {
             "imm_source": pf["imm_source"],
@@ -1647,6 +1653,7 @@ class PfCheesHMC:
             "metric_refresh_ridge": wu["metric_refresh_ridge"],
             "metric_refresh_shrink": wu["metric_refresh_shrink"],
             "metric_refresh_rank": wu["metric_refresh_rank"],
+            "metric_refresh_eps_probes": r["step_size"]["eps0_probes"] if refreshing else None,
             "chains": sm["chains"],
             "num_draws": sm["num_draws"],
             "frozen_step_size": idata.attrs["frozen_step_size"],
