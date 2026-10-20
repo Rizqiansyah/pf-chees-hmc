@@ -1,0 +1,8 @@
+r1 --models 8schools --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate ma --arm m2:ma --wp R1 --step M2a
+r1 --models 8schools --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate raw --arm m2:raw --wp R1 --step M2a
+r1 --models gev --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate ma --arm m2:ma --wp R1 --step M2a
+r1 --models gev --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate raw --arm m2:raw --wp R1 --step M2a
+r1 --models logit_1000x25 --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate ma --arm m2:ma --wp R1 --step M2a
+r1 --models logit_1000x25 --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate raw --arm m2:raw --wp R1 --step M2a
+r1 --models radon_noncentered --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate ma --arm m2:ma --wp R1 --step M2a
+r1 --models radon_noncentered --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate raw --arm m2:raw --wp R1 --step M2a
