@@ -1,5 +1,22 @@
 # Review handoff — pf-r1 (2026-10-20)
 
+## Errata (run 2)
+
+Run-2 corrections, from plan `docs/review-2026-10/pf-chees-hmc-run2-plan.md`. E1–E7 are corrected inline and marked `[corrected — run-2 erratum E#]`. E8–E12 are marked `[void — run-2 erratum E#]` and the original text is kept. No run-1 number changed beyond E1–E7.
+
+- **E1** — REVIEW-HANDOFF §3 item 2: `pf_pool_cap` default. `None` resolves to `max(4C, 4d²)` (`sampler.py:495,589`); `0` is uncapped. (run-2 plan §1.5)
+- **E2** — REPORT §8 caveat 6: "all R1 evidence used `pf_draws=1`" is superseded by §3f (production pool measured). (run-2 plan §1.5)
+- **E3** — REPORT §6b T1, three cells: GEV `covraw` drops "335" (logistic's figure); shipped GEV reads "fails W=50 on one seed, passes W=100" (§3b); radon `covraw` reads "fails resolvably at W=50/100" (§3e). (run-2 plan §1.5)
+- **E4** — REPORT §3e item 3: "warm rows" becomes cold rows; all 42 `WP4__reseed_ab.jsonl` rows are `cold: true`. (run-2 plan §1.5)
+- **E5** — REPORT §7 "Done": suite line reads 125 passed in 176.88 s, as in the header; "122 collected" removed. (run-2 plan §1.5)
+- **E6** — REPORT §6b T2: row "Pathfinder as init vs as warmup (R2)" deleted; no row file or §3 data supports it. (run-2 plan §1.5)
+- **E7** — REVIEW-HANDOFF §1: three artifacts listed twice (`WP4__refresh_capacity`, `T5b__stepcost`, `START__dispersion`) deduplicated. (run-2 plan §1.5)
+- **E8** — REPORT T3 and REVIEW-HANDOFF §1 T3 row: "CPU NUTS cannot resolve b²" is void (floor not squared); replaced by run-2 R2-T4. (run-2 plan §1.2)
+- **E9** — REPORT §3e items 1–3, §3g item 3, §7 item 3: re-seed cost and radon rescue are void (re-seed formula wrong by units); replaced by run-2 R2-T1/T3. (run-2 plan §1.1)
+- **E10** — REPORT §3e, §7 item 5, §8 caveat 5; REVIEW-HANDOFF §3 item 6: "radon cannot be gated at any warmup" is void. Only the no-re-seed refresh arm is unresolvable; the others fail or pass resolvably. (run-2 plan §1.1)
+- **E11** — REPORT §4 item 3 and T2 iterate row; REVIEW-HANDOFF §1: "raw costs time, saves none" is to be read as "at W=2,000 (R2); untested at R1". (run-2 plan §1.3)
+- **E12** — `results/LEDGER.md:174` (tagged). No table in REPORT or REVIEW-HANDOFF quotes `lbfgs_lowrank` or `fisher_lowrank`. Those arms were measured under the broken orientation and are void. (run-2 plan §1.5)
+
 Read `results/REPORT.md` for findings. This file is the audit surface: what each claim rests on, what was
 independently re-derived, what is knowingly unmeasurable, and how to reproduce it.
 
@@ -13,19 +30,16 @@ Suite: **125 passed in 176.88 s** forced-CPU at `a9dc9be` (confirmed; commits af
 | metric orientation is a correctness failure (R̂ 12.1–13.1 vs 1.002; ESS 32 vs ~30k) | `WP1__gev_2x2.jsonl`, `T1__prodpool.jsonl`, fixture script `~/scratch/wp1_2x2b.py` | per-seed `max_rhat` / `min_bulk_ess` by arm; 4 arms × 3 seeds |
 | permutation + covariance is the shippable combination: better gradients/ESS on 4/4 | `WP1__covarm.jsonl` (40), `WP1__rebaseline.jsonl` (142) | `grads_per_ess_worst`, warm rows, `rep==1`, median over 5 seeds. **Re-derived this session: 35.5/71.2/46.1/182.3 vs 58.2/73.4/151.7/501.9 — exact.** |
 | permutation alone must not ship (1/4, breaks R̂ on GEV+radon) | same two files | same column; `max_rhat` 1.0465 (GEV), 1.0142 (radon) |
-| ChEES raw `log T` iterate costs time, saves none | `WP2__lgrowth.jsonl` (32) | `wall_s` medians by (device, model, arm): logistic B 7.30 → C 7.86 s (+7.7 %), CPU 27.42 → 31.43 s (+14.6 %); A→C is 2.13× and that is the metric, not the iterate. **Re-derived.** |
+| ChEES raw `log T` iterate costs time, saves none [void — run-2 erratum E11] | `WP2__lgrowth.jsonl` (32) | `wall_s` medians by (device, model, arm): logistic B 7.30 → C 7.86 s (+7.7 %), CPU 27.42 → 31.43 s (+14.6 %); A→C is 2.13× and that is the metric, not the iterate. **Re-derived.** |
 | refresh fixes radon's bias and is rejected on cost | `WP4__reseed_ab.jsonl` (42), `WP4__r1.jsonl` (32) | per-seed `g_r1` verdicts; cells are 3 rows (3 seeds), **not** 12 |
-| refresh runs at C=1,024; cost is gradients, not memory | `WP4__refresh_capacity.jsonl` (3) | b², `grads_per_chain_total`, `peak_mem_bytes` |
 | production pool: fits at d ≤ 8, OOMs at d ≥ 25; cap is verdict-neutral | `T1__prodpool.jsonl` (15) | pool bytes = `chains × pf_draws × d × 8`; XLA's own over-limit number is 5,734,400,000 B = 4,096,000 × 175 × 8 |
 | capacity before/after WP5 | `WP5__memprobe_before.jsonl` (80), `WP5__accept.jsonl` (5) | peaks are in `kwargs.peak_bytes_in_use` (bytes); per-stage seconds in `kwargs.stage_s` on 70/80 rows; row-level `wall_s` is null on all 80 |
 | XLA command buffers: do not ship (−12 %) | `T5a__cmdbuf.jsonl` (10) | `wall_s` by (model, arm, cold). **Re-derived: +12.8 % / +12.2 %.** |
-| CPU NUTS reference cannot resolve b² at these shapes | `T3__cpu_nuts.jsonl` (12) | `resolvable` field: 12/12 False. **Re-derived.** |
-| warmup-output costs (stack, callback) | `T5b__stepcost.jsonl` | `t_warmup_s`, `t_with_stack_s`, `t_with_bar_s` |
-| GEV `xi_interval__` starts under-dispersed | `START__dispersion.jsonl` | start sd ÷ reference sd per coordinate, kernel order asserted on both sides |
+| CPU NUTS reference cannot resolve b² at these shapes [void — run-2 erratum E8] | `T3__cpu_nuts.jsonl` (12) | `resolvable` field: 12/12 False. **Re-derived.** |
 | pool-size default (three arms × 4 models, with ESS) | `T1__r2_poolcap3.jsonl` (12) + `T1__r2_poolcap.jsonl` (8, the earlier pass) | `grads_per_ess_worst`, `ess_s_worst`, `min_tail_ess`, `max_rhat` by (model, arm); all rows share sampler code (`git diff -- pfcheeshmc/`) |
-| refresh runs at C=1,024; what it costs | `WP4__refresh_capacity.jsonl` (3) | `grads_per_chain_total`, `peak_mem_bytes`, `g_r1` |
-| warmup-output cost (stack, callback) | `T5b__stepcost.jsonl` (5; radon NOT MEASURED, 2 rows marked superseded) | `t_warmup_s`, `t_with_stack_s`, `t_with_bar_s`, `gpu_other_procs`, `timing_void` |
-| start dispersion vs reference | `START__dispersion.jsonl` (8) | `start_sd_over_ref_sd_coldest_first`, `n_coords_below_half`, kernel-order leaf assert |
+| refresh runs at C=1,024; what it costs [corrected — run-2 erratum E7] | `WP4__refresh_capacity.jsonl` (3) | `grads_per_chain_total`, `peak_mem_bytes`, `g_r1` |
+| warmup-output cost (stack, callback) [corrected — run-2 erratum E7] | `T5b__stepcost.jsonl` (5; radon NOT MEASURED, 2 rows marked superseded) | `t_warmup_s`, `t_with_stack_s`, `t_with_bar_s`, `gpu_other_procs`, `timing_void` |
+| start dispersion vs reference (GEV `xi_interval__` under-dispersed) [corrected — run-2 erratum E7] | `START__dispersion.jsonl` (8) | `start_sd_over_ref_sd_coldest_first`, `n_coords_below_half`, kernel-order leaf assert |
 | historical doc claims retracted / confounded | `results/WP9/CLAIM-INVENTORY.md` (40 rows), `results/reviews/` | every row carries `file:line` and the deciding row ids |
 
 ## 2. Scoring rules — do not invent a third
@@ -46,9 +60,9 @@ when `floor ≤ 0.005` it passes iff `b² < 0.01`.
    comes from `tools/wp1_rebaseline.py`, and rows from before it cannot be compared with T2 at all. The
    `T1__r2_poolcap.jsonl` file therefore contains a mix of ESS-bearing and null rows; the pool-cap decision
    is re-run uniformly into its own file.
-2. **The 4,000-draw pool was only reached with the cap.** `pf_pool_cap` defaults to `None`; the uncapped
+2. **The 4,000-draw pool was only reached with the cap.** `pf_pool_cap=None` resolves to `max(4C, 4d²)` (`sampler.py:495,589`); `0` is uncapped, and the uncapped
    production pool cannot run above d ≈ 8 on a 6 GB card, so the d = 25/175 production cells are *capped*
-   cells, and `pf_draws = 1` remains the only fully-uncapped-arm-avoiding configuration for small d.
+   cells, and `pf_draws = 1` remains the only fully-uncapped-arm-avoiding configuration for small d. [corrected — run-2 erratum E1]
 3. **Per-coordinate divergence velocity is unmeasurable on this tree.** WP5 projected the warmup output to
    `WarmupScanInfo(num_integration_steps, is_divergent, acceptance_rate)`; momentum and `proposal.*` are not
    returned anywhere. Naming the coordinate that diverges needs the untrimmed `HMCInfo` behind a flag.
@@ -57,7 +71,7 @@ when `floor ≤ 0.005` it passes iff `b² < 0.01`.
    `164f449`/`574f960`, which *are* ancestors and carry the permutation.
 5. **b² is seed-dominated at D = 10.** One seed per cell cannot rank arms; the noise floor ships in every
    row and the report's comparisons are medians over 3–5 seeds.
-6. **Radon cannot be gated at the R1 shape at any warmup** — floors stay ≈ 0.005, so its cells are not
+6. **Radon cannot be gated at the R1 shape at any warmup** [void — run-2 erratum E10] — floors stay ≈ 0.005, so its cells are not
    passes, they are unresolvable. Fixing this needs more draws per chain (outside R1) or a better floor
    (reference MCSE + serial correlation), which is a plan change.
 7. **The box clock jumped ~45 min backwards during this run** (LEDGER 14:35). Row `ts` values in that window
