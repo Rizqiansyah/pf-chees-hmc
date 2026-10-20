@@ -82,3 +82,32 @@ Several tool calls were unavailable in that session. So the review of `wp/wp2` t
 1. **Default orientation: FLIP to `covariance`, in the same merge as the permutation.** Implemented on `wp/wp1` (`feat(sampler): default mass-matrix orientation is now the covariance`), the pinned test now asserts the default *mixes*, and 17 metric tests pass on forced CPU. **Not merged** — see ruling 2.
 2. **A4 stays strict: no merge until two reviews are executed by reviewer tasks.** Consequence recorded honestly: `wp/wp0refs` was merged at `97f235a` **before** this ruling, on one task review (`WP0refs-code.md`, 18:34, blocking item since fixed) plus one lead-authored review (`WP0refs-stats.md`). That is one executable review, not two. Its content is verified — the shape guard raises on both failure modes and the reference-resolution margins (11.7×–20.2× below the b² threshold, min ESS 13,765–41,006) reproduce independently — so the merge is kept, flagged, and reversible at `97f235a^`. Every branch after this line waits for two tasks.
 3. **Two leads are live on this repo** (this session and a resumed one that produced `d34613c`, `1ca0ce8`, `6db3a3b`). Their numbers re-checked here are correct, so the work is kept. From now on I re-read `git log pf-r1` before every commit and reconcile rather than assuming my view of the tree is the only one.
+
+---
+
+# RESUME PACKET — 2026-10-20 (supersedes everything above it)
+
+**Tree.** `main` ecd9ba1 (untouched, nothing pushed) · `pf-r1` **9bf29a5** · `pf-r1-int` **129afce** (merged measurement tree; the row files are now committed there — they were untracked and would have been lost).
+
+**Merged into `pf-r1`:** wp0refs, wp1 (permutation + covariance default), **wp3** (R1 bias harness + two integrity fixes at `9d5c30d`). Merged-then-reverted: **wp8** (`8d81563` → `60302b2`) because the reviews it was merged on did not exist on disk.
+
+**Unmerged branches:** `wp/wp2` b02a6e8 · `wp/wp4` d457a17+ · `wp/wp5` 0e6739f · `wp/wp8` 8931a71 · `wp/wp9docs` 79e9944.
+
+**Review coverage (count from disk, never from memory):**
+| branch | code | stats | needed action |
+|---|---|---|---|
+| wp2 | ✓ (lead-authored) | task running | then merge |
+| wp4 | ✓ (2 blockers refuted) | task running | then merge |
+| wp5 | ✓ (3 of 4 blockers refuted, **hold**: attribution wrong) | task running | fix SUMMARY attribution, plumb or delete `pm_chains`, add tie/boundary tests, then re-review |
+| wp8 | ✗ | ✗ | launch both |
+| wp9docs | ✗ | ✗ | launch both |
+
+**Tasks in flight (steady-tier, cap 3):** `wp4-stats-review-z`, `wp5-stats-review-z`, `wp2-stats-review-z`. On a reload they come back **paused** — resume with `session resume`, never re-launch, and never trust their final messages: write-the-file-first was mandated because 5 of 7 earlier tasks delivered messages with no file and refuted blockers.
+
+**Next actions, in order:**
+1. When a stats task lands: verify its blockers by running the named test (20–40 s each) before acting; file under `results/reviews/`.
+2. Merge in this order on two clean reviews: **wp2 → wp4 → wp8 → wp9docs → wp5** (wp5 needs its attribution fix first).
+3. Launch the 4 missing reviews (wp8 code+stats, wp9docs code+stats) as steady-tier tasks with the same anti-fabrication rules.
+4. Remaining work items: **T5 per-step cost split (NOT RUN — the only unfilled T-table cell)**; GEV divergence coordinate diagnosis (one instrumented run); floor improvement (reference MCSE + autocorrelation) before any near-floor gate decision; WP4's refresh needs a package-level `metric_refresh_reseed` option + test (today it is a harness flag, so "refresh without re-seed" is measured, not shipped).
+
+**Numbers that must not be re-litigated:** wall times in rows produced before `wp/wp3` `9d5c30d` are ~52% high warm (fixed, measured 15.42→10.62 s). `g_r1` masking fix changed 6 delivered cells (all radon, b² up to 63 vs floor 0.0056). Radon NC is **unmeasurable** at R1 (floors 0.0037–0.0071; W=200 costs 5.7× gradients for a 20% b² change). CPU NUTS T3: all 12 cells `resolvable=False`. Command buffers: −12%, not shipped. WP5 memory: 8 Schools 2,314 → 224 MiB (~10×); radon runs at C=1,024 (528.79 s cold / 42.94 s warm); no before/after wall comparison exists because the before-probe has no `wall_s`.
