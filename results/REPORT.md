@@ -1,6 +1,6 @@
 # pf-r1 — external review implementation run: REPORT
 
-Branch `pf-r1` (measurement tree `pf-r1-int` for four row files, see §8). Nothing is pushed; `main` is untouched at `ecd9ba1`. Suite: **125 passed in 169.28 s** forced CPU. Items still open are listed in §7 with the specific missing measurement named; nothing in §§2–6 is awaiting a run except where a cell says so.
+Branch `pf-r1` (measurement tree `pf-r1-int` for four row files, see §8). Nothing is pushed; `main` is untouched at `ecd9ba1`. Suite: **125 passed in 176.88 s** forced CPU, confirmed at `a9dc9be`; the two commits since are docs and data only (`git diff --name-only` shows no `pfcheeshmc/`, `tools/` or `tests/` change), so it holds at HEAD. Items still open are listed in §7 with the specific missing measurement named; nothing in §§2–6 is awaiting a run except where a cell says so.
 
 ## 1. What was run
 

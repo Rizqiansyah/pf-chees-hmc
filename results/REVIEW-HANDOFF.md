@@ -4,7 +4,7 @@ Read `results/REPORT.md` for findings. This file is the audit surface: what each
 independently re-derived, what is knowingly unmeasurable, and how to reproduce it.
 
 **Tree.** `main` untouched at `ecd9ba1`; `pf-r1` carries the eight merged work packages. Nothing pushed.
-Suite: **125 passed in 169.28 s** forced-CPU at `f95e491` (122 at merge + 2 pool-cap row tests + 1 from splitting the capacity test when the pool default changed contract).
+Suite: **125 passed in 176.88 s** forced-CPU at `a9dc9be` (confirmed; commits after it touch docs and data only) — originally 122 at the merges, +3 added after: (122 at merge + 2 pool-cap row tests + 1 from splitting the capacity test when the pool default changed contract).
 
 ## 1. Every headline claim and the row file behind it
 
