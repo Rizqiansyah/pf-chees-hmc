@@ -56,7 +56,7 @@ contract items. An item that is silently absent counts as a run failure (plan A4
 | M2c | M2c start scaling, conditional on radon having no passing W<=300 | steady-tier runner | SKIPPED (trigger not met: radon passes W=300 ma, W=100 raw) |
 | M3 | M3 R2 matrix 3 arms x 5 seeds = 60 cells + mean shift in sd units + G3 on GEV | steady-tier runner | DONE (M3__r2.jsonl 60 rows; LEDGER) |
 | D1 | D1 rule evaluation (a)-(c) | lead | DONE: NO (clauses b and c fail; LEDGER) |
-| M4 | M4 GPU warm timing at R1 operating point (repeat 2, rep-1 rows; + C=2048 scaling) | steady-tier runner | PENDING |
+| M4 | M4 GPU warm timing at R1 operating point (repeat 2, rep-1 rows; + C=2048 scaling) | steady-tier runner | DONE (M4__*.jsonl; LEDGER) |
 | M5 | M5-cpu CPU NUTS time-to-pass: 4 models x 3 tune x 4 draws x 3 seeds = 144 runs | steady-tier runner | DONE (M5__cpu_nuts.jsonl 144 rows) + M5x radon extension queued (DEVIATED) |
 | T1 | R2-T1 R1 smallest passing W | lead | PENDING |
 | T2 | R2-T2 M1 closed vs MC + D2 | lead | PENDING |

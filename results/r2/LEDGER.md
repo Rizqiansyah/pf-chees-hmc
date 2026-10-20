@@ -244,3 +244,27 @@ for radon are accurate but too few to resolve at d=175.
 - Plan fact: draws=50 at 32 chains gives C·D = 1,600 < 2,000, so it is ineligible by construction.
 - The 1-min host load at row start was 11–19. That is M5's own 32 worker processes from the previous
   cell; the foreign processes on the box were idle at launch (`ps`).
+
+## 2026-10-21 — M4 done (15 jobs rc=0): warm GPU walls at the R1 operating point
+
+Rows `results/r2/runs/M4__{default,best,mem,c2048}.jsonl`; code trees unchanged
+(`a0f644d…/516dd5e…`). Walls are the median of the rep-1 (warm) rows over seeds 1–3. No GPU
+co-tenant (`gpu_other_procs` empty), no CPU job running, `cpu_contended` false.
+
+| model | arm (W) | warm wall | cold wall (seed 1) | init / pathfinder / eps0 / warmup / sampling, s | peak MiB |
+|---|---|---|---|---|---|
+| 8schools | default (25) | 6.31 | 35.9 | 0.53 / 1.15 / 1.07 / 1.69 / 1.52 | 224 |
+| gev | default (25) | 10.49 | 46.6 | 1.55 / 1.89 / 1.48 / 2.68 / 2.09 | 288 |
+| logit_1000x25 | default (50) | 8.42 | 52.2 | 0.51 / 1.38 / 1.14 / 3.22 / 1.73 | 582 |
+| logit_1000x25 | raw (25) | 8.35 | 51.7 | 0.50 / 1.36 / 1.15 / 2.96 / 1.89 | 581 |
+| radon_noncentered | default (300) | 24.93 | 85.2 | 0.93 / 8.03 / 1.79 / 7.36 / 2.55 | 1,242 |
+| radon_noncentered | raw (100) | 24.96 | 85.6 | 0.92 / 8.11 / 1.79 / 7.01 / 2.85 | 1,242 |
+
+C=2,048, default path, seed 1, warm: 8schools 6.49 s, gev 10.51 s, logit 10.21 s, radon 31.68 s.
+That is +3%, +0%, +21% and +27% wall for 2× the draws. The b² values in these rows match M2a/M2b.
+
+Reading:
+- At C=1,024 the fixed stages (init + Pathfinder + ε0) take 2.8–4.9 s on the small models and 10.7 s
+  on radon.
+- Radon's Pathfinder stage (8.0 s) is the largest single stage. Its `mc` pool is 122,500 rows (4d²);
+  `pf_closed` would draw 4,096 (see D2).
