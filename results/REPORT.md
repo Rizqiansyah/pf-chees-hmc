@@ -120,7 +120,7 @@ The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); th
 | logistic | 324 | 2,386 | **487** | passes, 3/3 |
 | radon NC | 372 | 5,612 | **579** | **unresolvable** at W=50 (floor 0.0054 vs the 0.005 rule) |
 
-Refresh overhead drops from 3.7–15× the baseline to **1.34–1.55×**, so the answer to the plan's question is that the cheap opt-in path exists: keep the refresh, drop the re-seed. The rule fixed before the run was "within 1.5× of baseline while radon still passes" — 8 Schools, GEV and logistic meet it.
+Refresh overhead, re-derived per seed from the rows (`~/scratch/wp4_arbiter.py`, warm medians, baseline = `int:covraw` at the same shape): **1.34× / 7.72× / 7.37× / 13.98×** with the re-seed (8 Schools / GEV / logistic / radon) against **1.34× / 1.51× / 1.50× / 1.55×** without it, so the re-seed alone costs **1.00× / 5.11× / 4.90× / 8.99×**. The answer to the plan's question is that the cheap opt-in path exists: keep the refresh, drop the re-seed. (An earlier draft of this section wrote "3.7–15×"; 8 Schools only ever cost 1.34× — the expensive cases were expensive *because* of the re-seed.) The rule fixed before the run was "within 1.5× of baseline while radon still passes" — 8 Schools, GEV and logistic meet it.
 
 **Radon cannot be gated at the R1 shape, at any warmup.** Its ladder was run to settle this, and the floor — not the bias — is the wall:
 
@@ -180,7 +180,7 @@ Two limits stated on the face of the table: the arms move orientation **and** ad
 | same, at 128 chains | ESS/s | direction holds at the higher chain count | `WP1__t2_128.jsonl` |
 | order A/B on real models (orientation pinned) | gradients/ESS | radon **4.7× win**; GEV reverse (explained by a 50× Pathfinder under-dispersion of `xi_interval__`); logistic and 8 Schools **bit-identical** (identity permutation) | `ORDER__radon_noncentered.jsonl` 10, `ORDER__logit_1000x25.jsonl` 10 |
 | Pathfinder as init vs as warmup (R2) | gradients/ESS | **no benefit at any budget**, 5 seeds × 4 models | §3 |
-| metric refresh at W=50 | gradients/ESS | costs **3.7–15×**; **1.34–1.55×** with the trajectory-length re-seed dropped | `WP4__r1.jsonl` 32, `WP4__reseed_ab.jsonl` 18 |
+| metric refresh at W=50 | gradients/ESS | costs **1.34–13.98×**; **1.34–1.55×** once the trajectory-length re-seed is dropped | `WP4__r1.jsonl` 32, `WP4__reseed_ab.jsonl` 18 |
 | ChEES raw `log T` iterate | warmup wall | logistic 16.7 → 7.9 s (**2.1×**), frozen L not worse | `WP2__lgrowth.jsonl` 32 |
 | XLA command buffers | wall | **not shipped** — see T5 | `T5a__cmdbuf.jsonl` 10 |
 
