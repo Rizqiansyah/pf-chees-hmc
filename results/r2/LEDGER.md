@@ -196,3 +196,26 @@ the plan). It runs after M4:
 - the legacy tree `ecd9ba1` against the current default at R2 (3 seeds, `--repeat 2`, so warm walls
   and exact gradients);
 - legacy at R1 over the M2a W grid with `--pf-draws 1` (legacy's uncapped pool OOMs otherwise).
+
+## 2026-10-21 — M3 done (60 rows, 12 jobs rc=0); **D1 = NO, final**
+
+`results/r2/runs/M3__r2.jsonl`; table `results/r2/tables/M3_r2.md`. Shape C=32 × D=1,250, W=2,000,
+seeds 1–5.
+
+| model | ma: med grads/ESS, seeds R̂ ≤ 1.01 | raw | raw + refresh |
+|---|---|---|---|
+| 8schools | 54.86, 5/5 | 64.24 (1.17×), 5/5 | 305.2 (5.6×), 3/5 |
+| gev | 141.5, 3/5 | 254.9 (1.80×), 4/5 | 804.0 (5.7×), 2/5 |
+| logit_1000x25 | 77.33, 5/5 | 80.12 (1.04×), 5/5 | 636.4 (8.2×), 1/5 |
+| radon_noncentered | 297.2, 5/5 | 324.2 (1.09×), 5/5 | 10,750 (36×), 1/5; R̂ up to 1.478, b² up to 0.042 |
+
+**D1 (c):** raw ≤ 1.15× ma on every model. It fails on 8schools (1.17) and gev (1.80). The R̂ counts
+are not lower (5/5, 4 vs 3, 5/5, 5/5), so that half holds. D1 fails (b) and (c), so **D1 = NO,
+`iterate` stays `ma`**.
+
+**The refresh at R2 is harmful on every model:** 5.6–36× the cost per ESS, and lost convergence
+(radon R̂ 1.37–1.48 on 3 seeds). This reinforces D3 = OFF.
+
+**GEV divergences (G3 input).** Sampling divs/1k for the default `ma` arm are 1.1 / 0.425 / 1.18 /
+0.525 / 1.0, all above G3's 0.10 ceiling (the run-1 shipped maximum). raw seed 5 has 14.7/1k.
+G3 is informational only (A1.3); the M3g step adds per-variable mean shifts in sd units and z.

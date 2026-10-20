@@ -1,6 +1,6 @@
 # STATUS — run 2 (live)
 
-**Current step:** M3 (R2 matrix) running → M5-cpu → M4 (chained). M2b done; D3 = recommend OFF.
+**Current step:** M5-cpu running → M4 → M4x (owner) → M3g (GEV mean shift), chained. D1 = NO, D2 = NO, D3 = OFF.
 `results/r2/drivers/run_step.sh M1 results/r2/drivers/M1.cmds`, logs `~/pf-runs/r2-logs/M1/`.
 
 **Done:** R2-WP0..WP4 merged into `pf-r2` (WP1 `07575bc`, WP2 `62c7620`, WP3 `353c02f`, WP4 `25d2618`).
