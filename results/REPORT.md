@@ -1,6 +1,6 @@
 # pf-r1 — external review implementation run: REPORT
 
-Branch `pf-r1` (and the merged measurement tree `pf-r1-int`). Nothing is pushed; `main` is untouched at `ecd9ba1`. Drafted while tasks finish; sections marked PENDING name what they are waiting on.
+Branch `pf-r1` (measurement tree `pf-r1-int` for four row files, see §8). Nothing is pushed; `main` is untouched at `ecd9ba1`. Suite: **125 passed in 169.28 s** forced CPU. Items still open are listed in §7 with the specific missing measurement named; nothing in §§2–6 is awaiting a run except where a cell says so.
 
 ## 1. What was run
 
@@ -197,6 +197,9 @@ See §6b T5 — the two user-selectable warmup outputs (position stack, progress
 2. **Nested R̂ is not a convergence gate in R1.** It reads 1.0040 on a cell with b² 0.4100. Measured reason: it is blind to bias shared by all chains (all-chains +1 sd reads 1.0004, identical to clean; every-other-superchain +1 sd reads 1.1135 at K=8). R1 Pathfinder deficit *is* common-mode, so G-R1 (b²) is the only gate; nested R̂ stays as a differential-drift/multimodality alarm. A proposed "precision ceiling at K" was refuted by the same measurement.
 3. Vendored ChEES adapter with `iterate="raw"|"ma"` (default `ma`, behaviour-preserving). The raw iterate reaches the plateau trajectory length by ~step 100 (logistic L@100: 25–42 vs 8.3) without worsening the frozen value at W=2,000 (26.0 vs 27.5); `t0=π/2` adds nothing. **It is not a speed win:** isolating the iterate makes warmup ~8% slower on GPU (the 2.1× sometimes quoted for it is the metric change, not the iterate) — see §6b/T2.
 4. **Merged-tree rule.** `wp/wp1` + `wp/wp2` alone crashed every run (`WarmupInfo` vs `num_integration_steps`) while each branch was green alone. Since then, accept/kill decisions are re-verified on `pf-r1-int`.
+5. **The Pathfinder pool is capped by a dimension-aware default, `max(4C, 4d²)`** (`default_pool_cap`, §7 item 6a) — after this run first proposed `4C` and measurement rejected it. `pf_pool_cap=0` restores the historical uncapped pool. Rationale in both directions is measured: uncapped is a hard OOM at C=1,024/d=175, and `4C` at C=32/d=175 yields a rank-deficient metric (b² 2.349, R̂ 1.212). The default is **provisional** pending the three-arm A/B.
+6. **`stack_positions` stays off by default and the metric refresh pays it.** Measured on an exclusive card: stacking warmup positions costs +3.3 % (8 Schools), +0.3 % (logistic) and **+64.2 %** (GEV) of warmup — see §6b/T5b. This is the price of WP4's phase-A draws, and one more reason the refresh is an accuracy rescue rather than an efficiency measure.
+7. **`tools/r1_bias.py` now records ESS.** It wrote null ESS columns in every row, so no R1/R2 row could support an efficiency claim or be compared with T2. Same helper and formula as `tools/wp1_rebaseline.py`, so the two are directly comparable.
 
 ## 5. Gates
 
