@@ -89,6 +89,11 @@ def main():
         "model": a.model, "chains": a.chains, "warmup": a.warmup, "reps": a.reps,
         "git_sha": common.git_sha(), "branch": common.branch(), "device": str(jax.devices()[0]),
         "peak_mem_bytes": common.peak_mem_bytes(),
+        # A5: a timing taken while another process holds the card is void, and this tool writes its
+        # own row dict rather than going through new_row, so the field had to be added by hand --
+        # without it a contended cell looks identical to a clean one (two cells here were).
+        "gpu_other_procs": common.gpu_other_procs(),
+        "timing_void": bool(common.gpu_other_procs()),
         "frozen_eps": round(float(jnp.asarray(pr["step_size"]).reshape(-1)[0]), 6),
         "total_leapfrog_per_chain": total_steps,
         "t_warmup_s": round(t_default, 2),
