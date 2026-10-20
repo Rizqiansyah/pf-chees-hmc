@@ -27,10 +27,18 @@ class WarmupInfo(NamedTuple):
         reproduction reads. harmonic_acceptance is the quantity ChEES adapts
         the step size on (harmonic mean over non-divergent chains), not the
         arithmetic mean the progress bar used to show.
+    positions
+        The stacked warmup positions, a dict keyed by variable with each leaf
+        (steps, C, ...), or None. With stop_rule=None this is the full history;
+        when a stop rule fired it holds only the final block. Added by WP4 so
+        the two-phase metric refresh can build its ensemble from phase-A draws
+        without re-running the warmup. Additive field with a default: consumers
+        that only read .info / .trace are unaffected.
     """
 
     info: Any
     trace: Any
+    positions: Any = None
 
 
 __all__ = ["chees_warmup_with_progress", "chees_harmonic_acceptance", "block_max_rhat", "WarmupInfo"]
@@ -353,4 +361,4 @@ def chees_warmup_with_progress(
     # as `chees_info`, which sample() currently does not read -- so the added
     # trace costs nothing downstream, and a future caller can read the whole
     # warmup curve (step, eps, T, harmonic acceptance) without re-running.
-    return (last_states, parameters), WarmupInfo(info=warm_info, trace=trace_hist)
+    return (last_states, parameters), WarmupInfo(info=warm_info, trace=trace_hist, positions=pos_hist)
