@@ -42,19 +42,44 @@ def _recorded_pool_sizes(monkeypatch):
     return seen
 
 
-def test_pool_cap_bounds_the_pool_and_default_is_uncapped(monkeypatch):
-    model = _tiny_model()
+def test_default_pool_is_dimension_aware_not_uncapped(monkeypatch):
+    """The default cap changed on purpose (2026-10-20): the pool used to be chains*draws.
+
+    Both bounds are measured, not theorised: the uncapped production pool cannot be materialised on
+    a 6 GB card at C=1,024/d=175 (5,734,400,000 B refused), and a 4C-sized pool at C=32/d=175 gives a
+    rank-deficient covariance (b2 2.34860 vs floor 0.07689, R-hat 1.2121). So the default is
+    max(4C, 4d^2) and `pf_pool_cap=0` is the escape hatch back to the historical pool.
+    """
+    model = _tiny_model()                      # d = 4
     s = PfCheesHMC(model, seed=3)
 
     seen = _recorded_pool_sizes(monkeypatch)
     s._run_pathfinder(chains=8, draws=500, seed=3)
-    assert seen == [8 * 500], f"default pool changed: {seen}"
+    assert seen == [max(4 * 8, 4 * 4 * 4)], f"default pool is not max(4C, 4d^2): {seen}"
 
     seen.clear()
-    pf_samples, imm = s._run_pathfinder(chains=8, draws=500, seed=3,
-                                        pf_pool_cap=4 * 8)
-    assert seen == [32], f"pool not capped to 4C: {seen}"
+    s._run_pathfinder(chains=8, draws=500, seed=3, pf_pool_cap=0)
+    assert seen == [8 * 500], f"pf_pool_cap=0 must give the historical uncapped pool: {seen}"
+
+    seen.clear()
+    pf_samples, imm = s._run_pathfinder(chains=8, draws=500, seed=3, pf_pool_cap=4 * 8)
+    assert seen == [32], f"pool not capped to the requested 4C: {seen}"
     assert pf_samples["x"].shape == (8, 4)
+
+
+def test_default_pool_cap_function_bounds_both_ways():
+    from pfcheeshmc.sampler import default_pool_cap
+
+    # metric-limited: at C=32, d=175 the cap must stay near the historical 128,000 rows, otherwise
+    # the covariance estimate loses rank (the measured radon failure above).
+    assert default_pool_cap(32, 175) == 4 * 175 * 175 == 122_500
+    assert abs(122_500 - 32 * 4000) <= 0.05 * (32 * 4000), "R2 regime changed size"
+    # chain-limited: a low-d problem still wants ~4C starts.
+    assert default_pool_cap(1024, 8) == 4 * 1024
+    # hard bound: the pool operand must fit a 6 GB card at the worst shape here.
+    assert default_pool_cap(1024, 175) * 175 * 8 < 6 * 2**30
+    with pytest.raises(ValueError, match="chains>=1"):
+        default_pool_cap(0, 4)
 
 
 def test_pool_cap_below_chains_raises(monkeypatch):

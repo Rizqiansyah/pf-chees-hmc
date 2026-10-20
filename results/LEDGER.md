@@ -998,3 +998,43 @@ which is a different compiled region whose scheduling does not fuse as well when
 **mechanism NOT ESTABLISHED**, and the numbers are single-seed, so the ratio is reported and not explained.
 Practical reading stands either way: stacking warmup positions is a real cost (5–65 % of warmup), which is why
 it is opt-in and why WP4's refresh pays it.
+
+---
+
+## 2026-10-20 14:45 — `pf_pool_cap` default: `4C` is wrong, and the fix has a second open question
+
+The R2 A/B decided the question my own handoff had left open, and answered it against my recommendation.
+
+| C=32 × D=1,250, W=2,000, `pf_draws=4,000`, covariance + `raw`, seed 1 | b² | floor | split R̂ | grads/chain | peak |
+|---|---|---|---|---|---|
+| radon NC, uncapped pool (128,000 rows) | 0.00064 | 0.00271 | 1.0061 | 41,946 | 1,248 MiB |
+| radon NC, **capped at 4C = 128 rows** | **2.34860** | 0.07689 | **1.2121** | 28,788 | 653 MiB |
+
+A 128-row pool cannot carry a 175-dimensional covariance. `g_r1` reads it as a **fail** (2.349 > 3 × 0.0769),
+and R̂ 1.2121 says the chains did not agree — this is a rank-deficient metric, not a slower one. So the
+`4C` rule that is verdict-neutral at C=1,024 (where 4C = 4,096) is a **correctness failure at C=32**. My
+earlier "default the cap on" recommendation was based on the C=1,024 cells alone and is withdrawn.
+
+Both bounds are now in the code, and `default_pool_cap(chains, d) = max(4C, 4d²)` is the default:
+
+| shape | historical pool | new default | pool bytes | verdict |
+|---|---|---|---|---|
+| radon, C=1,024 | 4,096,000 rows | 122,500 | 171 MB (was 5.73 GB, OOM) | fixes the hard failure |
+| radon, C=32 | 128,000 rows | 122,500 | 171 MB | **unchanged in substance** — verified by spy: 122,500 requested |
+| 8 Schools, C=32 | 128,000 rows | **400** | 32 KB | **changed, and not yet shown to be harmless** |
+| 8 Schools, C=1,024 | 4,096,000 rows | 4,096 | 328 KB | unchanged vs the measured capped cell |
+
+Verified: `d` is computed from the real per-chain position shapes — radon reports **d = 175** and 8 Schools
+**d = 10** from the returned metric's own shape, so the formula is keyed on the true dimension. My first
+version dropped a leading axis and read a d-vector as a scalar (under-sizing the pool by ~d); the test
+caught it — `expected 64, got 32`.
+
+**Open, and it is a real risk:** for small `d` the new default is *smaller* than the historical pool
+(8 Schools at C=32: 400 rows instead of 128,000), and nothing yet measured shows the resulting covariance
+is as good. The principled fix is to cap only what would not fit — a byte budget floored at `max(4C, 4d²)` —
+but the budget value is itself a tuning choice (512 MiB vs 1 GiB changes whether logistic's 819 MB operand
+fits, and logistic OOMed uncapped at exactly that size). So a third arm, `int:r2_default`, is queued to
+measure the new default against both historical arms on all four models **with ESS** before the default is
+finalised. Until those rows land, the default in `pf-r1` is provisional and this entry is the note saying so.
+Tests: `tests/test_wp5_capacity.py` 10 passed (the old "default is uncapped" contract replaced explicitly,
+not silently).

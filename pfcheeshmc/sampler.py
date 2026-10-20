@@ -54,6 +54,30 @@ class _SampledInfo(NamedTuple):
     num_integration_steps: Any
     energy: Any
 
+def default_pool_cap(chains, d):
+    """Row count for the Pathfinder start/metric pool when the caller does not name one.
+
+    One multiple of `chains` cannot size this pool, because it feeds two consumers with different
+    needs, and both failure modes are measured:
+
+    * Too many rows is a hard failure. The pool is materialised as one operand: 4,096,000 x 175 x 8 B
+      = 5,734,400,000 B, exactly the allocation XLA refuses on a 6 GB card at C=1,024 with the
+      production 4,000-draw pool (`results/runs/T1__prodpool.jsonl`: it fits at d=8, not at d=25).
+    * Too few rows is a correctness failure. The same pool is the sample the Monte-Carlo covariance is
+      estimated from, so rows must stay large relative to d^2. Capping radon (d=175) at 4C=128 rows at
+      C=32 read b2 2.34860 against a 0.07689 floor with split R-hat 1.2121 -- a rank-deficient metric,
+      not merely a slower one (`results/runs/T1__r2_poolcap.jsonl`).
+
+    `max(4C, 4d^2)` closes both without touching the regime that already works: at C=32, d=175 it is
+    122,500 rows, essentially the historical 128,000, while at C=1,024, d=175 it cuts the pool from
+    4.1M rows (5.73 GB) to 122,500 (43 MB).
+    """
+    c, dd = int(chains), int(d)
+    if c < 1 or dd < 1:
+        raise ValueError(f"default_pool_cap needs chains>=1 and d>=1, got chains={c} d={dd}")
+    return max(4 * c, 4 * dd * dd)
+
+
 def _stratified_pool_idx(logp_subset, subset_idx, n_pick):
     """Equally spaced ranks by log-density, chosen from a scored subset of the draw pool.
 
@@ -464,10 +488,10 @@ class PfCheesHMC:
             raise ValueError(f"pm_chains must be in [1, chains={chains}], got {pm_chains}")
 
         # WP5: cap on the PF start pool (chains*draws rows). At C=1,024 with the default
-        # draws=4,000 the pool is 4.1M rows -- ~5.7 GB at d=175 -- and it feeds both the
-        # covariance estimate and the start picks; 4C candidates serve both. None (default)
-        # keeps the historical uncapped pool, so existing behaviour is untouched unless
-        # a caller opts in.
+        # draws=4,000 the pool is 4.1M rows -- 5.73 GB at d=175 -- and it feeds both the covariance
+        # estimate and the start picks. None (the default) now means
+        # default_pool_cap(chains, d) = max(4C, 4d^2); 0 is the historical uncapped pool; an integer
+        # pins the row count.
         pf_pool_cap = kwargs.get("pf_pool_cap", None)
         # WP5: block size for the vmapped log-density scorings below (peak memory is
         # O(block), not O(pool or chains)).
@@ -543,16 +567,29 @@ class PfCheesHMC:
             logdensity_fn=self.ld_fn,
         )
 
-        # 4) Draw the start pool. Historically chains*draws rows (default draws=4,000): at
-        # C=1,024 that is 4.1M rows, ~5.7 GB at d=175 -- the R1 OOM. `pf_pool_cap` bounds it
-        # (plan WP5: ~4C serves both the covariance estimate and the start picks). Default
-        # None keeps the uncapped pool, i.e. the historical behaviour.
+        # 4) Draw the start pool, bounded by `pf_pool_cap` rows (see default_pool_cap for why the
+        # default is dimension-aware rather than a multiple of `chains`). pf_pool_cap=0 is the
+        # historical uncapped pool; an explicit integer pins it.
+        d_flat = 0
+        for n in self.rvs:
+            k = 1
+            # x0_pf[n] is ONE chain's position, so every axis is a coordinate: dropping a leading
+            # axis here would read a d-vector as a scalar and under-size the pool by ~d.
+            for s in jnp.asarray(x0_pf[n]).shape:
+                k *= int(s)
+            d_flat += k
+        cap = pf_pool_cap
+        if cap is not None:
+            cap = int(cap)
+            if cap == 0:
+                cap = None
+            elif cap < chains:
+                raise ValueError(f"pf_pool_cap={cap} must be >= chains={chains} (or 0 for uncapped)")
+        else:
+            cap = default_pool_cap(chains, d_flat)
         total = chains * draws
-        if pf_pool_cap is not None:
-            total = min(total, int(pf_pool_cap))
-            if total < chains:
-                raise ValueError(
-                    f"pf_pool_cap={int(pf_pool_cap)} must be >= chains={chains}")
+        if cap is not None:
+            total = min(total, cap)
         samples_flat, _ = bj.vi.pathfinder.sample(key_samp, pf_state, total)
         # samples_flat is the whole pool in flat (total, ...) order; the chunk axis is just
         # how Pathfinder emitted the draws, so any row may seed any chain. (The old code
