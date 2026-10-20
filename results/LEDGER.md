@@ -611,3 +611,17 @@ and a fresh foreground run measured **122 passed in 178.77 s**. So the file's co
 being described — a stale or mis-attributed artifact that *looked* like confirmation. The rule that survives
 both mistakes is narrower than "trust the file": **re-derive the count from the current tree (collect-only plus
 a run) before quoting it**, because a passing-looking number from the wrong tree is worse than no number.
+
+### Suite-count reconciliation (final)
+
+| run | task | result | tests accounted for |
+|---|---|---|---|
+| after `wp/wp3` merge | `b85994c75` | 90 passed in 128.60 s | 90 |
+| after `wp8` + `wp9docs` | `b00e787ec` | 91 passed in 134.37 s | +1 (`test_statistical_correctness.py`) |
+| all merges, before the seam fix | `bda318616` | 1 failed, 121 passed in 175.87 s | 122 |
+| after the `stack_positions` fix | foreground | **122 passed in 178.77 s** | 122 |
+| `--collect-only` on the current tree | — | 122 tests collected | 122 |
+
+Three independent counts agree on **122**: the collection list, the pre-fix run (121 + 1 failure), and the
+post-fix run. That is what makes the stray "124" definitively not from this tree, and the reason the corrected
+number stands in `REPORT.md` §7, `STATUS.md` and the two ledger lines above.
