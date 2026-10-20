@@ -1150,3 +1150,32 @@ Operating rules adopted for the rest of this box session:
 * `timeout` goes **inside** `tools/gpu_run.sh`, never outside;
 * prefer a driver that recomputes its own missing-cell list from the row file, so a kill costs only the cell
   in flight — which is how the A/B resumed at 4/12 instead of 0/12.
+
+---
+
+## 2026-10-20 15:50 — the pool default is settled: 12/12 A/B cells, and `4C` loses on efficiency by 42×
+
+`T1__r2_poolcap3.jsonl`, all 12 cells on identical sampler code (checked with `git diff -- pfcheeshmc/` between
+the row `git_sha`s), C=32 × D=1,250, W=2,000, `pf_draws=4,000`, covariance + `raw`, seed 1, ESS now recorded by
+the harness:
+
+| gradients per ESS (worst var) | uncapped | `4C`=128 rows | default `max(4C,4d²)` |
+|---|---|---|---|
+| 8 Schools | 57.5 | 57.3 | 54.7 |
+| GEV | 166.1 | 141.7 | 151.6 |
+| logistic | 81.0 | 97.0 | 79.9 |
+| **radon NC** | 300.2 | **12,733.2** | **300.7** |
+
+* **Default ≡ uncapped.** radon 300.7 vs 300.2 gradients/ESS, 53 vs 53 ESS/s, b² 0.0005 both, peak 1,237 vs
+  1,248 MiB. The risk I raised — 8 Schools dropping from 128,000 to 400 rows — measures the same or better
+  (54.7 vs 57.5, R̂ 1.0012 vs 1.0010). So the dimension-aware default ships, and `pf_pool_cap=0` stays the
+  documented way back.
+* **`4C` now fails on efficiency as well as bias**: 42× the gradients per ESS on radon, **1 ESS/s**, and
+  **tail ESS 188** — under the project's own 400 bar, i.e. the run's G-B gate would have caught it even if the
+  bias gate had not.
+* **Single seed per cell**, stated rather than hidden: the radon margin is orders of magnitude beyond the seed
+  spread measured in §3e, but the ±5 differences among the small-`d` models are inside it and are not a ranking.
+
+**Queue note:** the A/B finished in 10 minutes once it had the card exclusively, after ~50 minutes of four
+drivers contending and two false completion events killing drivers. The serial-driver rule in the 15:40 entry is
+what made the difference, along with the plan being recomputed from the row file (it resumed at 4/12, not 0/12).

@@ -142,9 +142,10 @@ Also closed: five row files cited by the report's T-tables (`T1__r1_sweep`, `T3_
 
 **Still open, in order:**
 
-1. **`pf_pool_cap`'s dimension-aware default is provisional.** `max(4C, 4d²)` is in place (plain `4C` was
-   measured to give a rank-deficient radon metric: b² 2.349, R̂ 1.212), but the three-arm A/B has to confirm
-   that shrinking the pool on low-`d` models costs nothing.
+1. **`pf_pool_cap`'s dimension-aware default `max(4C, 4d²)` is settled** (REPORT §3i, 12 rows). Neutral
+   against the uncapped pool on all four models at C=32 (radon 300.7 vs 300.2 grad/ESS, 53 vs 53 ESS/s), and it
+   removes the C=1,024 OOM. Plain `4C` is rejected: 42× gradients/ESS on radon, tail ESS 188, R̂ 1.195.
+   Remaining gap: one seed per cell.
 2. **T5's kernel-vs-adaptation quarter is bounded, not separated** — warmup runs at 0.41–0.46× sampling's
    cost per gradient, so the planned subtraction goes negative. Settling it needs a `sample_stats` ablation.
 3. **GEV's diverging coordinate.** Start dispersion is measured (`ξ_interval__` 0.156×, and 8 Schools' `mu` is
