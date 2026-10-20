@@ -14,7 +14,7 @@ contract items. An item that is silently absent counts as a run failure (plan A4
 | A7 | results/r2/ skeleton + env.json | lead | DONE |
 | WP0.1 | R2-WP0 item 1: A3 commands | lead | DONE 934e576 |
 | WP0.2 | R2-WP0 item 2: results/r2 skeleton + env.json | lead | DONE |
-| WP0.3 | R2-WP0 item 3: baseline suite on pf-r2 before merges | lead | RUNNING (re-run after handover) |
+| WP0.3 | R2-WP0 item 3: baseline suite on pf-r2 before merges | lead | DONE 4e07b45: "125 passed in 165.79s (0:02:45)" |
 | WP0.4 | R2-WP0 item 4: quarantine tools/legacy/t3_cpu.py | lead | DONE |
 | WP1.1 | R2-WP1 change VERBATIM: whitened lambda_max re-seed + clip + new signature + attrs | r2/wp1 | PENDING |
 | WP1.2 | R2-WP1 test 1: unit invariance (rescale coord 0 by 10, coord 3 by 0.01 -> T0 unchanged 1e-9) | r2/wp1 | PENDING |

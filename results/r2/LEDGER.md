@@ -40,3 +40,5 @@ in `results/r2/drivers/`. Every plan rule is otherwise unchanged. The R2-WP1 tas
 is carried forward and checked against the plan, not discarded. R2-WP3 is split into 3a (new files:
 `tools/t3_cpu_nuts.py`, `summarise_rows.py smallest-pass`, `tests/test_t3_cpu.py`) and 3b (`r1_bias.py`
 passthrough/pool-seeds, after R2-WP2 merges) so the file-disjoint half starts in wave 1.
+
+Baseline suite on `pf-r2` at `4e07b45` (forced CPU, A3 command), copied from the command's own output: `125 passed in 165.79s (0:02:45)`.
