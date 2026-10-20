@@ -118,3 +118,32 @@ carries it as an open question for the owner. On these rows, the closed form cos
 
 Radon at R1 W=50 fails on both arms (b² 0.14–2.07 per seed; pooled b² 1.0 (mc) and 2.0 (closed)
 against pooled floors 0.0017). That is a real bias, not noise; M2a's W grid is the next test.
+
+## 2026-10-21 — M2a done (160 rows, 8 jobs rc=0); provisional **D1 = NO**; M2c not triggered; IT = raw
+
+`results/r2/runs/M2a__r1.jsonl`, code trees `eee10ae`. Default path otherwise (`imm_source=mc`,
+covariance, `pf_draws=4000`). Smallest W with `g_r1 == pass` on all of seeds 1–3
+(`tools/summarise_rows.py smallest-pass`):
+
+| model | ma: W / med grads per chain | raw: W / med grads per chain |
+|---|---|---|
+| 8schools | 25 / 540 | 25 / 861 |
+| gev | 25 / 270 | 25 / 629 |
+| logit_1000x25 | 50 / 319 | 25 / 297 |
+| radon_noncentered | **300 / 1,770** | **100 / 2,037** |
+
+- **D1 (a)** raw ≤ ma on 4/4 (25≤25, 25≤25, 25≤50, 100≤300), strictly smaller on 2 (logit, radon) → **pass**.
+- **D1 (b)** raw's grads at its smallest W ≤ ma's at its own, needed on ≥ 3/4. Only logit holds
+  (297 ≤ 319); 8schools 861 > 540, gev 629 > 270, radon 2,037 > 1,770. So 1/4 → **FAIL**.
+- D1 therefore cannot flip whatever M3 shows. **D1 = NO; the `iterate` default stays `ma`.** M3 still
+  runs, for R2-T3 and G3.
+- **Radon is gateable at R1 without the refresh**: ma passes all three seeds at W=300, and raw from
+  W=100. This replaces A2's "radon cannot be gated" and run-1's "the refresh is radon's only rescue".
+  The M2c trigger (no passing W ≤ 300) is therefore **not met: M2c is SKIPPED**.
+- **IT for M2b = raw**: it has the smaller smallest-passing W on 2 models (logit, radon) and ma on 0.
+- raw grows L 2–4× faster (radon W=100: L 38 vs 8). It buys passes at smaller W at a higher
+  gradient cost per chain.
+
+Lead incident: M2a finished at 00:25, but my completion watcher matched its own command
+line in `pgrep -f`, so it never fired, and the GPU sat idle until 07:22. Fixed by waiting on driver
+log lines instead. M2b → M3 → M5 now run as one chain.

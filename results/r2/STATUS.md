@@ -1,6 +1,6 @@
 # STATUS — run 2 (live)
 
-**Current step:** M2a (R1 iterate sweep, 120 cells) running; M1 done, D2 = NO (LEDGER).
+**Current step:** M2b (IT=raw) → M3 → M5-cpu chained; then M4. M2a done (D1 provisional NO), M2c skipped.
 `results/r2/drivers/run_step.sh M1 results/r2/drivers/M1.cmds`, logs `~/pf-runs/r2-logs/M1/`.
 
 **Done:** R2-WP0..WP4 merged into `pf-r2` (WP1 `07575bc`, WP2 `62c7620`, WP3 `353c02f`, WP4 `25d2618`).

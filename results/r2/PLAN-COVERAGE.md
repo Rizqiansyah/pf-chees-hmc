@@ -50,10 +50,10 @@ contract items. An item that is silently absent counts as a run failure (plan A4
 | WP4.5 | R2-WP4 item 5: confirm .gitignore (, ref clean) | lead | DONE |
 | M1 | M1 closed form vs MC covariance (R2 3 seeds, R1 +pool-seeds, radon memory) | steady-tier runner | DONE (eee10ae trees; M1__{r2,r1,mem}.jsonl, 18 jobs rc=0) |
 | D2 | D2 rule evaluation (a)-(d) recorded row by row | lead | DONE: NO (clause b2 fails on radon 2 vs 3; LEDGER) |
-| M2a | M2a R1 iterate sweep: 4 models x 2 arms x W{25..300} x 3 seeds = 120 cells | steady-tier runner | RUNNING |
-| M2b | M2b R1 refresh with fixed re-seed (diag / diag_norese / fisher) | steady-tier runner | PENDING |
+| M2a | M2a R1 iterate sweep: 4 models x 2 arms x W{25..300} x 3 seeds = 120 cells | steady-tier runner | DONE (M2a__r1.jsonl 160 rows; LEDGER) |
+| M2b | M2b R1 refresh with fixed re-seed (diag / diag_norese / fisher) | steady-tier runner | RUNNING (IT=raw) |
 | D3 | D3 recommendation only (default stays off) | lead | PENDING |
-| M2c | M2c start scaling, conditional on radon having no passing W<=300 | steady-tier runner | CONDITIONAL |
+| M2c | M2c start scaling, conditional on radon having no passing W<=300 | steady-tier runner | SKIPPED (trigger not met: radon passes W=300 ma, W=100 raw) |
 | M3 | M3 R2 matrix 3 arms x 5 seeds = 60 cells + mean shift in sd units + G3 on GEV | steady-tier runner | PENDING |
 | D1 | D1 rule evaluation (a)-(c) | lead | PENDING |
 | M4 | M4 GPU warm timing at R1 operating point (repeat 2, rep-1 rows; + C=2048 scaling) | steady-tier runner | PENDING |
