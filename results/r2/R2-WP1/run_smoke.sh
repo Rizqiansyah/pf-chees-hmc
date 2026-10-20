@@ -17,10 +17,12 @@ run() {  # model tag extra-flags...
     --arm "r2wp1_${tag}" --wp R2-WP1 --orientation covariance --iterate ma \
     --out "$OUT/${model}__${tag}.jsonl" "$@" > "$OUT/${model}__${tag}.log" 2>&1
 }
-for model in 8schools logit_1000x25; do
-  run "$model" reseed_on  --metric-refresh sample_diag --metric-refresh-reseed &
-  run "$model" reseed_off --metric-refresh sample_diag --no-metric-refresh-reseed &
-  run "$model" norefresh  --metric-refresh none &
-done
+# 8schools: the three arms run in parallel. logit_1000x25 runs them one after another (CPU).
+run 8schools reseed_on  --metric-refresh sample_diag --metric-refresh-reseed &
+run 8schools reseed_off --metric-refresh sample_diag --no-metric-refresh-reseed &
+run 8schools norefresh  --metric-refresh none &
 wait
+run logit_1000x25 reseed_on  --metric-refresh sample_diag --metric-refresh-reseed
+run logit_1000x25 reseed_off --metric-refresh sample_diag --no-metric-refresh-reseed
+run logit_1000x25 norefresh  --metric-refresh none
 echo done

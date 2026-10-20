@@ -46,8 +46,11 @@ def _install():
 
 
 if __name__ == "__main__":
-    _install()
+    # r1_bias must be imported BEFORE pfcheeshmc/pytensor: it sets PYTENSOR_FLAGS (BLAS link flags)
+    # at import, and a model with a matrix product (logit_1000x25) fails to compile without them.
     import r1_bias
+
+    _install()
 
     sys.argv[0] = os.path.join(TOOLS, "r1_bias.py")
     r1_bias.main()

@@ -152,6 +152,26 @@ def test_reseed_tracks_pool_correlation_against_a_diagonal_metric():
     assert rel < 1e-8, f"T0 {t0:.12g} != (pi/2)sqrt(1+|rho|) {want:.12g} (rho_hat {rho_hat:.6f}, rel {rel:.3e})"
 
 
+def test_reseed_matches_generalized_eigenproblem_for_a_dense_unrelated_metric():
+    """Beyond the plan's tests 1-3 (B = S, B = diag(S)): a dense B that is neither.
+
+    lambda_max(L^-1 S L^-T) is the largest generalized eigenvalue of S v = lambda B v, so SciPy's
+    ``eigh(S, B)`` is an independent route to the same number.
+    """
+    from scipy.linalg import eigh
+
+    rng = np.random.default_rng(17)
+    d = 7
+    a = rng.normal(size=(d, d))
+    b = a @ a.T + 0.5 * np.eye(d)                                   # dense SPD metric, not S
+    draws = np.random.default_rng(18).normal(size=(5000, d)) @ rng.normal(size=(d, d))
+    s_mat = np.cov(draws, rowvar=False, ddof=1)
+    want = np.pi / 2.0 * np.sqrt(eigh(s_mat, b, eigvals_only=True).max())
+    got = EM.reseed_trajectory_length(jnp.asarray(b, dtype=jnp.float64),
+                                      jnp.asarray(draws, dtype=jnp.float64))
+    assert abs(got - want) / want < 1e-9, f"T0 {got:.12g} != generalized-eigh {want:.12g}"
+
+
 def test_reseed_rejects_non_pd():
     """R2-WP1 test 4 (kept): a non-PD metric must raise, not return NaN or a negative sqrt."""
     draws = jnp.asarray(np.random.default_rng(5).normal(size=(50, 2)), dtype=jnp.float64)
