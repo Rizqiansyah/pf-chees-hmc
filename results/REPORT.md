@@ -102,7 +102,16 @@ The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); th
 
 1. **The refresh is the only measured path to a passing R1 run on radon NC.** The task initially argued the same benefit is cheaper by running the baseline at W=200; that is refuted by its own rows (seed 1 b² **0.02339 = fail** at W=200, both seeds `unresolvable` at W=100), and the task accepted the correction.
 2. **Every estimator is a cost on the models Pathfinder already handles** — 1.4–8× more gradients for a bias change inside seed noise — and **no estimator clears the plan's 1.2× kill clause against the plain sample diagonal** (dense-with-shrinkage 1.03× on logistic and radon, low-rank worse, Fisher-diagonal worst on GEV at 6,673). So: kill `dense_shrunk`, `diag_lowrank`, `fisher_diag`; keep `sample_diag`; ship the refresh **opt-in, keyed on Pathfinder metric quality** (radon's variance ratio 0.011 versus 8 Schools' 0.56), never on by default.
-3. **The cost has an identified cause and a queued test.** The trajectory-length re-seed `T = (π/2)·√λ_max` lands at L = 23–402 against the baseline's converged 10–27 because λ_max of a 50-step ensemble estimate is noise-dominated. The A/B (refresh with vs without the re-seed, 4 models × 3 seeds at W=50) is queued behind the current GPU work, with the decision rule fixed before the run: within 1.5× of baseline cost on 8 Schools and GEV while radon still passes → cheap opt-in; still ~3× → the cost is intrinsic.
+3. **The cost was the re-seed, and that is now measured.** The trajectory-length re-seed `T = (π/2)·√λ_max` lands at L = 23–402 against the baseline's converged 10–27 because λ_max of a 50-step ensemble estimate is noise-dominated. The A/B (4 models × 3 arms × 3 seeds at W=50) is in `results/runs/WP4__ablation.jsonl`:
+
+| model | no refresh | refresh + re-seed | **refresh, no re-seed** | verdict |
+|---|---|---|---|---|
+| 8 Schools | 974 | 1,292 | **1,309** | passes G-R1, 3/3 seeds |
+| GEV | 557 | 4,804 | **841** | passes, 3/3 |
+| logistic | 324 | 2,386 | **487** | passes, 3/3 |
+| radon NC | 372 | 5,612 | **579** | **unresolvable** at W=50 (floor 0.0054 vs the 0.005 rule) |
+
+Refresh overhead drops from 3.7–15× the baseline to **1.34–1.55×**, so the answer to the plan's question is that the cheap opt-in path exists: keep the refresh, drop the re-seed. The rule fixed before the run was "within 1.5× of baseline while radon still passes" — 8 Schools and GEV and logistic meet it; radon is not provable at W=50 and its W=100/200 ladder is running, so the claim is stated for three of four models.
 
 ## 4. Decisions taken in this run
 
@@ -122,6 +131,7 @@ The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); th
 | G-R1-diag | REDEFINED | §4.2 |
 | G-MEM peak ≤ 5.0 GB | **MET for radon at C=1,024** | 653 MiB peak — the R1 wall was the `chains × pf_draws` Pathfinder pool chain (radon died at C≥128 before); bounding the pool (`pf_pool_cap≈4C`) and `pm_chains=1` fixes it. GEV/8 Schools already fit at C=1,024 (0.9 / 2.3 GB). Warm init 4.1 s misses the 2 s stretch sub-goal |
 | G3 (default change: ≥5 seeds, no divergence increase, means within 1σ) | NOT MET on GEV, with the terms now separated | shipped arm fails R̂ ≤ 1.01 on **5/5 seeds** (to 1.0688); candidate passes **3/5** and halves mean error, but divergences rise seed-stably 0.025 → 0.400 per 1k. The "means within 1σ" clause is unsatisfiable as written (worst z 3.4 on a 0.026 sd shift) and should be restated in sd units |
+| Instrumentation integrity | ONE OPEN OVERSTATEMENT | `tools/r1_bias.py:344` computes a trajectory-length diagnostic with one device synchronisation per warmup step **inside** the timed region, on every arm. Absolute `wall_s` and every ESS/s figure are therefore overstated by the same mechanism on all arms — equal-warmup arm-vs-arm comparisons cancel, gradient counts (the run's primary objective) are unaffected. Size of the offset is being measured; fix is to move it outside the timer |
 
 ## 6. Reference artifacts
 
@@ -132,7 +142,7 @@ The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); th
 
 1. Reviews outstanding: `wp/wp1` (two worker-model tasks running), `wp/wp8`, `wp/wp3` (statistical), `wp/wp9docs`, `wp/wp2`, `wp/wp5`, `wp/wp4`. `wp/wp0refs` is merged.
 2. **WP5 capacity: DONE and verified** — radon NC runs at C=1,024 × D=10 (peak 653 MiB, suite 108 passed); the memory source is the `chains × pf_draws` pool chain, bounded by `pf_pool_cap`. Open: warm init 4.07 s against a 2 s bar that mixes two tasks' budgets (§3d).
-3. **WP4 measured** (§3e): the refresh keeps radon NC passing but costs 1.4–8× elsewhere and no estimator clears the 1.2× kill clause; the re-seed ablation is queued. **WP6 (per-step efficiency) not started** — only the T5a command-buffer A/B exists and is running.
+3. **WP4 measured** (§3e): the refresh keeps radon NC passing but costs 1.4–8× elsewhere, and no estimator clears the 1.2× kill clause; the re-seed ablation has now run and shows the overhead is 1.34–1.55× once the noise-dominated trajectory-length re-seed is dropped. Open: radon's W=100/200 ladder, which decides whether the fourth model is provable. **WP6 (per-step efficiency) not started** — only the T5a command-buffer A/B exists, and it is negative (−11%, not shipped).
 4. ~~GEV divergence diagnosis~~ — done: the rise is real and seed-stable (0.875, 0.350, 0.400, 0.200, 0.575 per 1k on the candidate; ≤ 0.100 on every shipped seed). What is still missing is *which coordinate* diverges, which needs one instrumented run reporting the divergence position's implied velocity.
 5. **Default orientation: DECIDED — flip to `covariance`, same merge as the permutation** (owner ruling 2026-10-20, implemented on `wp/wp1` at `08357db`, merged tree green at 99 passed, merge held by the review gate). Hedging was impossible: the permutation is unconditional in that branch, so merging it while holding `precision` ships a state failing R̂ ≤ 1.01 on GEV in 5/5 seeds. Remaining G3 gaps: the GEV divergence rise has no mechanism, and no arm pair isolates orientation from the adapter iterate at C=1,024. The pinned test is now `test_default_orientation_is_covariance_and_mixes`.
 

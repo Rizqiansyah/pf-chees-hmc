@@ -481,3 +481,26 @@ Cost of adding trajectory-length learning drops from **3.7-15x** the baseline to
 `tools/r1_bias.py:344` computes `frozen_L_nominal` by calling `integration_steps_fn(i)` once per warmup step in a Python loop, each with a `float(np.asarray(...))` device sync, and it runs **inside** the timed region (timer at :436, `wall_s` stamped at :499). At W=2,000 that is 2,000 synchronisations per cell, on every arm.
 
 Consequence: absolute `wall_s` and therefore ESS/s in the T-tables are overstated by the same mechanism on all arms — so equal-W arm-vs-arm comparisons are approximately fair (the inflation cancels) but absolute times and cross-W comparisons are not. Gradient counts, the run's primary objective, are unaffected. A direct measurement of the size of the effect is running; the fix is to move the nominal-L computation outside the timer.
+
+---
+
+## 2026-10-20 — gate defect: `g_r1` can label a catastrophic bias "unresolvable"
+
+The statistical-validity reviewer of `wp/wp3` flagged that `g_r1` returns `unresolvable` whenever `b2_floor > 0.005` **without consulting `b²`**. Recomputed over every delivered row carrying `b2_max` and `b2_floor` (307 rows, all checkouts): **6 cells change verdict**, all radon non-centered in `T1__r1_sweep.jsonl`.
+
+| arm | W | seed | b² | floor | shipped rule | correct rule |
+|---|---|---|---|---|---|---|
+| `int:shipped` | 100 | 1 | **63.23** | 0.00558 | unresolvable | **fail** |
+| `int:shipped` | 100 | 2 | **63.95** | 0.00604 | unresolvable | **fail** |
+| `int:shipped` | 200 | 1 | **12.09** | 0.00605 | unresolvable | **fail** |
+| `int:shipped` | 200 | 2 | **12.09** | 0.00711 | unresolvable | **fail** |
+| `int:covraw` | 100 | 1 | 0.428 | 0.00528 | unresolvable | **fail** |
+| `int:covraw` | 100 | 2 | 0.033 | 0.00506 | unresolvable | **fail** |
+
+Rule to ship: `unresolvable` only when the bias is *inside* its own noise band (`b² ≤ 3·floor` while `floor > 0.005`); a `b²` many multiples above the floor is a fail however coarse the floor is. Tally moves from 187 pass / 105 fail / 15 unresolvable to **187 / 111 / 9**.
+
+No headline conclusion changes — the corrected radon arm was already reported as failing, and WP4's radon cells (b² 0.008–0.014 against floors 0.0054–0.0060) stay genuinely unresolvable under both rules. The code fix waits for `wp/wp3`'s statistical review to land, since that review is judging this function. Script: `~/scratch/reclass_g_r1.py`.
+
+## 2026-10-20 — process error by the lead, reverted
+
+I merged `wp/wp8` into `pf-r1` believing its two A4 reviews were on file, on the strength of my own session summary rather than the directory. They had never been written — `results/reviews/` contained no `WP8-*`. The merge commit message therefore asserted evidence that did not exist, which is the same failure mode that already voided two task reports in this run. Reverted at `60302b2`; the merge and the revert both stay in history. Review coverage is now counted from disk, not from memory: wp0refs 2, wp1 4, wp2 1, wp3 1, wp4 0, wp5 0, wp8 0, wp9docs 0.
