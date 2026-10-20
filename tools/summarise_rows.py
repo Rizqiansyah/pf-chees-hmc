@@ -30,6 +30,11 @@ def main(path, want_cold=False, models=()):
     rows = [json.loads(l) for l in open(path) if l.strip()]
     voided = [r for r in rows if str(r.get("error") or "").startswith("VOID")]
     rows = [r for r in rows if not str(r.get("error") or "").startswith("VOID")]
+    pooled = [r for r in rows if _is_pooled(r)]
+    rows = [r for r in rows if not _is_pooled(r)]          # G-R1-pool: a diagnostic, not a seed
+    if pooled:
+        print(f"[audit] {len(pooled)} pooled row(s) excluded from the per-seed table "
+              "(G-R1-pool is a diagnostic; see `smallest-pass`)")
     if voided:
         print(f"[audit] {len(voided)} VOID row(s) excluded: "
               + ", ".join(f"{r['arm']}/{r['model']}/seed{r['seed']}/rep{r['rep']}" for r in voided))

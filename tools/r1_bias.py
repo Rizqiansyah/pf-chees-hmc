@@ -510,7 +510,12 @@ def check_effective(effective, want):
                              + "; ".join(bad))
 
 
-def run_cell(bl, model_name, args, W, seed, rep, cold):
+def run_cell(bl, model_name, args, W, seed, rep, cold, keep=None):
+    """One (model, arm, W, seed, rep) cell -> one row.
+
+    `keep` (a dict, set by --pool-seeds) receives {seed: (unconstrained draws, row)} for a cell that
+    scored; it holds the (C, D, leaves) float64 draws only, never the idata.
+    """
     from _common import banner, new_row, require_gpu_lock, stages, write_row
 
     if args.timed:
@@ -675,6 +680,60 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
           f"peak={row['peak_mem_bytes']} err={row['error']}", flush=True)
     if fatal is not None:
         raise fatal                      # after the row is on disk: the evidence is kept
+    if keep is not None and row["error"] is None:
+        keep[seed] = (unc, row)
+    return row
+
+
+def pool_seed_scores(unc_by_seed, ref, draws, nested_limit):
+    """G-R1-pool: concatenate the seeds' unconstrained draws along the chain axis, score ONCE.
+
+    `unc_by_seed` is {seed: {name: (chains, draws, leaves)}}. Returns (score_ensemble dict, S*C).
+    Nested R-hat is not computed: the chains of different seeds are not one superchain layout.
+    """
+    seeds = sorted(unc_by_seed)
+    pooled = {n: np.concatenate([unc_by_seed[s][n] for s in seeds], axis=0)
+              for n in sorted(unc_by_seed[seeds[0]])}
+    chains = int(next(iter(pooled.values())).shape[0])
+    return score_ensemble(pooled, ref, chains, draws, None, nested_limit), chains
+
+
+def run_pooled(model_name, args, W, rep, cold, kept):
+    """The extra `pooled: true`, `seed: "pooled"` row for one (model, arm, W, rep) cell.
+
+    G-R1-pool is a DIAGNOSTIC, never a gate: pooling S seeds divides the Monte-Carlo floor by about S,
+    which separates the method's bias from per-run MC noise (radon's measurement problem) but says
+    nothing about whether any single run passes. `smallest-pass` prints it beside the answer and
+    keeps it out of the every-seed test.
+    """
+    from _common import new_row, write_row
+
+    seeds = sorted(kept)
+    if len(seeds) < 2:
+        print(f"  [{model_name} {args.arm} W={W} rep={rep}] --pool-seeds: {len(seeds)} scored "
+              "seed(s), need >= 2; no pooled row", flush=True)
+        return None
+    names = sorted(kept[seeds[0]][0])
+    ref = load_reference(model_name, names, require_stats=not args.allow_collapsed_reference_stats)
+    sc, chains = pool_seed_scores({s: kept[s][0] for s in seeds}, ref, args.draws, args.nested_limit)
+    effs = [kept[s][1]["effective"] for s in seeds]
+    # the config the seeds share (the seed, stage seeds and frozen eps/L differ by construction)
+    common = None if any(e is None for e in effs) else {
+        k: v for k, v in effs[0].items() if all(k in e and e[k] == v for e in effs)}
+    kw = json.loads(kept[seeds[0]][1]["kwargs"])
+    kw["pooled_seeds"] = seeds
+    row = new_row(wp=args.wp, arm=args.arm, model=model_name, chains=chains,
+                  draws_per_chain=args.draws, warmup=W, seed="pooled", rep=rep, cold=cold,
+                  schema=SCHEMA_R2, cpu_contended=bool(args.cpu_contended),
+                  kwargs=json.dumps(kw, sort_keys=True))
+    verdict = g_r1(sc["b2_max"], sc["b2_floor"], chains * args.draws)
+    row.update(step=getattr(args, "step", None), pooled=True, pooled_seeds=seeds, effective=common,
+               d=sc["d"], b2_max=sc["b2_max"], b2_floor=sc["b2_floor"], b2_argmax=sc["b2_argmax"],
+               g_r1_pool=verdict)
+    write_row(args.out, row)
+    print(f"  [{model_name} {args.arm} W={W} POOLED seeds={seeds} rep={rep}] C={chains} "
+          f"b2_max={row['b2_max']} floor={row['b2_floor']} argmax={row['b2_argmax']} "
+          f"G-R1-pool={verdict} (diagnostic, NOT a gate)", flush=True)
     return row
 
 
@@ -762,6 +821,13 @@ def main():
     ap.add_argument("--no-metric-refresh-reseed", dest="metric_refresh_reseed",
                     action="store_const", const=False,
                     help="skip the trajectory-length re-seed on the metric swap (phase B starts at L=1)")
+    ap.add_argument("--pool-seeds", action="store_true",
+                    help="after the seeds of each (model, arm, W, rep) cell, concatenate their "
+                         "unconstrained draws along the chain axis, score once with chains=S*C, and "
+                         "write one extra row (pooled: true, seed: \"pooled\"). That row is "
+                         "G-R1-pool: a DIAGNOSTIC that separates the method's bias from per-run "
+                         "Monte-Carlo noise, never a gate -- summarise_rows.py keeps it out of the "
+                         "every-seed test. Per-seed draws are held in memory only with this flag.")
     ap.add_argument("--superchains", type=int, default=0, help="K (superchains); 0 = off")
     ap.add_argument("--nested-limit", type=float, default=1.01)
     ap.add_argument("--cpu-contended", action="store_true",
@@ -805,8 +871,12 @@ def main():
                 run_starts(bl, model_name, args, rep, cold)
                 continue
             for W in [int(w) for w in args.warmups.split(",")]:
+                kept = {} if args.pool_seeds else None
                 for seed in [int(s) for s in args.seeds.split(",")]:
-                    run_cell(bl, model_name, args, W, seed, rep, cold)
+                    run_cell(bl, model_name, args, W, seed, rep, cold, keep=kept)
+                if kept is not None:
+                    run_pooled(model_name, args, W, rep, cold, kept)
+                    kept.clear()
 
 
 if __name__ == "__main__":
