@@ -797,7 +797,7 @@ def run_starts(bl, model_name, args, rep, cold):
     return row
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", default="8schools,logit_1000x25")
     ap.add_argument("--chains", type=int, default=1024)
@@ -872,10 +872,20 @@ def main():
     ap.add_argument("--starts-only", action="store_true", help="score the Pathfinder starts, no sampling")
     ap.add_argument("--check-references-only", action="store_true",
                     help="run the WP0.2 load-time contract check on --models and exit (no sampling)")
-    args = ap.parse_args()
+    return ap
+
+
+def parse_args(argv=None):
+    ap = build_parser()
+    args = ap.parse_args(argv)
     args.superchains = args.superchains or None
     if args.metric_refresh_warmup is not None and args.metric_refresh == "none":
         ap.error("--metric-refresh-warmup needs --metric-refresh (there is no phase A without one)")
+    return args
+
+
+def main():
+    args = parse_args()
 
     if args.check_references_only:
         for model_name in [m.strip() for m in args.models.split(",")]:

@@ -1,10 +1,12 @@
-"""WP3 harness unit tests (CPU, no sampler, no reference files).
+"""WP3 harness unit tests (CPU, no reference files; the R2-WP3 block at the end runs the real sampler
+on a 2-D Gaussian).
 
 These pin the parts of tools/r1_bias.py that a wrong answer would silently corrupt: the bias
 statistic, its noise floor, the G-R1 verdict wording, the frozen-L reconstruction the legacy arm
 depends on, and the reference reader's tolerance of whatever container WP0.2 writes.
 """
 
+import json
 import os
 import sys
 import pathlib
@@ -407,3 +409,188 @@ def test_shape_contract_rejects_a_wrong_axis_order_instead_of_reshaping_it():
     assert "expected (chains=4, draws=3" in str(e.value)
     with pytest.raises(ValueError):
         rb.flatten_ref({"mu": np.zeros((4, 3)), "theta": np.zeros((5, 3))})
+
+
+# ---------------------------------------------------------------- R2-WP3: passthrough + pooled seeds
+
+def _tiny_model():
+    import pymc as pm
+
+    with pm.Model() as m:
+        pm.Normal("x", 0.0, 1.0, size=2)
+    return m
+
+
+@pytest.fixture
+def tiny_harness(monkeypatch):
+    """r1_bias pointed at a 2-D Gaussian and a synthetic reference: a real sampler run on CPU, no files."""
+    ref = np.random.default_rng(0).normal(size=(800, 2))
+    monkeypatch.setattr(rb, "build_model", lambda name: _tiny_model())
+    monkeypatch.setattr(rb, "load_reference", lambda name, names, require_stats=True: {"x": ref})
+
+
+def _run_tiny(tmp_path, *flags):
+    args = rb.parse_args(["--models", "tiny", "--chains", "8", "--draws", "4", "--warmups", "6",
+                          "--seeds", "1", "--repeat", "1", "--arm", "t", "--step", "T",
+                          "--out", str(tmp_path / "rows.jsonl"), *flags])
+    import bench_ladder as bl
+
+    return args, rb.run_cell(bl, "tiny", args, 6, 1, 0, False)
+
+
+# keys of attrs["config"] that are results of the run rather than knobs
+_RESULT_KEYS = ("frozen_step_size", "frozen_L_nominal", "eps0", "warmup_steps_used")
+
+
+def test_with_no_flags_the_harness_passes_nothing_and_effective_is_the_samplers_default(
+        tiny_harness, tmp_path):
+    """Run 1 injected --pf-draws 1 / --orientation precision / --iterate ma, so the 'default arm' was
+    never the sampler's default (plan Part B 1.3). With no flags, nothing is passed beyond the warmup
+    length, and the config the sampler resolves is the one a direct call with no kwargs resolves."""
+    import pfcheeshmc
+
+    args, row = _run_tiny(tmp_path)
+    kw = json.loads(row["kwargs"])
+    assert kw["pathfinder_kwargs"] == {} and kw["chees_kwargs"] == {"draws": 6}, kw
+    assert row["schema"] == "pf-r2/v1" and row["step"] == "T" and row["pooled"] is False
+    assert row["error"] is None, row["error"]
+
+    eff = row["effective"]
+    assert eff["imm_orientation"] == "covariance"                 # the sampler's default
+    direct = json.loads(pfcheeshmc.sample_pf_chees_hmc(
+        _tiny_model(), chains=8, draws=4, random_seed=1, progressbar=False,
+        chees_kwargs={"draws": 6}).attrs["config"])
+    assert eff["iterate"] == direct["iterate"]
+    knobs = lambda c: {k: v for k, v in c.items() if k not in _RESULT_KEYS}
+    assert knobs(eff) == knobs(direct), "a harness default differs from the sampler's"
+    # no refresh: the two refresh scalars exist in the row and are null
+    assert row["metric_refresh_T0"] is None and row["metric_refresh_lmax_whitened"] is None
+
+
+def test_flags_that_are_given_are_passed_and_land_in_effective(tiny_harness, tmp_path):
+    args, row = _run_tiny(tmp_path, "--iterate", "raw", "--orientation", "precision",
+                          "--pf-draws", "3", "--imm-source", "pf_closed", "--start-scale", "1.5")
+    kw = json.loads(row["kwargs"])
+    assert kw["pathfinder_kwargs"] == {"draws": 3, "imm_orientation": "precision",
+                                       "imm_source": "pf_closed", "pf_start_scale": 1.5}
+    assert kw["chees_kwargs"] == {"draws": 6, "iterate": "raw"}
+    eff = row["effective"]
+    assert (eff["iterate"], eff["imm_orientation"], eff["imm_source"], eff["pf_draws"],
+            eff["pf_start_scale"]) == ("raw", "precision", "pf_closed", 3, 1.5)
+    assert row["error"] is None, row["error"]
+
+
+def test_a_flag_that_effective_contradicts_aborts_the_run_and_keeps_the_row(
+        tiny_harness, tmp_path, monkeypatch):
+    """The run-1 `iterate` bug (LEDGER E13): single-phase _run_chees ignored chees_kwargs['iterate'],
+    so cells labelled raw ran ma and nothing in the row said so. Simulate it by making the sampler's
+    config record claim 'ma' while the harness asked for 'raw'."""
+    from pfcheeshmc.sampler import PfCheesHMC
+
+    orig = PfCheesHMC._config_record
+
+    def lying(self, *a, **k):
+        cfg = json.loads(orig(self, *a, **k))
+        cfg["iterate"] = "ma"
+        return json.dumps(cfg)
+
+    monkeypatch.setattr(PfCheesHMC, "_config_record", lying)
+    with pytest.raises(rb.ConfigMismatch, match=r"iterate: asked 'raw', sampler ran 'ma'"):
+        _run_tiny(tmp_path, "--iterate", "raw")
+    rows = [json.loads(l) for l in open(tmp_path / "rows.jsonl")]
+    assert len(rows) == 1 and "ConfigMismatch" in rows[0]["error"]
+    assert rows[0]["effective"]["iterate"] == "ma"                 # the evidence is on disk
+
+
+def test_check_effective_unit_semantics():
+    eff = {"iterate": "raw", "pf_draws": 4000, "pf_start_scale": 1.0, "superchains": None,
+           "metric_refresh": "none", "num_warmup": 50, "metric_refresh_warmup": None}
+    rb.check_effective(eff, {"iterate": "raw", "pf_start_scale": 1, "superchains": None})   # 1 == 1.0
+    rb.check_effective(None, {"iterate": "ma"})              # a tree without the attr: nothing to check
+    with pytest.raises(rb.ConfigMismatch, match="pf_draws: asked 1, sampler ran 4000"):
+        rb.check_effective(eff, {"pf_draws": 1})
+    with pytest.raises(rb.ConfigMismatch, match="absent"):   # a missing key is a mismatch, not a skip
+        rb.check_effective(eff, {"imm_source": "mc"})
+    with pytest.raises(rb.ConfigMismatch):                   # False is not 0 is not None
+        rb.check_effective({"metric_refresh_reseed": None}, {"metric_refresh_reseed": False})
+
+
+def test_none_flags_add_no_key_and_the_refresh_warmup_is_resolved_and_clamped():
+    a = rb.parse_args([])
+    assert rb.pathfinder_kwargs_from(a) == {} and rb.chees_kwargs_from(a, 100) == {"draws": 100}
+    a = rb.parse_args(["--metric-refresh", "sample_diag"])
+    assert rb.chees_kwargs_from(a, 100) == {"draws": 100, "metric_refresh": "sample_diag",
+                                            "metric_refresh_warmup": 50}
+    assert rb.chees_kwargs_from(a, 3)["metric_refresh_warmup"] == 2          # max(2, W // 2)
+    a = rb.parse_args(["--metric-refresh", "sample_diag", "--metric-refresh-warmup", "30",
+                       "--no-metric-refresh-reseed"])
+    kw = rb.chees_kwargs_from(a, 100)
+    assert kw["metric_refresh_warmup"] == 30 and kw["metric_refresh_reseed"] is False
+    # the sampler clamps phase A to [2, W - 2]; the guard expects the clamped value
+    want = rb.expected_config({}, kw, W=25)
+    assert want["metric_refresh_warmup"] == 23 and want["metric_refresh"] == "sample_diag"
+    with pytest.raises(SystemExit):                                          # needs a refresh
+        rb.parse_args(["--metric-refresh-warmup", "30"])
+
+
+def _draws(seed, chains=64, draws=10):
+    rng = np.random.default_rng(seed)
+    return {"a": rng.normal(size=(chains, draws, 1)) + 0.1, "b": rng.normal(size=(chains, draws, 3))}
+
+
+def test_pooling_three_identical_seeds_keeps_b2_and_divides_the_floor_by_three():
+    unc = _draws(5)
+    ref = {"a": np.random.default_rng(6).normal(size=(4000, 1)),
+           "b": np.random.default_rng(7).normal(size=(4000, 3))}
+    one = rb.score_ensemble(unc, ref, chains=64, draws=10, superchains=None, nested_limit=1.01)
+    pooled, chains = rb.pool_seed_scores({1: unc, 2: unc, 3: unc}, ref, 10, 1.01)
+    assert chains == 192
+    assert pooled["b2_max"] == pytest.approx(one["b2_max"], rel=1e-9)
+    assert pooled["b2_argmax"] == one["b2_argmax"]
+    assert pooled["b2_floor"] == pytest.approx(one["b2_floor"] / 3.0, rel=0.05)
+    assert pooled["nested_rhat_max"] is None                 # not defined across seeds
+
+
+def test_pooling_independent_seeds_lowers_the_floor_about_as_one_over_S():
+    ref = {"a": np.random.default_rng(6).normal(size=(4000, 1)),
+           "b": np.random.default_rng(7).normal(size=(4000, 3))}
+    per = [rb.score_ensemble(_draws(s), ref, 64, 10, None, 1.01)["b2_floor"] for s in (1, 2, 3, 4)]
+    pooled, _ = rb.pool_seed_scores({s: _draws(s) for s in (1, 2, 3, 4)}, ref, 10, 1.01)
+    assert pooled["b2_floor"] == pytest.approx(np.mean(per) / 4.0, rel=0.35)
+
+
+def test_run_pooled_writes_one_pooled_row_that_smallest_pass_reads(tmp_path, monkeypatch):
+    import argparse
+    import summarise_rows as sr
+
+    ref = {"a": np.random.default_rng(6).normal(size=(4000, 1)),
+           "b": np.random.default_rng(7).normal(size=(4000, 3))}
+    monkeypatch.setattr(rb, "load_reference", lambda name, names, require_stats=True: ref)
+    out = tmp_path / "p.jsonl"
+    args = argparse.Namespace(wp="WP3", arm="A", draws=10, chains=64, out=str(out), step="M2a",
+                              nested_limit=1.01, cpu_contended=False,
+                              allow_collapsed_reference_stats=False)
+    seed_rows = []
+    for s in (1, 2, 3):
+        eff = {"iterate": "raw", "seed": s, "frozen_step_size": 0.1 * s, "num_draws": 10}
+        seed_rows.append({"model": "m", "arm": "A", "warmup": 50, "seed": s, "rep": 0, "cold": False,
+                          "b2_max": 0.001, "b2_floor": 0.002, "chains": 1024, "draws_per_chain": 10,
+                          "grads_per_chain_warmup": 100.0, "grads_per_chain_sampling": 20.0,
+                          "error": None, "effective": eff, "kwargs": json.dumps({"k": 1}),
+                          "pooled": False})
+    kept = {s: (_draws(s), r) for s, r in zip((1, 2, 3), seed_rows)}
+    row = rb.run_pooled("m", args, 50, 0, False, kept)
+    assert row["pooled"] is True and row["seed"] == "pooled" and row["chains"] == 192
+    assert row["schema"] == "pf-r2/v1" and row["step"] == "M2a" and row["pooled_seeds"] == [1, 2, 3]
+    assert row["effective"] == {"iterate": "raw", "num_draws": 10}   # what all seeds share
+    assert row["error"] is None and row["warmup"] == 50 and row["cold"] is False
+    assert row["g_r1_pool"] in ("pass", "fail") or row["g_r1_pool"].startswith("not")
+    assert len([l for l in open(out)]) == 1
+
+    # one seed alone cannot be pooled
+    assert rb.run_pooled("m", args, 50, 0, False, {1: kept[1]}) is None
+
+    # smallest-pass reads it as the diagnostic, never as a fourth seed
+    res, _ = sr.smallest_pass(seed_rows + [json.loads(l) for l in open(out)])
+    assert res[0]["pt"] == 50 and res[0]["seeds"] == [1, 2, 3]
+    assert res[0]["pooled"] == (row["b2_max"], row["b2_floor"])
