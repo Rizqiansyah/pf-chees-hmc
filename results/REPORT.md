@@ -91,7 +91,7 @@ Verified from `wp/wp5`'s row files (`WP5__memprobe_before.jsonl` 80 rows, `WP5__
 
 The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); the failed allocation scales with the pool size exactly. Both retracted memory explanations stay dead. **Accept criteria: capacity PASS on all four models; the "init under 2 s" bar is NOT met** — warm init is 4.07 s, of which 2.47 s is WP5's pathfinder/pool/scoring chain and **1.59 s is the step-size tuning stage owned by WP7**. The bar as written adds two tasks' budgets together; it needs restating as per-owner budgets, and neither reading passes today. Cold init at C=1,024 is 25.9–45.1 s (compile), which is the run-once cost no cache can serve on the owner's run-once workflow.
 
-### 3e. WP4 — ensemble metric refresh during a short warmup (R1, C=1,024 × D=10, W=50, 2 seeds)
+### 3e. WP4 — ensemble metric refresh during a short warmup (R1, C=1,024 × D=10, W=50, 3 seeds on the re-seed A/B)
 
 | model | no refresh: b² | no refresh: verdict | refresh (any of 4 estimators): b² | refresh verdict | gradients/chain, no refresh → refresh |
 |---|---|---|---|---|---|
@@ -110,21 +110,23 @@ The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); th
 | `dense_shrunk` | 1,344 | 4,237 | 2,323 | 5,469 | 0.97, 0.97 | indistinguishable → kill |
 | `diag_lowrank` | 1,400 | 3,778 | 4,934 | 5,317 | 2.07, 0.95 | worse → kill |
 
-   So the shipped recommendation becomes: **keep `sample_diag` as the safe default and `fisher_diag` as the one worth pursuing** (1.45–1.77× fewer gradients on the two correlated models, at a cost on GEV), kill `dense_shrunk` and `diag_lowrank`. All 16 cells pass on bias; cost is the discriminator. Two provenance problems go with this, filed in `results/reviews/WP4-stats.md`: the re-seed factor is recorded in **no row field** (the two ablation arms are byte-identical except for their label), and radon's noise floor swings 2× between nominally identical cells (0.0029 in one file, 0.0054–0.0060 in the other).
-3. **The cost was the re-seed — and the honest verdict on WP4 is still "reject as an efficiency measure".** The trajectory-length re-seed `T = (π/2)·√λ_max` lands at L = 23–402 against the baseline's converged 10–27 because λ_max of a 50-step ensemble estimate is noise-dominated. The A/B is in `WP4__reseed_ab.jsonl` (18 rows) against `WP4__r1.jsonl` (32) and T1's matched controls (48) — warm rows, `sample_diag` on both sides of the re-seed comparison so it is one factor at a time:
+   So the shipped recommendation becomes: **keep `sample_diag` as the safe default and `fisher_diag` as the one worth pursuing** (1.45–1.77× fewer gradients on the two correlated models, at a cost on GEV), kill `dense_shrunk` and `diag_lowrank`. All 16 cells pass on bias; cost is the discriminator. `results/reviews/WP4-stats.md` filed two *provenance* problems with this table; **both are refuted against the rows** (`results/LEDGER.md`, 2026-10-20):
+   - *"the re-seed factor is recorded in no row field, the arms are byte-identical except for their label"* — false. Paired across all 12 common (model, seed, rep) cells, the arms' `kwargs` differ in exactly two recorded fields: `metric_refresh` = `sample_diag` vs `null`, and `metric_refresh_reseed` = `true` vs `null`.
+   - *"radon's noise floor swings 2× between nominally identical cells"* — not a defect and not between files. The two radon floors are in the **same file, same model, same W=50**, one per arm (refresh 0.00282, no-refresh 0.00559), and the floor is `max_f (mcse_run[f]²/Var_ref[f]) × 2·ln(2d)` (`tools/r1_bias.py:268-270`) — built from the **run's own** chain MCSE, so any arm that changes the chains changes the floor. This matters for how to read every refresh pass below: the refresh arm is judged against a **looser** bar, so "passes at 0.79× floor" is weaker than the ratio alone implies.
+3. **The cost was the re-seed — and the honest verdict on WP4 is still "reject as an efficiency measure".** The trajectory-length re-seed `T = (π/2)·√λ_max` lands at L = 23–402 against the baseline's converged 10–27 because λ_max of a 50-step ensemble estimate is noise-dominated. The A/B is in `WP4__reseed_ab.jsonl` (42 rows; the three `ab:` arms are 12 rows each = 4 models × **3 seeds**, so every cell below is a 3-seed median) against `WP4__r1.jsonl` (32) and T1's matched controls (48) — warm rows, `sample_diag` on both sides of the re-seed comparison so it is one factor at a time:
 
 | model | no refresh | refresh + re-seed | refresh, **no** re-seed | cost of the re-seed alone |
 |---|---|---|---|---|
-| 8 Schools | 974 | 1,292 = 1.33× | 1,309 = **1.34×** | 0.99× |
-| GEV | 557 | 4,804 = 8.62× | 841 = **1.51×** | **5.71×** |
-| logistic | 324 | 2,386 = 7.36× | 487 = **1.50×** | **4.90×** |
-| radon NC | 372 | 5,612 = 15.09× | 579 = **1.56×** | **9.69×** |
+| 8 Schools | 967 | 1,304 = 1.35× | 1,309 = **1.35×** | 1.00× |
+| GEV | 567 | 5,417 = 9.55× | 841 = **1.48×** | **6.44×** |
+| logistic | 329 | 2,381 = 7.24× | 487 = **1.48×** | **4.89×** |
+| radon NC | 275 | 5,513 = 20.05× | 579 = **2.11×** | **9.52×** |
 
    Two conclusions, and the second is a decision, not a curiosity:
    - **The re-seed is essentially the whole cost.** Removing it collapses a 4.9–9.7× penalty, and the no-re-seed rows keep a sane trajectory length (L = 14–27, verified — so this is *not* a degenerate "L stuck at 1" saving).
    - **The refresh still fails its own accept rule.** The plan accepts it if gradients per chain *fall* on ≥ 3 of 4 models; against T1 controls at identical settings (same orientation, iterate, `pf_draws`, `init_pick` — verified from the rows, so a clean single-factor comparison) it improves **0 of 4**, and its overhead **grows with warmup**: radon 650 → 1,182 (1.82×) at W=100 and 1,238 → 3,340 (2.70×) at W=200.
 
-   What it does buy is narrow and real: **radon NC's bias**. No-refresh radon reads b² 3.00 and 0.223 at W=50 (floors 0.0049 — resolvable, so outright fail); with the refresh it reads 0.0018–0.0020 (resolvable pass). Verdict: **reject the refresh as an efficiency measure; keep it as a metric-quality-keyed accuracy rescue at ~1.5× cost, in the very-short-warmup regime only.**
+   What it does buy is narrow and real: **radon NC's bias**. On the 3-seed A/B at W=50 (medians, PASS = b² below that arm's own floor): no-refresh radon reads **2.852** (range 0.223–3.000, floor 0.0049) and passes **0 of 3 seeds**; with the refresh it reads **0.00224** (0.00208–0.00261, floor 0.00282) and passes **3 of 3**. Logistic moves the same way, 0.00354 → 0.00057 (1.45× floor → 0.50×, 1/3 → 3/3). The re-seed is not free on accuracy either: dropping it costs radon 3.9× (0.00224 → 0.00877, back to 0/3) and logistic 3.6×. **GEV is the counter-example — the refresh does not help it** (1.02× floor → 1.54× floor, 1/3 pass either way) and 8 Schools is a wash in absolute bias (0.00084 → 0.00097, i.e. slightly worse, its "pass" margin coming from the refresh's own looser floor). Verdict: **reject the refresh as an efficiency measure; keep it as a metric-quality-keyed accuracy rescue at ~1.5× cost, in the very-short-warmup regime only, and only on the high-d correlated models.**
 
 4. **A merge interaction means the refresh cannot currently be enabled.** `wp/wp5` stopped stacking warmup positions (that stack was the warmup memory wall at C=1,024); `wp/wp4`'s refresh reads them. Resolved in favour of the memory win, with the refresh failing loud — verified on the merged tree: the default path runs (20.8 s, six `sample_stats` fields) and `metric_refresh="sample_diag"` raises `RuntimeError` in 2.2 s naming the cause and workaround. Not silent, not usable; the named fix is a `stack_positions` flag (`results/LEDGER.md`).
 
