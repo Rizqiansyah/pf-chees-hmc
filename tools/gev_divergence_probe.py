@@ -17,6 +17,12 @@ So this probe settles whether the suspect coordinate really starts under-dispers
 mechanism stays NOT ESTABLISHED, with the reason named.
 
 Run: one process per (model, orientation) under tools/gpu_run.sh.
+
+`--start-scale S` (R2-WP3b, for M2c) forwards `pf_start_scale=S` to the sampler: the chain starts become
+mu_pf + S * (x - mu_pf), so every ratio below is S times the unscaled one and the table says how much
+dispersion a scale buys. Not passed by default (the sampler's 1.0); the value the sampler applied is
+recorded in `effective` (the sampler's resolved Pathfinder-stage config, with pf_draws and the pool
+rows actually drawn). `--pf-draws` is likewise not passed unless given (it defaulted to 1 before).
 """
 import argparse
 import json
@@ -48,16 +54,21 @@ def leaf_labels(starts):
     return out
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", default="gev")
     ap.add_argument("--chains", type=int, default=32)
-    ap.add_argument("--pf-draws", type=int, default=1,
-                    help="1 = the R1/R2 start policy used by every bias row; 4000 = production pool")
+    ap.add_argument("--pf-draws", type=int, default=None,
+                    help="Pathfinder draws per chain. Default: not passed (the sampler's), which is "
+                         "what the R2 bias rows use since R2-WP3; run 1's rows (and REPORT 3j) used "
+                         "--pf-draws 1, pass it to reproduce those")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--orientation", default="covariance", choices=["covariance", "precision"])
+    ap.add_argument("--start-scale", type=float, default=None,
+                    help="pf_start_scale forwarded to the sampler (starts rescaled about the "
+                         "Pathfinder mean). Default: not passed (the sampler's 1.0)")
     ap.add_argument("--out", default="")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     common.require_gpu_lock("start-dispersion probe")
 
     rows = []
@@ -65,8 +76,10 @@ def main():
         model = rb.build_model(model_name)
         names = [v.name for v in model.value_vars]
         s = PfCheesHMC(model, seed=a.seed)
-        starts, imm = s._run_pathfinder(chains=a.chains, draws=a.pf_draws,
-                                        imm_orientation=a.orientation)
+        pf_kw = {} if a.start_scale is None else {"pf_start_scale": a.start_scale}
+        if a.pf_draws is not None:
+            pf_kw["draws"] = a.pf_draws
+        starts, imm = s._run_pathfinder(chains=a.chains, imm_orientation=a.orientation, **pf_kw)
         labels = leaf_labels(starts)
         ref_arr, ref_labels = rb.flatten_ref(rb.load_reference(model_name, names))
         if ref_labels != labels:
@@ -83,6 +96,8 @@ def main():
         order = np.argsort(np.nan_to_num(ratio, nan=np.inf))
         out = {
             "model": model_name, "orientation": a.orientation, "pf_draws": a.pf_draws,
+            "start_scale": a.start_scale,       # the flag (null = not passed)
+            "effective": dict(s._resolved["pathfinder"]),    # what the sampler resolved and applied
             "chains": a.chains, "seed": a.seed, "d": int(flat.shape[1]),
             "git_sha": common.git_sha(), "branch": common.branch(), "device": str(jax_dev()),
             "peak_mem_bytes": common.peak_mem_bytes(),

@@ -594,3 +594,22 @@ def test_run_pooled_writes_one_pooled_row_that_smallest_pass_reads(tmp_path, mon
     res, _ = sr.smallest_pass(seed_rows + [json.loads(l) for l in open(out)])
     assert res[0]["pt"] == 50 and res[0]["seeds"] == [1, 2, 3]
     assert res[0]["pooled"] == (row["b2_max"], row["b2_floor"])
+
+
+def test_gev_probe_start_scale_is_forwarded_and_rescales_the_start_dispersion(
+        tiny_harness, tmp_path, monkeypatch):
+    """M2c reads the start sd / reference sd table at --start-scale 2 and 3: the starts are rescaled
+    about the Pathfinder mean AFTER the picks, so the same seed gives exactly S times the ratio."""
+    import _common
+    import gev_divergence_probe as probe
+
+    monkeypatch.setattr(_common, "require_gpu_lock", lambda what="": None)   # CPU stand-in for the lock
+    out = tmp_path / "probe.jsonl"
+    base = ["--models", "tiny", "--chains", "32", "--out", str(out)]
+    probe.main(base)
+    probe.main(base + ["--start-scale", "2"])
+    one, two = [json.loads(l) for l in open(out)]
+    assert one["start_scale"] is None and one["effective"]["pf_start_scale"] == 1.0
+    assert two["start_scale"] == 2.0 and two["effective"]["pf_start_scale"] == 2.0
+    assert one["effective"]["pf_draws"] == 4000                     # the sampler's, not a probe default
+    assert two["median_ratio"] == pytest.approx(2.0 * one["median_ratio"], rel=2e-3)
