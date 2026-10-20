@@ -913,6 +913,9 @@ class PfCheesHMC:
             # Warmup stopping rule, e.g. {"block": 250, "window": 100, "rhat": 1.01}.
             # Absent by default: warmup then runs exactly num_steps as before.
             stop_rule=kwargs.get("warmup_stop", None),
+            # Until R2-WP2 this call did not forward `iterate`, so chees_kwargs={"iterate": "raw"}
+            # without a metric refresh silently ran "ma" (only the two-phase path passed it on).
+            iterate=kwargs.get("iterate", "ma"),
         )
         if hasattr(chees_info, "info"):
             # utils.WarmupInfo (the vendored-adapter path) wraps the stacked HMCInfo together with
