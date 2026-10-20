@@ -522,3 +522,52 @@ Every review task launched since 23:54 either wrote nothing or wrote claims that
 What the tasks did get right: WP5's memory-provenance critique (peaks are process-cumulative, `peak_mem_bytes` is 0 in the probe rows, no after-probe at C=128) and its finding that `pm_chains` is not plumbed into the sampler while `pf_pool_cap=4096` is effectively **no cap** at the acceptance configuration — so WP5's stated *mechanism* for the capacity win is wrong even though the win is real (radon runs at C=1,024: 528.79 s cold / 42.94 s warm).
 
 **Standing rule for the rest of the run:** a task's BLOCKING item is not actionable until reproduced against source or by running the named test. The refuted items above cost less to check than to fix, and acting on them would have "fixed" three functions that were never broken.
+
+---
+
+## 2026-10-20 — wp4 x wp5 interaction: the metric refresh cannot run on the merged default path
+
+`wp/wp5` stopped stacking warmup positions (`utils.py`, default path: `pos_hist = None`) because that stack was
+itself the warmup memory wall at C=1,024. `wp/wp4`'s two-phase refresh *reads* phase-A positions. The merge
+conflict was resolved in favour of the memory win, with the refresh failing loud. Verified on the merged tree
+(CPU, 3-dim Gaussian, 8 chains):
+
+- default path: runs, 20.8 s, `sample_stats` = the six expected fields, posterior sane;
+- `chees_kwargs=dict(metric_refresh="sample_diag")`: **RuntimeError after 2.2 s**, naming the cause and the
+  workaround (set `stop_rule`, which stacks positions).
+
+So the merged tree ships the refresh as a feature that errors unless a stop rule is active — not a silent
+wrong result, but not usable either. **Named fix (not done at this hour without a GPU validation run):** add
+`stack_positions=False` to `chees_warmup_with_progress` and stack positions only when the refresh is requested,
+or run phase A as its own short scan. Until then no shipped configuration may enable `metric_refresh`.
+
+## 2026-10-20 — WP4's accept rule FAILS on efficiency; it is justified only as radon's accuracy rescue
+
+The plan accepts a refresh if "gradients per chain fall on **at least 3 of 4 models** at equal or better b²".
+Against the T1 no-refresh control at identical settings (`orientation=covariance, iterate=raw, pf_draws=1,
+init_pick=stratified` — verified identical from the rows, so this is a clean single-factor comparison), the
+refresh improves **0 of 4**:
+
+| model | no refresh | refresh, no re-seed | ratio |
+|---|---|---|---|
+| 8 Schools | 974 | 1,309 | 1.34× |
+| GEV | 557 | 841 | 1.51× |
+| logistic | 324 | 487 | 1.50× |
+| radon NC | 372 | 579 | 1.55× |
+
+And the overhead is not constant with warmup — using T1's radon controls at the same settings: **W=100 650 →
+1,182 (1.82×)** and **W=200 1,238 → 3,340 (2.70×)**. Refreshing gets *more* expensive as warmup lengthens,
+which is an argument for refreshing only in the very-short-warmup regime the owner actually targets.
+
+What the refresh does buy is narrow and real: **radon NC's bias**. No-refresh radon reads b² 3.00 and 0.223 at
+W=50 (floors 0.00485, 0.00491 — resolvable, so outright **fail**); with the refresh it reads 0.0018–0.0020
+(floor 0.0026–0.0029 — resolvable **pass**). Correct verdict: **reject WP4 as an efficiency measure (it fails
+its own accept rule), keep the mechanism as an accuracy rescue keyed to Pathfinder metric quality, at 1.5× cost
+at W=50 rising to 2.7× at W=200.**
+
+Two corrections to review claims made while settling this:
+- "L is stuck near 1 in the no-re-seed arm, so the saving is degenerate" — **refuted**: `frozen_L_nominal` in the
+  no-re-seed rows is 14–27 (8 Schools 27, GEV 16, logistic 14, radon 21), comparable to the no-refresh arms. The
+  re-seed instead sets L to 110–402 and ChEES has to burn gradients shrinking it.
+- "there is no no-refresh control at W=100/200" — **refuted**: T1 carries `int:covraw` radon at both warmups with
+  identical settings (650 and 1,238 gradients), which is what produced the 1.82×/2.70× numbers above.
