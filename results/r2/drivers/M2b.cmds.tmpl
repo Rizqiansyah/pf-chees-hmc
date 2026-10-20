@@ -1,0 +1,12 @@
+r1 --models 8schools --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate IT --metric-refresh sample_diag --arm m2b:diag --wp R1 --step M2b
+r1 --models 8schools --chains 1024 --draws 10 --warmups 50 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate IT --metric-refresh sample_diag --no-metric-refresh-reseed --arm m2b:diag_norese --wp R1 --step M2b
+r1 --models 8schools --chains 1024 --draws 10 --warmups 50,100 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate IT --metric-refresh fisher_diag --arm m2b:fisher --wp R1 --step M2b
+r1 --models gev --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate IT --metric-refresh sample_diag --arm m2b:diag --wp R1 --step M2b
+r1 --models gev --chains 1024 --draws 10 --warmups 50 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate IT --metric-refresh sample_diag --no-metric-refresh-reseed --arm m2b:diag_norese --wp R1 --step M2b
+r1 --models gev --chains 1024 --draws 10 --warmups 50,100 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate IT --metric-refresh fisher_diag --arm m2b:fisher --wp R1 --step M2b
+r1 --models logit_1000x25 --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate IT --metric-refresh sample_diag --arm m2b:diag --wp R1 --step M2b
+r1 --models logit_1000x25 --chains 1024 --draws 10 --warmups 50 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate IT --metric-refresh sample_diag --no-metric-refresh-reseed --arm m2b:diag_norese --wp R1 --step M2b
+r1 --models logit_1000x25 --chains 1024 --draws 10 --warmups 50,100 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate IT --metric-refresh fisher_diag --arm m2b:fisher --wp R1 --step M2b
+r1 --models radon_noncentered --chains 1024 --draws 10 --warmups 25,50,100,200,300 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate IT --metric-refresh sample_diag --arm m2b:diag --wp R1 --step M2b
+r1 --models radon_noncentered --chains 1024 --draws 10 --warmups 50 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate IT --metric-refresh sample_diag --no-metric-refresh-reseed --arm m2b:diag_norese --wp R1 --step M2b
+r1 --models radon_noncentered --chains 1024 --draws 10 --warmups 50,100 --seeds 1,2,3 --repeat 1 --pool-seeds --iterate IT --metric-refresh fisher_diag --arm m2b:fisher --wp R1 --step M2b
