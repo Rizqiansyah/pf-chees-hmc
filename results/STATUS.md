@@ -111,3 +111,20 @@ Several tool calls were unavailable in that session. So the review of `wp/wp2` t
 4. Remaining work items: **T5 per-step cost split (NOT RUN — the only unfilled T-table cell)**; GEV divergence coordinate diagnosis (one instrumented run); floor improvement (reference MCSE + autocorrelation) before any near-floor gate decision; WP4's refresh needs a package-level `metric_refresh_reseed` option + test (today it is a harness flag, so "refresh without re-seed" is measured, not shipped).
 
 **Numbers that must not be re-litigated:** wall times in rows produced before `wp/wp3` `9d5c30d` are ~52% high warm (fixed, measured 15.42→10.62 s). `g_r1` masking fix changed 6 delivered cells (all radon, b² up to 63 vs floor 0.0056). Radon NC is **unmeasurable** at R1 (floors 0.0037–0.0071; W=200 costs 5.7× gradients for a 20% b² change). CPU NUTS T3: all 12 cells `resolvable=False`. Command buffers: −12%, not shipped. WP5 memory: 8 Schools 2,314 → 224 MiB (~10×); radon runs at C=1,024 (528.79 s cold / 42.94 s warm); no before/after wall comparison exists because the before-probe has no `wall_s`.
+
+---
+
+# FINAL STATE — 2026-10-20
+
+**All eight work packages are merged into `pf-r1`. Merged suite: 124 passed in 106.11 s (forced CPU).**
+`main` untouched at `ecd9ba1`; nothing pushed. Working tree clean.
+
+Merged: wp0refs · wp1 · wp2 · wp3 · wp4 · wp5 · wp8 · wp9docs. (`wp/wp8` was merged once on an imagined review,
+reverted at `60302b2`, reviewed properly, then merged for real.)
+
+Read `results/REPORT.md` §6b for the T-tables, §7 for what is left, §8 for the handoff and the seven measured
+caveats. The two that change decisions: absolute wall times before `wp/wp3` `9d5c30d` are ~52% high warm, and
+radon NC cannot be gated at the R1 shape at any warmup.
+
+Not done: T5's per-step cost split (the only unfilled table cell); GEV's diverging coordinate; the noise-floor
+improvement (reference MCSE + serial correlation); the `pf_draws=1` gap between the R1 evidence and production.
