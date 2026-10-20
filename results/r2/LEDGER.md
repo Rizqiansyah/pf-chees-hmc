@@ -219,3 +219,28 @@ are not lower (5/5, 4 vs 3, 5/5, 5/5), so that half holds. D1 fails (b) and (c),
 **GEV divergences (G3 input).** Sampling divs/1k for the default `ma` arm are 1.1 / 0.425 / 1.18 /
 0.525 / 1.0, all above G3's 0.10 ceiling (the run-1 shipped maximum). raw seed 5 has 14.7/1k.
 G3 is informational only (A1.3); the M3g step adds per-variable mean shifts in sd units and z.
+
+## 2026-10-21 — M5-cpu done (144 rows, 48 processes rc=0)
+
+`results/r2/runs/M5__cpu_nuts.jsonl`; summary `results/r2/tables/M5_cheapest.txt`. CPU NUTS, 32
+chains on 32 cores, after one untimed warm-up cell per model. No GPU job overlapped (the driver waits
+on any `r1_bias.py`).
+
+Cheapest (tune + draws) passing `g_r1` on all 3 seeds:
+
+| model | config | median wall | core-s | grads per chain |
+|---|---|---|---|---|
+| 8schools | tune 200 + draws 250 | 3.54 s | 15.7 | 3,960 |
+| gev | tune 200 + draws 100 | 5.36 s | 19.5 | 3,287 |
+| logit_1000x25 | tune 200 + draws 250 | 9.27 s | 198.7 | 15,670 |
+| radon_noncentered | **none in the grid** | — | — | — |
+
+Radon: every cell up to draws 400 is "not resolvable": b² 0.001–0.003, but per-seed floors of
+0.0045–0.07, which are above 0.005. One cell (tune 1000 + draws 400, seed 2) passes. CPU NUTS draws
+for radon are accurate but too few to resolve at d=175.
+- Contradiction protocol: recorded.
+- **M5x (DEVIATED, extension):** radon only, draws {800, 1600} × tune {200, 500, 1000}. It is queued
+  after M3g, so that R2-T4 has a radon CPU time-to-pass.
+- Plan fact: draws=50 at 32 chains gives C·D = 1,600 < 2,000, so it is ineligible by construction.
+- The 1-min host load at row start was 11–19. That is M5's own 32 worker processes from the previous
+  cell; the foreign processes on the box were idle at launch (`ps`).
