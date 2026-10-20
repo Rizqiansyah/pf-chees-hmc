@@ -275,7 +275,9 @@ After `wp/wp5` (pool capped at `4C`, chunked scoring, one shared init point, tri
 
 The 2 s warm-init bar is **not met** (4.07 s), and 1.59 s of it is the step-size stage owned outside WP5. Cold walls are compile-dominated; every figure above is labelled cold or warm in the rows. **Side effect worth more than the headline:** 8 Schools' cumulative peak fell from 2,314 MiB (before, same single-process basis) to **224 MiB** — a ~10× memory reduction at a chain count that already fitted — because the warmup scan no longer stacks the full HMCInfo. Before-side **total** wall is absent (row-level `wall_s` is null on all 80 probe rows), but before-side **per-stage** seconds are present in `kwargs.stage_s` on 70/80 rows (radon: `pymc_init` 1.67 s, `finite_inits` 0.98 s, `best_chain_score` 2.86 s, `pathfinder_solve` 19.58 s, `pf_pool_draw` 8.42 s, `stratified_scoring` 4.11 s), so stage-level before/after comparison IS possible while a total-time before/after is not. Note also that row-level `peak_mem_bytes` on those rows is a **512-byte stub** and must never be read — real peaks are in `kwargs.peak_bytes_in_use`.
 
-### T5 — per-step cost and the XLA flag, `T5a__cmdbuf.jsonl` 10 rows
+### T5 — per-step cost and the XLA flag
+
+**T5a — XLA command buffers** (`T5a__cmdbuf.jsonl`, 10 rows; re-derived from the rows this session):
 
 | model | warm baseline | warm + command buffers | Δ | cold baseline | cold + buffers |
 |---|---|---|---|---|---|
@@ -284,7 +286,33 @@ The 2 s warm-init bar is **not met** (4.07 s), and 1.59 s of it is the step-size
 | GEV | 10.34 s | 11.58 s | **+12.0%** | 20.33 s | 21.57 s |
 | radon NC | 45.71 s | 51.48 s | **+12.6%** | 600.64 s | 514.20 s |
 
-**Verdict: do not ship the flag.** The plan's +23–24% was measured on a bare kernel with no adaptation and does not transfer to the production path; the penalty is a consistent ~12% across models. The **per-step cost split (kernel vs adaptation vs history vs callback) is NOT RUN** — that is the remaining WP6 gap, and it is the one T-table this run cannot fill.
+**Verdict: do not ship the flag.** The plan's +23–24% was measured on a bare kernel with no adaptation and does not transfer to the production path; the penalty is a consistent ~12% across models.
+
+**T5b — what the warmup's optional outputs cost** (`T5b__stepcost.jsonl`, C=32, W=2,000, median of 3 reps, exclusive card with `gpu_other_procs: []`; produced by `tools/t5_step_cost.py`, which ablates the two flags directly rather than modelling them):
+
+| model | ~L (leapfrogs/transition) | warmup | stacking warmup positions | progress callback |
+|---|---|---|---|---|
+| 8 Schools | 13.6 | 3.27 s | **+3.3 %** (54 µs/transition) | **+8.0 %** |
+| logistic | 17.4 | 9.10 s | **+0.3 %** (16 µs/transition) | **+2.0 %** |
+| GEV | 1.8 | 2.97 s | **+64.2 %** (953 µs/transition) | **+5.2 %** |
+| radon NC | — | — | *running* | *running* |
+
+Three readings, one of them a negative result about my own process:
+
+1. **The callback is cheap and consistent** (2–8 %), so leaving it opt-out is fine; it is the `jax.debug.callback` path that `progressbar=False` already removes.
+2. **Stacking warmup positions is sometimes extremely expensive and the cost does not track the data size.** GEV has the *smallest* position stack (d=3) and pays 60× logistic's per-transition cost (953 vs 16 µs). It reproduced: 65.1 % under card contention and **64.2 %** on an exclusive card. **Mechanism NOT ESTABLISHED** — it is not stack bytes, and it is not transition length (logistic has the larger L *and* the cheaper stack). What is established is the practical rule: keep `stack_positions` off by default, which is exactly what WP5 did, and expect WP4's metric refresh to pay this cost since its phase A must stack.
+3. **I voided this cell wrongly and the re-run reversed me.** Two rows were stamped `timing_void` because they ran while three of my own drivers were queued on the card; the clean GEV re-run reproduced the number to within 1 %, so the effect was real and the stamp was my error. The contended row is now marked superseded, not void.
+
+**Integration vs adaptation: the split as planned cannot be computed, and the reason is a finding.** The route I proposed above — `kernel ≈ sampling_s / sampling_grads × warmup_grads`, since the sampling stage is the production kernel at frozen parameters — was tried against the rows and returns a **negative** adaptation term on every cell, which is impossible, so the premise is wrong rather than the arithmetic. The premise that fails is "warmup per gradient ≥ sampling per gradient". It is lower, by about 2.4×:
+
+| model | warmup µs/gradient | sampling µs/gradient | ratio |
+|---|---|---|---|
+| 8 Schools (3 arms) | 169 – 177 | 373 – 430 | 0.41 – 0.46 |
+| GEV | 535 | 1,218 | 0.44 |
+
+So ChEES's criterion and Adam updates are **not** the dominant per-step cost — they are smaller than the gap between the two stages, and nothing in the current instrument can separate them further. The gap's likely content is what each stage *materialises*: the warmup scan is projected down to `WarmupScanInfo(num_integration_steps, is_divergent, acceptance_rate)` by WP5, while sampling keeps the six `sample_stats` fields per draw — the same mechanism the earlier performance audit found when the unprojected warmup stack was ~5.9 GB at d=1000. That attribution is **consistent with the data but not proven by it**: separating it needs a sampling cell with stats trimmed, which is not in scope here.
+
+The four-way split the plan asked for (kernel / adaptation / history / callback) is therefore **two-quarters answered**: history and callback measured directly (table above), kernel-vs-adaptation bounded but not separated, and the reason stated. The remaining instrument that would settle it is a `sample_stats` ablation, not a hand-built kernel.
 
 ### T6 — doc claims retracted or re-qualified
 
@@ -297,11 +325,15 @@ The 2 s warm-init bar is **not met** (4.07 s), and 1.59 s of it is the step-size
 **Open, in the order they should be taken:**
 
 1. **~~WP4's metric refresh is merged but cannot be switched on.~~ CLOSED 2026-10-20 (§3g).** The seam was broken by the wp4×wp5 merge interaction and fixed in `f2055aa` (`stack_positions` routed through the blocked scan; default path unaffected). Measured at C=1,024: it runs and clears G-R1 on radon at W=50 and W=2,000, peak 653 → 1,506 MiB (+853 MiB, not the 1.43 GB arithmetic predicts). What stops it is **cost**, not capacity: 173,586 gradients/chain on radon at W=2,000.
-2. **T5's per-step cost split is NOT RUN** — the only unfilled T-table cell. Everything else in T1–T6 came from delivered rows.
+2. **T5's cost split: two quarters answered, one is bounded rather than separated.** History and callback are measured directly (T5b); integration-vs-adaptation cannot be separated with the current instruments, and the reason is in T5b — warmup is *cheaper* per gradient than sampling (0.41–0.46×), so the planned subtraction returns a negative term. The instrument that would settle it is a `sample_stats` ablation on the sampling stage, not a hand-built kernel.
 3. **WP4 fails its own accept rule** (0 of 4 models improved on gradients per chain; overhead grows 1.5× → 2.7× with warmup) and survives only as radon's accuracy rescue. The refresh's re-seed removal is still a 4.9–9.7× saving, which is why the mechanism is kept rather than deleted.
 4. **GEV's divergence mechanism: half answered, half unmeasurable.** The rise is real and seed-stable (0.875, 0.350, 0.400, 0.200, 0.575 per 1k on the candidate against ≤ 0.100 on every shipped seed). **Confirmed:** the suspect start really is under-dispersed — `xi_interval__` starts at **0.156×** the reference sd (41× in variance), and it is the *only* GEV coordinate below 0.5 (`μ` 0.949, `σ_log__` 0.865), which is also why GEV's permutation result looks inverted. **Cannot be measured on the shipped tree:** the per-coordinate velocity of the diverging transition. WP5 projected the warmup output down to `WarmupScanInfo(num_integration_steps, is_divergent, acceptance_rate)` — momentum and `proposal.*` are not returned anywhere, because they were ~4× the states and were the C=1,024 warmup memory wall. Naming the coordinate needs either the untrimmed `HMCInfo` behind a flag or a per-step momentum stack; neither exists, so that step stays NOT ESTABLISHED rather than being inferred from the start dispersion.
 5. **Radon cannot be gated at R1 at any warmup** (§3e) — floors never fall below ~0.0057. Needs more draws per chain or a better noise floor (reference MCSE + serial correlation), which is also the item standing between this run and any near-floor decision elsewhere.
-6. **The R1 evidence base is single-start — CLOSED 2026-10-20 (§3f).** All 48 T1 rows and all 50 WP4 rows ran `pathfinder_kwargs.draws = 1`, while production defaults to 4,000. Measured: the production pool changes **no** bias verdict (radon fails at b² 2.32–2.45 against the matched 1-draw control's 2.852 median, same gradient count), and it **cannot run at all above d ≈ 8** on a 6 GB card without WP5's `pf_pool_cap` — which is default-off and should be defaulted on, since capping to `4C` is verdict-neutral and cuts peak memory 9×.
+6. **The production Pathfinder pool — measured, and it reversed my own recommendation (§3f).** All 48 T1 rows and all 50 WP4 rows ran `pathfinder_kwargs.draws = 1`, while production defaults to 4,000. Measured: the production pool changes **no** bias verdict (radon fails at b² 2.32–2.45 against the matched 1-draw control's 2.852 median, same gradient count), and it **cannot run at all above d ≈ 8** on a 6 GB card — the pool operand alone is 4.1M × 175 × 8 B = 5,734,400,000 B.
+
+   **6a. The clause that used to end this item — “`pf_pool_cap` is default-off and should be defaulted on, since capping to `4C` is verdict-neutral and cuts peak memory 9×” — is withdrawn.** At C=32 the same rule caps radon at 128 rows, and 128 rows cannot carry a 175-dimensional covariance: b² **2.34860** against a 0.07689 floor with split R̂ **1.2121** — a rank-deficient metric, not a slower one. The pool feeds the start picks *and* the covariance estimate, so it needs a chain bound **and** a dimension bound. The default is now `max(4C, 4d²)` (`default_pool_cap`), with `pf_pool_cap=0` as the escape hatch to the historical uncapped pool: radon at C=1,024 draws 122,500 rows (171 MB, was 5.73 GB and OOMs) and at C=32 draws 122,500 ≈ the historical 128,000.
+
+   **Still provisional.** For small `d` the new default is *smaller* than today's pool (8 Schools at C=32: 400 rows instead of 128,000). The first measurement says that is benign — b² 0.0002 either way, R̂ 1.0012 vs 1.0010, gradients/ESS 54.7 vs 57.5 — but that is one model at one seed, and the three-arm A/B over all four models is what finalises it.
 
 **A process deviation the owner should know about.** A4 asks for two independent reviews per merge. Seven review tasks were launched; only one wrote a file whose claims survived verification, three wrote nothing, and the rest produced detailed blocking findings that were false — refuted by reading the source or running the named test (each refutation is recorded in the review file itself). Four of the eight branches therefore carry **lead-executed** reviews, labelled as such at the top of each file. That is a deviation from the ruling, not a fulfilment of it. The remedy is measured, not rhetorical: every claim in those reviews is a number re-derived from a row file, and three of the run's own published statements were refuted in the process (the estimator ranking in §3e, the 3.7–15× range, and the WP5 memory attribution).
 
