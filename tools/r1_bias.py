@@ -436,6 +436,7 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
                                      "pathfinder_kwargs": {"draws": args.pf_draws,
                                                            "init_pick": args.init_pick,
                                                            "imm_orientation": args.orientation,
+                                                           "pf_pool_cap": args.pf_pool_cap,
                                                            "superchains": args.superchains},
                                      "chees_kwargs": {"draws": W, "iterate": args.iterate,
                                                               "metric_refresh": args.metric_refresh},
@@ -450,7 +451,8 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
             model, chains=args.chains, draws=args.draws, random_seed=seed, progressbar=False,
             pathfinder_kwargs=dict(draws=args.pf_draws, init_pick=args.init_pick,
                                    superchains=args.superchains,
-                                   imm_orientation=args.orientation),
+                                   imm_orientation=args.orientation,
+                                   pf_pool_cap=args.pf_pool_cap),
             chees_kwargs=dict(draws=W, iterate=args.iterate,
                             **({"metric_refresh": args.metric_refresh,
                                 "metric_refresh_warmup": max(2, W // 2),
@@ -554,7 +556,8 @@ def run_starts(bl, model_name, args, rep, cold):
     s = PfCheesHMC(model, seed=int(args.seeds.split(",")[0]))   # int: the CLI value is a string
     t_start = time.perf_counter()
     pos, imm = s._run_pathfinder(chains=args.chains, draws=args.pf_draws,
-                                 init_pick=args.init_pick, superchains=args.superchains)
+                                 init_pick=args.init_pick, superchains=args.superchains,
+                                 pf_pool_cap=args.pf_pool_cap)
     # one start per chain => "draws" = 1 for the shape contract
     ens, labels = flatten_run({n: np.asarray(v) for n, v in pos.items()}, args.chains, 1)
     reff, rlabels = flatten_ref(load_reference(model_name, names))
@@ -567,6 +570,7 @@ def run_starts(bl, model_name, args, rep, cold):
                   b2_max=b2_max, b2_argmax=argmax_name(labels, k), d=ens.shape[1],
                   kwargs=json.dumps({"chains": args.chains, "draws": args.pf_draws,
                                      "init_pick": args.init_pick,
+                                     "pf_pool_cap": args.pf_pool_cap,
                                      "superchains": args.superchains}, sort_keys=True))
     write_row(args.out, row)
     banner(model=model_name, cold=cold, wp=args.wp, arm="pf_starts")
@@ -588,6 +592,9 @@ def main():
                                                   "WP3__selftest.jsonl"))
     ap.add_argument("--pf-draws", type=int, default=1,
                     help="Pathfinder draws per chain; the pool is chains*this (4000 OOMs at C=1024)")
+    ap.add_argument("--pf-pool-cap", type=int, default=None,
+                    help="WP5: bound the PF start pool to this many rows (production pool is"
+                         " chains*pf_draws = 4.1M rows at C=1024, 5.7 GB at d=175). None = uncapped.")
     ap.add_argument("--init-pick", default="stratified", choices=["stratified", "iid"])
     # WP1/WP2 knobs, forwarded so the R1 sweep can vary them without a per-arm harness.
     ap.add_argument("--orientation", default="precision", choices=["precision", "covariance"])
