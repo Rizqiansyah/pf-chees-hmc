@@ -422,6 +422,8 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
                   draws_per_chain=args.draws, warmup=W, seed=seed, rep=rep, cold=cold,
                   superchains=args.superchains,
                   kwargs=json.dumps({"sampler_fn": "sample_pf_chees_hmc",
+                                     "metric_refresh": args.metric_refresh,
+                                     "metric_refresh_reseed": args.metric_refresh_reseed,
                                      "chains": args.chains, "draws": args.draws, "warmup": W,
                                      "pathfinder_kwargs": {"draws": args.pf_draws,
                                                            "init_pick": args.init_pick,
