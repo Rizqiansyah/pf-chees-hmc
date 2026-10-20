@@ -35,7 +35,7 @@ Two of the four benchmark models (8 Schools, logistic) are identity cases where 
 | arm | max R̂ | min bulk ESS | ESS/gradient | worst mean error | frozen ε |
 |---|---|---|---|---|---|
 | permuted + **covariance** (correct) | 1.0021 | 30,967 | 12.45 | 0.010 sd | 1.213 |
-| permuted + precision (**shipped**) | **12.1019** | **32** | 0.014 | 0.232 sd | 0.0140 |
+| permuted + precision (**shipped until the `08357db` flip**) | **12.1019** | **32** | 0.014 | 0.232 sd | 0.0140 |
 
 Per-variable ESS on the shipped arm: `{delta: 33, beta: 33,052, zeta: 32, alpha: 35}` — three of four coordinates do not move. Command: `~/scratch/orientation_arbiter.py`.
 
@@ -177,7 +177,7 @@ WP5's `pf_pool_cap` (`sampler.py:471`) is the remedy and it **defaults to `None`
 
 ## 4. Decisions taken in this run
 
-1. `imm_orientation` is an explicit, tested parameter (default unchanged for now); `imm_order` likewise. The default flip is owner-gated (G3) — recommendation and remaining evidence in §7.
+1. **`imm_orientation` is an explicit, tested parameter, and the default IS flipped.** `sampler.py:703` reads `kwargs.get("imm_orientation", "covariance")` — the owner approved the flip on 2026-10-20 and it landed in `08357db`, inside the same merge as the coordinate permutation (`merge wp/wp1`). The reason it could not be staged: the permutation ships unconditionally, so holding `precision` alongside it would have released *permuted + precision*, which fails R̂ ≤ 1.01 on GEV in 5/5 seeds where the old code passes — there is no neutral interim state. Anyone reading an older sentence here saying "default unchanged / owner-gated" is reading a superseded line; `results/STATUS.md` carries the ruling (`503071a`). **Standing caveat, not a gate:** GEV is the one model where the corrected orientation loses efficiency (§3: 403 → 303 ESS/s, warmup divergences 0.23 → 0.47 per 1k), which is why the GEV divergence mechanism is still an open item.
 2. **Nested R̂ is not a convergence gate in R1.** It reads 1.0040 on a cell with b² 0.4100. Measured reason: it is blind to bias shared by all chains (all-chains +1 sd reads 1.0004, identical to clean; every-other-superchain +1 sd reads 1.1135 at K=8). R1 Pathfinder deficit *is* common-mode, so G-R1 (b²) is the only gate; nested R̂ stays as a differential-drift/multimodality alarm. A proposed "precision ceiling at K" was refuted by the same measurement.
 3. Vendored ChEES adapter with `iterate="raw"|"ma"` (default `ma`, behaviour-preserving). The raw iterate reaches the plateau trajectory length by ~step 100 (logistic L@100: 25–42 vs 8.3) without worsening the frozen value at W=2,000 (26.0 vs 27.5); `t0=π/2` adds nothing. **It is not a speed win:** isolating the iterate makes warmup ~8% slower on GPU (the 2.1× sometimes quoted for it is the metric change, not the iterate) — see §6b/T2.
 4. **Merged-tree rule.** `wp/wp1` + `wp/wp2` alone crashed every run (`WarmupInfo` vs `num_integration_steps`) while each branch was green alone. Since then, accept/kill decisions are re-verified on `pf-r1-int`.

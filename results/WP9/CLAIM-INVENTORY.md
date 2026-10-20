@@ -31,10 +31,15 @@ commit `a03dc0f` on `pf-r1` (LEDGER entry "RETRACTION of entry 699be6d").
 permuted+covariance, plus the two low-rank `imm_source` arms. Rows marked `PENDING R-run` name the
 missing number.
 
-**Current code state for T6:** as of `4460dc7` the shipped default is still `precision`
-(inv(cov)) — the failing orientation — so every historical number in the repo's docs came from it
-unless the model's metric happened to be near-isotropic. Orientation is now an explicit
-`imm_orientation` knob, so the R-run and every re-measure below can select the arm directly.
+**Current code state for T6 (updated 2026-10-20 after the flip):** the default is now
+**`covariance`** — `pfcheeshmc/sampler.py:703`, owner-approved and landed in `08357db` with the
+coordinate permutation. Read the rows below as describing the state *at* `4460dc7`, where the shipped
+default was still `precision` (inv(cov)) — the failing orientation — so every historical number in the
+repo's docs came from it unless the model's metric happened to be near-isotropic. **Consequence for
+this inventory's verdicts:** the flip fixes forward-looking behaviour but retroactively *invalidates*
+every historical doc number it replaces, so the CONFOUNDED rows below are not cleared by the flip —
+they need re-measurement under the new default, which is exactly what rows 2, 3, 4, 14 and 20 ask for.
+Orientation is an explicit `imm_orientation` knob, so any re-measure can select the arm directly.
 Recommended actions that would flip the default (rows 2, 3, 4, 14, 20) do so only on G3:
 ≥ 5 seeds, divergence rate not increased, posterior means within 1σ — those are the numbers the
 in-progress R-run must still produce.
