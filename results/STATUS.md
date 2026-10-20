@@ -126,5 +126,20 @@ Read `results/REPORT.md` §6b for the T-tables, §7 for what is left, §8 for th
 caveats. The two that change decisions: absolute wall times before `wp/wp3` `9d5c30d` are ~52% high warm, and
 radon NC cannot be gated at the R1 shape at any warmup.
 
-Not done: T5's per-step cost split (the only unfilled table cell); GEV's diverging coordinate; the noise-floor
-improvement (reference MCSE + serial correlation); the `pf_draws=1` gap between the R1 evidence and production.
+**Corrected 2026-10-20:** the claim above that no before/after wall comparison exists is too strong — row-level
+`wall_s` is null on the 80 before-probe rows, but per-stage seconds are present in `kwargs.stage_s` on 70/80, so
+stage-level before/after is available (see §6b T4).
+
+**Closed 2026-10-20 — the `pf_draws=1` gap (§3f).** The production 4,000-draw Pathfinder pool was measured at the
+R1 shape, uncapped and capped. Uncapped it **cannot run above d ≈ 8** on the 6 GB card (the pool operand alone is
+4.1M rows × 175 × 8 = 5.73 GB at d=175; XLA's over-limit number matches to the byte). Capped to WP5's `4C` it runs
+everywhere, costs 9× less peak memory on 8 Schools (2,076 → 224 MiB), and **changes no bias verdict** against a
+matched 1-draw control. Consequence: default `pf_pool_cap` on; the start policy is not a bias lever.
+
+Also closed: five row files cited by the report's T-tables (`T1__r1_sweep`, `T3__cpu_nuts`, `T5a__cmdbuf`,
+`ORDER__radon_noncentered`, `ORDER__logit_1000x25`) lived only on the divergent `pf-r1-int` branch and are now on
+`pf-r1`; every cited row count was re-checked against its file and is correct.
+
+**Still open, in order:** (1) WP4's refresh is merged but cannot be enabled — needs a `stack_positions` flag, ~15
+lines plus a test; (2) T5's per-step cost split; (3) GEV's diverging coordinate; (4) the noise-floor improvement;
+(5) the two `ORDER__` order-A/B files need a re-run on `pf-r1` to count as current-tree evidence.
