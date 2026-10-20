@@ -587,3 +587,12 @@ Fix: `chees_warmup_with_progress(..., stack_positions=False)`. The refresh's pha
 
 Verified: `test_ensemble_metric.py` **13 passed in 23.4 s** (was 12 passed + 1 failed) and the full merged
 suite **124 passed in 106.11 s** on forced CPU.
+
+### Footnote on the wp3 suite counts (verified 2026-10-20, late)
+
+The merge message for `wp/wp3` states "full wp3 suite 66 passed before the gate change, 67 after". The first
+number is now confirmed from the task output file (**66 passed in 87.03 s**, forced CPU). The second was an
+inference (66 + the one test added with the `g_r1` fix) and was never run as a whole-suite count — what was
+measured after the gate change is `tests/test_r1_bias.py` **24 passed in 19.4 s**. The authoritative number for
+the tree is the merged `pf-r1` suite: **124 passed in 106.11 s**, which contains all of wp3. Recorded so the
+"67" is not quoted as a measurement.
