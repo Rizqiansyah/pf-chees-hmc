@@ -248,6 +248,40 @@ class PfCheesHMC:
         labelled = dict(zip(self.rvs, jax.tree_util.tree_leaves(unravel_tuple(jnp.arange(d)))))
         return ravel_pytree(labelled)[0].astype(int)
 
+    @staticmethod
+    def _pathfinder_mean(pf_state):
+        """Mean of Pathfinder's Gaussian, as a pytree shaped like ``pf_state.position`` (tuple order).
+
+        The ``mu`` that ``blackjax.optimizers.lbfgs.bfgs_sample`` draws around (lbfgs.py:429):
+        ``position + alpha * grad + beta (gamma (beta^T grad))``, i.e. ``position + formula_1 @ grad``
+        without forming the d x d matrix. Not the stored ``position``: the fit stops at the L-BFGS
+        iterate and the Gaussian is centred one Newton step away from it.
+        """
+        pos, unravel = ravel_pytree(pf_state.position)
+        g, _ = ravel_pytree(pf_state.grad_position)
+        return unravel(pos + pf_state.alpha * g + pf_state.beta @ (pf_state.gamma @ (pf_state.beta.T @ g)))
+
+    def _scale_starts(self, starts, pf_state, scale):
+        """``x_i -> mu_pf + scale * (x_i - mu_pf)`` for every chain start; ``mu_pf`` = Pathfinder mean.
+
+        Acts on chain starts only; the covariance handed to the kernel is not touched. ``starts`` is
+        the tuple (``self.rvs`` order) the pool pick produces or the dict the adapt_diag fallback
+        produces; the result has the same structure. A scale that carries a start to a point with a
+        non-finite log-density or gradient raises instead of leaving a NaN chain.
+        """
+        mu = dict(zip(self.rvs, self._pathfinder_mean(pf_state)))
+        if isinstance(starts, dict):
+            out = {n: mu[n] + scale * (starts[n] - mu[n]) for n in self.rvs}
+        else:
+            out = tuple(mu[n] + scale * (x - mu[n]) for n, x in zip(self.rvs, starts))
+        as_dict = out if isinstance(out, dict) else dict(zip(self.rvs, out))
+        bad = int((~self._usable_mask(as_dict)).sum())
+        if bad:
+            raise ValueError(
+                f"pf_start_scale={scale} puts {bad} of {next(iter(as_dict.values())).shape[0]} chain "
+                "starts at a point with a non-finite log-density or gradient; use a smaller scale")
+        return out
+
     def _metric_to_kernel_order(self, imm, perm):
         """Reorder a dense metric from Pathfinder's tuple order into the kernel's dict order.
 
@@ -503,6 +537,8 @@ class PfCheesHMC:
         ridge: float covariance ridge (default 1e-6; the "mc" covariance only)
         imm_source: "mc" (default) | "pf_closed" | "lbfgs_lowrank" | "fisher_lowrank"
         pf_pool_cap: pool row cap; None -> see resolve_pool_cap (depends on imm_source), 0 = uncapped
+        pf_start_scale: float > 0 (default 1.0). Chain starts become mu_pf + scale * (x - mu_pf), with
+            mu_pf the Pathfinder mean; the covariance is not scaled and 1.0 skips the transform
         pf_jitter_eps, pf_max_backtracks, pf_max_restarts, pf_center, pf_restart_radius
         """
         # ---- Defaults
@@ -693,6 +729,15 @@ class PfCheesHMC:
         else:
             raise ValueError("init_source must be 'pf' or 'adapt_diag'")
 
+        # 5b) Start dispersion. Rescale the picked starts about the Pathfinder mean; the covariance
+        # (6, 6b) is never scaled. Exactly 1.0 skips the transform, so the default is bit-identical
+        # to the code before this knob existed (x + 1.0 * (y - x) is not bitwise y in floating point).
+        pf_start_scale = float(kwargs.get("pf_start_scale", 1.0))
+        if not (pf_start_scale > 0.0 and jnp.isfinite(pf_start_scale)):
+            raise ValueError(f"pf_start_scale must be a finite number > 0, got {pf_start_scale!r}")
+        if pf_start_scale != 1.0:
+            pf_inits_tree = self._scale_starts(pf_inits_tree, pf_state, pf_start_scale)
+
         # 6) Dense covariance from ALL PF samples. This is a COVARIANCE in Pathfinder's own tuple
         # order; whether it is handed to the kernel as-is or inverted is the `imm_orientation` choice
         # decided in step 6c, and the reorder to kernel order happens in step 8.
@@ -830,6 +875,7 @@ class PfCheesHMC:
             "pf_draws": int(draws),
             "pf_pool_cap": 0 if cap is None else int(cap),     # 0 = uncapped, as the kwarg
             "pf_pool_rows": int(total),
+            "pf_start_scale": pf_start_scale,
             "init_source": init_source,
             "init_pick": kwargs.get("init_pick", "stratified"),
             "superchains": kwargs.get("superchains", None),
@@ -1541,7 +1587,8 @@ class PfCheesHMC:
         Pathfinder / pool / metric (``_run_pathfinder``)
             ``imm_source``, ``imm_orientation``, ``imm_order``; ``ridge`` (added to the Monte-Carlo
             covariance only, so 0.0 for every other source); ``pf_draws``; ``pf_pool_cap`` (the cap
-            applied, 0 = uncapped) and ``pf_pool_rows`` (rows actually drawn); ``init_source``,
+            applied, 0 = uncapped) and ``pf_pool_rows`` (rows actually drawn); ``pf_start_scale``;
+            ``init_source``,
             ``init_pick``, ``superchains`` (null = not set), ``pm_chains``, ``pm_init``, ``pm_tune``,
             ``score_chunk``.
         Step-size search (``_run_step_size_tune``)
@@ -1576,6 +1623,7 @@ class PfCheesHMC:
             "pf_draws": pf["pf_draws"],
             "pf_pool_cap": pf["pf_pool_cap"],
             "pf_pool_rows": pf["pf_pool_rows"],
+            "pf_start_scale": pf["pf_start_scale"],
             "init_source": pf["init_source"],
             "init_pick": pf["init_pick"],
             "superchains": pf["superchains"],
