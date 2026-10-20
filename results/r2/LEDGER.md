@@ -96,3 +96,25 @@ M2a is therefore the **first** R1 measurement of `raw` on the single-phase path.
 Suite after the R2-WP2 merge (`62c7620`, own output): `159 passed in 271.65s (0:04:31)`.
 
 Suite after the R2-WP3 + R2-WP4 merges (`25d2618` code; run before M1, own output): `191 passed, 4 warnings in 285.91s (0:04:45)`. M1 started from code trees of `eee10ae`; no code change since.
+
+## 2026-10-20 — M1 done; **D2 = NO** (keep `imm_source="mc"`)
+
+M1 ran 18 jobs, all rc=0, from code trees `eee10ae` (driver log `~/pf-runs/r2-logs/M1/driver.log`).
+Rows: `results/r2/runs/M1__{r2,r1,mem}.jsonl`. Every row's `effective.imm_source` matches its arm.
+Every other setting is the sampler default: `pf_draws=4000`, pool by the pool rule, covariance, `ma`.
+
+| clause | evaluation | result |
+|---|---|---|
+| (a) R2-WP2 tests 1–3 pass | `tests/test_pf_closed_form.py` in the 191-pass suite | **pass** |
+| (b1) R2 median grads/ESS(closed) ≤ 1.10× mc, every model | 8schools 57.39/55.76 = 1.03; gev 146.9/141.5 = 1.04; logit 77.34/75.86 = 1.02; radon 296.3/302.5 = 0.98 | **pass** |
+| (b2) R2 per-seed count of max_rhat ≤ 1.01 not lower | 8schools 3 vs 3; gev 2 vs 2; logit 3 vs 3; **radon 2 vs 3** (closed seed 2 = 1.0101; mc 1.0075/1.0066/1.0046) | **FAIL** |
+| (c) R1 per-seed g_r1 equal or better, every model | 8schools, gev, logit pass/pass/pass both arms; radon fail/fail/fail both arms | **pass** |
+| (d) radon R1 peak ≤ mc | 653.5 MiB (closed, pool 4,096 rows) vs 1,242 MiB (mc, pool 122,500 rows) | **pass** |
+
+D2 needs every clause to hold, so **D2 = NO**: the `imm_source` default stays `"mc"`. The deciding
+clause misses by 0.0001 of R̂ on one radon seed. Per A6 this is recorded, not reinterpreted. REPORT
+carries it as an open question for the owner. On these rows, the closed form costs the same at R2
+(0.98–1.04×), gives the same R1 verdicts, halves radon's R1 peak memory, and removes the O(d³) pool.
+
+Radon at R1 W=50 fails on both arms (b² 0.14–2.07 per seed; pooled b² 1.0 (mc) and 2.0 (closed)
+against pooled floors 0.0017). That is a real bias, not noise; M2a's W grid is the next test.

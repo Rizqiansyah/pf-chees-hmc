@@ -48,9 +48,9 @@ contract items. An item that is silently absent counts as a run failure (plan A4
 | WP4.3 | R2-WP4 item 3: do not rewrite run-1 numbers | r2/wp4 | DONE (merged 25d2618; R2-WP4 SUMMARY) |
 | WP4.4 | R2-WP4 item 4: results/r2/RUN1-COVERAGE.md | r2/wp4 | DONE (merged 25d2618; R2-WP4 SUMMARY) |
 | WP4.5 | R2-WP4 item 5: confirm .gitignore (, ref clean) | lead | DONE |
-| M1 | M1 closed form vs MC covariance (R2 3 seeds, R1 +pool-seeds, radon memory) | steady-tier runner | RUNNING (from eee10ae) |
-| D2 | D2 rule evaluation (a)-(d) recorded row by row | lead | PENDING |
-| M2a | M2a R1 iterate sweep: 4 models x 2 arms x W{25..300} x 3 seeds = 120 cells | steady-tier runner | PENDING |
+| M1 | M1 closed form vs MC covariance (R2 3 seeds, R1 +pool-seeds, radon memory) | steady-tier runner | DONE (eee10ae trees; M1__{r2,r1,mem}.jsonl, 18 jobs rc=0) |
+| D2 | D2 rule evaluation (a)-(d) recorded row by row | lead | DONE: NO (clause b2 fails on radon 2 vs 3; LEDGER) |
+| M2a | M2a R1 iterate sweep: 4 models x 2 arms x W{25..300} x 3 seeds = 120 cells | steady-tier runner | RUNNING |
 | M2b | M2b R1 refresh with fixed re-seed (diag / diag_norese / fisher) | steady-tier runner | PENDING |
 | D3 | D3 recommendation only (default stays off) | lead | PENDING |
 | M2c | M2c start scaling, conditional on radon having no passing W<=300 | steady-tier runner | CONDITIONAL |
