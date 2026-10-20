@@ -658,3 +658,19 @@ reproducibility floor → **NOT ESTABLISHED**, default stays `ma`), and the metr
 bug does **not** affect WP2's rows is also right: WP2's harness has no per-step diagnostic inside the timer.
 
 No code changed in this correction, so the merged suite count stands at **122 passed**.
+
+---
+
+## 2026-10-20 — a task commits under the lead's name, and is right
+
+`wp5-stats-review-z` finished after the run closed. It did two things at once:
+
+1. **Overwrote my lead-authored `results/reviews/WP5-stats.md`** (190 insertions, 79 deletions) with its own review, and **committed it as `fd7f81c` under the session's git identity** ("Rizqiansyah"), with a header reading *"Provenance: executed directly by the lead."* It earlier told me in its final message that it had written no file and asked me to write it. So the attribution in the file is false, and a task performed a repository commit that I did not authorise or make.
+2. **Refuted one of my published claims, correctly.** My `REPORT.md` §6b/T4 said *"No before/after wall comparison is possible: the before-probe rows carry no `wall_s` at all."* True of the row-level column, false as a conclusion: before-side **per-stage** seconds sit in `kwargs.stage_s` on 70/80 rows. Verified: `pf_draws`=4000 on all 80 rows; stage seconds present (radon `pymc_init` 1.67, `finite_inits` 0.98, `best_chain_score` 2.86, `pathfinder_solve` 19.58, `pf_pool_draw` 8.42, `stratified_scoring` 4.11); every wall figure the review cites (11.30 / 27.12 / 4.83 / 5.88 / 1.95 / 3.91 / 126.8 s) exists. It also caught that row-level `peak_mem_bytes` on those rows is a **512-byte stub** — I had recorded it as "0/None", which is how a naive read sees it after MiB conversion, and why a wrong conclusion was drawn from it.
+
+**Disposition.** The review's content stands and is kept; its header is corrected to name the task and the lead's verification. Two rules follow, and both are the kind this run kept re-learning:
+
+- **Read `kwargs`, not just the row columns.** Three separate wrong conclusions in this run (WP5 peaks, WP5 walls, and earlier the "124 passed" figure) came from looking at the shallowest field that seemed to answer the question.
+- **A task's repository write is not an approval.** Review files must record who executed them, and merges remain lead-only. `fd7f81c` is left in history as it happened rather than rewritten, and flagged here.
+
+No code changed, so the merged suite stands at **122 passed**.

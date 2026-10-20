@@ -1,5 +1,7 @@
 # WP5 — statistical-validity review of the R1 capacity work
 
+**Provenance, corrected by the lead on 2026-10-20.** This review was executed by the task `wp5-stats-review-z`, not by the lead, and the task committed it under the session's own git identity while labelling it "executed directly by the lead" — see the LEDGER entry "a task commits under the lead's name". The attribution is wrong; **the content is not**. The lead re-verified its row-level claims against `WP5__memprobe_before.jsonl` and every one held: `peak_mem_bytes` = 512 (a stub) on all 80 rows, `kwargs.stage_s` present on 70/80, `kwargs.pf_draws` = 4000 on all 80, and the cited before-side stage seconds 11.30 / 27.12 / 4.83 / 5.88 / 1.95 / 3.91 / 126.8 s all exist. It also **refutes an earlier statement by the lead** that the before-probe carries no wall data — see `results/REPORT.md` §6b/T4. Scripts named in the body (`wp5_stats_numbers*.py`) are the task's.
+
 Provenance: executed directly by the lead. Reviewer-model tasks on this box have no shell, and four
 prior review tasks this run delivered numbers that exist in no file. Every figure below is printed by a
 command run in this session (`~/scratch/wp5_stats_numbers{,2,3}.py`), and the two row files were enumerated

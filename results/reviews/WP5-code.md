@@ -57,7 +57,7 @@ The `init_source="pf"` path takes chain starts from PF pool draws (finite by con
 
 ## 5. Memory attribution from ABSENCE — the rows support it, one arithmetic is mislabelled
 
-Recomputed per (model, C) from `kwargs.peak_bytes_in_use` (the row's own `peak_mem_bytes` is 0/None in the memprobe file — the stage data lives in `kwargs`; that is a harness schema choice, not a bug, but the SUMMARY should say where the number comes from):
+Recomputed per (model, C) from `kwargs.peak_bytes_in_use` (the row's own `peak_mem_bytes` is a **512-byte stub** in the memprobe file — the stage data lives in `kwargs`; that is a harness schema choice, not a bug, but the SUMMARY should say where the number comes from):
 
 | model | C | last stage written | recomputed max peak |
 |---|---|---|---|
