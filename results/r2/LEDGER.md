@@ -40,3 +40,57 @@ in `results/r2/drivers/`. Every plan rule is otherwise unchanged. The R2-WP1 tas
 is carried forward and checked against the plan, not discarded. R2-WP3 is split into 3a (new files:
 `tools/t3_cpu_nuts.py`, `summarise_rows.py smallest-pass`, `tests/test_t3_cpu.py`) and 3b (`r1_bias.py`
 passthrough/pool-seeds, after R2-WP2 merges) so the file-disjoint half starts in wave 1.
+
+Baseline suite on `pf-r2` at `4e07b45` (forced CPU, A3 command), copied from the command's own output: `125 passed in 165.79s (0:02:45)`.
+
+## 2026-10-20 — R2-WP1 merged (`07575bc`)
+
+Lead review APPROVE (`results/r2/reviews/R2-WP1-code.md`). Suite after merge (own output):
+`130 passed in 174.33s (0:02:54)`.
+
+**Contradiction (A6 protocol, recorded, continued).** The CPU smoke acceptance band (re-seed L within
+0.5–2× of no-re-seed L) was missed on `logit_1000x25`: 29.7 / 9.7 = 3.07×. 8schools was 1.07×. The
+A6 BLOCK needs > 3× on ≥ 2 models, so **no BLOCK, and M2b runs**.
+
+| logit arm | integration time T = eps·L, seeds 1/2/3 |
+|---|---|
+| re-seed on | 4.8 / 5.3 / 5.5 |
+| no refresh (dense Pathfinder metric) | 4.9 / 4.9 / 4.5 |
+| re-seed off | 1.9 / 1.5 / 1.9 |
+
+Lead reading: in integration time the re-seeded arm matches the no-refresh arm. The
+no-re-seed control under-grows from L=1 in 25 phase-B steps. The L gap comes from `sample_diag`
+being unable to absorb logit's correlation (whitened lmax 5.4–6.8). It is not the run-1 unit defect,
+whose signature was 8–10× L. M2b reports both numbers at C=1,024.
+
+**Plan error found by R2-WP4 (E3c).** The plan says radon `covraw` "fails resolvably 6/6". Row
+`T1__r1_sweep.jsonl` `int:covraw` W=200 seed 2 has b² 0.00709 / floor 0.00413, which `g_r1` passes.
+The erratum was narrowed to "fails resolvably at W=50/100, mixed at W=200". The task was right.
+
+## 2026-10-20 — R2-WP2 merged; new run-1 defect E13 (`iterate` was never forwarded without a refresh)
+
+Lead review APPROVE (`results/r2/reviews/R2-WP2-code.md`).
+
+**E13 (found by the R2-WP2 task, verified by the lead).** At `4e07b45` the single-phase
+`chees_warmup_with_progress` call in `_run_chees` passes no `iterate=`, so it takes
+`utils.py:133` `iterate="ma"`. Only `_run_chees_two_phase` (`:925`, `:976`) forwarded it.
+`5982ee7` fixes it. Consequences for run-1 claims:
+- every run-1 row that requested `raw` **without** a metric refresh ran `ma`. A scan of
+  `kwargs` in `results/runs/*.jsonl` finds 88 such rows:
+  - `T1__r1_sweep` `int:covraw` 24;
+  - `T1__prodpool*` `int:prodpool*` 16;
+  - `T1__r2_poolcap*` 20;
+  - `WP2__lgrowth` `wp2:C_cov_raw` / `wp2:D_cov_raw_t0` 16;
+  - `WP4__reseed_ab` `ab:baseline` 12;
+- A2's "still valid: R1 passing at W=50 on 8 Schools, GEV and logistic with (covariance, `raw`)"
+  is really **(covariance, `ma`)**, i.e. the current default path. The passes stand; the label is
+  wrong;
+- run-1 "`raw` costs +7.7% warmup wall and saves none" (E11) compared two runs of the same
+  configuration, so it is void, not merely "untested at R1";
+- the WP4 refresh arms (two-phase) did run the requested iterate;
+- `WP2__lgrowth`'s `raw` arms also ran `ma`. So the plan §1.3 claim "L at step 100 is 25–42 with
+  `raw` versus 8.3 with `ma`" is not an iterate effect: whatever separated those arms, it was not
+  the iterate. Not decision-bearing, because M2a measures `raw` vs `ma` directly.
+M2a is therefore the **first** R1 measurement of `raw` on the single-phase path. R2-WP3's
+`effective` check (flag vs `attrs["config"]`) is the guard that would have caught this.
+Suite after the R2-WP2 merge (`62c7620`, own output): `159 passed in 271.65s (0:04:31)`.

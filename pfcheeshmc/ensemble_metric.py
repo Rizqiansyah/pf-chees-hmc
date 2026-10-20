@@ -28,6 +28,7 @@ __all__ = [
     "positions_to_draws",
     "estimate_covariance",
     "reseed_trajectory_length",
+    "whitened_lambda_max",
     "ENGLISH_NAMES",
 ]
 
@@ -138,17 +139,82 @@ def estimate_covariance(name: str, draws: jnp.ndarray, grads: Optional[jnp.ndarr
     return _estimate(name, draws, grads, float(ridge), float(shrink), int(max_rank))
 
 
-def reseed_trajectory_length(cov: jnp.ndarray) -> float:
-    """T0 = (pi/2) * sqrt(l_max(M^-1)) for a covariance metric, without forming the inverse.
+def _sample_covariance(draws: jnp.ndarray) -> jnp.ndarray:
+    """Bessel-corrected (ddof=1) dense sample covariance of ``(N, d)`` draws."""
+    n = int(draws.shape[0])
+    if n < 2:
+        raise ValueError(f"need >= 2 draws for a covariance, got {n}")
+    x = jnp.asarray(draws, dtype=jnp.float64 if jax.config.jax_enable_x64 else jnp.float32)
+    x = x - x.mean(axis=0, keepdims=True)
+    s = x.T @ x / float(n - 1)
+    return 0.5 * (s + s.T)
 
-    The brief defines the reseed in terms of the largest eigenvalue of the metric's *inverse*.
-    For a covariance ``Sigma``, ``M^-1 = Sigma^-1`` and its largest eigenvalue is
-    ``1 / l_min(Sigma)``. Computing it from ``eigvalsh`` of the (small, dense, PD) covariance
-    avoids an explicit matrix inverse and a conditioning loss.
+
+def _require_pd(mat: jnp.ndarray, what: str) -> np.ndarray:
+    """Symmetrise, then fail with a ValueError naming PD (not with a NaN or a Cholesky error)."""
+    sym = 0.5 * (mat + mat.T)
+    eigs = np.asarray(jax.device_get(jnp.linalg.eigvalsh(sym)), dtype=np.float64)
+    if not np.all(np.isfinite(eigs)) or float(eigs.min()) <= 0.0:
+        raise ValueError(
+            f"{what} must be positive definite; eigs min={eigs.min():.3e}, "
+            f"max={eigs.max():.3e}, finite={bool(np.all(np.isfinite(eigs)))} (not PD)")
+    return eigs
+
+
+def whitened_lambda_max(cov_B: jnp.ndarray, draws: jnp.ndarray) -> float:
+    """``lambda_max( L^-1 S L^-T )`` -- the re-seed's unit-invariant quantity.
+
+    ``B = L L^T`` is the refreshed metric (a dense covariance in kernel order, Cholesky) and ``S``
+    is the Bessel-corrected sample covariance (ddof=1) of the SAME pool draws the estimator used,
+    shape ``(N, d)``. ``L^-1`` is applied with ``solve_triangular`` twice and never as an explicit
+    inverse.
+
+    Why this and not ``sqrt(1/lambda_min(B))``: under the covariance metric ``M^-1 = B`` the leapfrog
+    frequencies are ``sqrt(eig(B H))`` for target Hessian ``H``, and those are invariant to rescaling
+    a coordinate. ``lambda_min(B)`` is the precision of the narrowest coordinate in MODEL units, so
+    it moves when units move -- that is run-1's defect (plan Part B 1.1), which produced frozen L of
+    213-283 on radon and GEV. Whitening S by B makes the quantity a pure number: 1 when ``B == S``,
+    ``1 + |rho|`` for a diagonal B against a correlated pool.
+    """
+    from jax.scipy.linalg import solve_triangular
+
+    B = jnp.asarray(cov_B, dtype=jnp.float64 if jax.config.jax_enable_x64 else jnp.float32)
+    if B.ndim != 2 or B.shape[0] != B.shape[1]:
+        raise ValueError(f"cov_B must be a square (d, d) matrix, got shape {B.shape}")
+    d = int(B.shape[0])
+    D = jnp.asarray(draws, dtype=B.dtype)
+    if D.ndim != 2 or D.shape[1] != d:
+        raise ValueError(f"draws must be (N, {d}), got shape {D.shape}")
+
+    _require_pd(B, "the refreshed metric B (imm_B)")
+    S = _sample_covariance(D)
+    L = jnp.linalg.cholesky(B)
+    A = solve_triangular(L, S, lower=True)                 # L^-1 S
+    W = solve_triangular(L, A.T, lower=True).T            # (L^-1 S^T) ^T = L^-1 S L^-T
+    W = 0.5 * (W + W.T)
+    eigs = np.asarray(jax.device_get(jnp.linalg.eigvalsh(W)), dtype=np.float64)
+    if not np.all(np.isfinite(eigs)):
+        raise ValueError(f"whitened lambda_max is not finite: eigs={eigs}")
+    return float(eigs.max())
+
+
+def reseed_trajectory_length(cov_B: jnp.ndarray, draws: jnp.ndarray) -> float:
+    """``T0_B = (pi/2) * sqrt( lambda_max( L^-1 S L^-T ) )``.
+
+    The plan's formula, verbatim. ``B = L L^T`` is the refreshed metric (``imm_B``, a dense
+    covariance in kernel order, Cholesky); ``S`` is the sample covariance (ddof=1) of the SAME
+    phase-A pool draws the estimator used, shape ``(N, d)``; ``lambda_max`` comes from
+    ``jnp.linalg.eigvalsh`` of the symmetrised ``d x d`` matrix with ``L^-1`` applied by
+    ``jax.scipy.linalg.solve_triangular`` (no explicit inverse).
+
+    The caller applies the clip ``T0_B = clip(T0_B, eps_B, max_leapfrog_steps * eps_B)`` because
+    ``eps_B`` and ``max_leapfrog_steps`` are warmup settings, not properties of the metric; this
+    function stays a pure function of ``(B, draws)``.
+
+    ChEES optimum, for orientation: on a unit Gaussian the criterion is ``4d sin^2 T``, which peaks
+    at ``T = pi/2``. So the optimum tracks the largest standard deviation in the metric's whitened
+    frame -- which is exactly what ``lambda_max(L^-1 S L^-T)`` measures.
     """
     import math
-    eigs = np.asarray(jax.device_get(jnp.linalg.eigvalsh(jnp.asarray(cov))), dtype=np.float64)
-    lmin = float(eigs.min())
-    if lmin <= 0.0:
-        raise ValueError(f"reseed requires a PD covariance; l_min={lmin:.3e}")
-    return math.pi / 2.0 * math.sqrt(1.0 / lmin)
+
+    return math.pi / 2.0 * math.sqrt(max(whitened_lambda_max(cov_B, draws), 0.0))
