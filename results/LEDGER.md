@@ -1038,3 +1038,35 @@ measure the new default against both historical arms on all four models **with E
 finalised. Until those rows land, the default in `pf-r1` is provisional and this entry is the note saying so.
 Tests: `tests/test_wp5_capacity.py` 10 passed (the old "default is uncapped" contract replaced explicitly,
 not silently).
+
+---
+
+## 2026-10-20 15:05 — GEV's stack cost is real; I had wrongly voided it. Plus a lock/timeout trap that cost a cell
+
+**The correction.** I stamped the GEV and 8 Schools warmup-output cells `timing_void` because they ran
+14:25–14:29 while three of my own drivers were queued on the card. The clean re-run of GEV came back at
+**64.2 %** stack cost (953 µs/transition) with `gpu_other_procs: []` — against **65.1 %** (975 µs) in the
+allegedly contended cell. The effect reproduces on an exclusive card, so it is real and the void stamp was
+wrong; the contended row is now marked superseded, not void, and kept for provenance.
+
+So the finding stands as measured, and it is not explainable by stack size:
+
+| model | d | ~L (leapfrogs/transition) | warmup | stack cost | µs/transition | card |
+|---|---|---|---|---|---|---|
+| GEV | 3 | 1.8 | 2.97 s | **+64.2 %** | 953 | exclusive, `gpu_other_procs=[]` |
+| logistic | 25 | 17.4 | 9.10 s | **+0.3 %** | 16 | exclusive |
+
+GEV's position stack is *smaller* in bytes and costs 60× more per transition. Neither stack bytes nor
+transition length explains it (logistic has the larger L *and* the cheaper stack, which is the wrong way for
+a "fixed per-transition cost" story). **Mechanism NOT ESTABLISHED**; 8 Schools and radon are being re-run
+cleanly to see whether GEV is an outlier or the pattern is monotone in something I have not identified.
+What is already usable: the progress-callback cost is small and consistent (2.0–5.2 %), and stacking
+warmup positions is *sometimes* very expensive, which is a real argument for keeping it opt-in.
+
+**The trap, recorded because it burned a cell and earlier caused a misdiagnosis.** `tools/gpu_run.sh` is
+`exec flock /tmp/pf-gpu.lock env PF_GPU_LOCK=1 "$@"`, so writing `timeout 900 tools/gpu_run.sh <cmd>`
+counts the **lock wait against the timeout**. The 8 Schools re-run exited `rc=124` having never touched the
+GPU. Correct form is inside the lock: `tools/gpu_run.sh timeout 900 <cmd>`. Related: `flock` does not grant
+in FIFO order, so queued drivers do not run in submission order — which is fine for exclusivity but means a
+driver that must run entirely on one code version cannot be interleaved with a sampler commit. No sampler
+edits are being made while the pool-default A/B is in flight for that reason.
