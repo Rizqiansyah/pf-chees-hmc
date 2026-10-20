@@ -21,6 +21,7 @@ from .ensemble_metric import (
 from typing import Tuple, Optional, Dict, Any, NamedTuple
 from datetime import date
 import io
+import json
 import re
 import logging
 import contextlib
@@ -76,6 +77,29 @@ def default_pool_cap(chains, d):
     if c < 1 or dd < 1:
         raise ValueError(f"default_pool_cap needs chains>=1 and d>=1, got chains={c} d={dd}")
     return max(4 * c, 4 * dd * dd)
+
+
+def resolve_pool_cap(pf_pool_cap, chains, d, imm_source="mc"):
+    """Row cap for the Pathfinder start/metric pool, or None for the historical uncapped pool.
+
+    `pf_pool_cap=None` (the default) depends on who consumes the pool:
+
+    * ``imm_source == "mc"``: the pool is also the sample the Monte-Carlo covariance is estimated
+      from, so rows must stay large relative to d^2 -> :func:`default_pool_cap`, ``max(4C, 4d^2)``.
+    * any other source: the metric comes from the fitted L-BFGS factors (``pf_closed``) or from its own
+      estimator, and the pool only feeds the start picks, so ``4C`` rows are enough. This also removes
+      the ~32 d^3-byte pool the d-dependent cap needs at large d (4 GB at d=500).
+
+    ``0`` is the uncapped pool and an explicit integer pins the row count, for every source.
+    """
+    if pf_pool_cap is None:
+        return default_pool_cap(chains, d) if imm_source == "mc" else 4 * int(chains)
+    cap = int(pf_pool_cap)
+    if cap == 0:
+        return None
+    if cap < chains:
+        raise ValueError(f"pf_pool_cap={cap} must be >= chains={chains} (or 0 for uncapped)")
+    return cap
 
 
 def _stratified_pool_idx(logp_subset, subset_idx, n_pick):
@@ -140,9 +164,22 @@ def _frozen_nominal_L(integration_steps_fn, warmup_steps_used):
     return best
 
 
+def _json_default(o):
+    """json.dumps fallback for the config record: numpy / JAX scalars and arrays -> plain Python."""
+    if hasattr(o, "tolist"):
+        return o.tolist()
+    if hasattr(o, "item"):
+        return o.item()
+    raise TypeError(f"config value {o!r} of type {type(o).__name__} is not JSON serialisable")
+
+
 class PfCheesHMC:
     def __init__(self, model:pm.Model, seed:Optional[int]=None):
         self.model = model
+        # Per-stage record of what each stage actually resolved (defaults filled in). Written by the
+        # stage methods, composed into idata.attrs["config"] by sample(). Stages can be called on
+        # their own (tests, tools), so every stage overwrites only its own entry.
+        self._resolved = {}
 
         self.rvs = [rv.name for rv in model.value_vars]
         self._ld_fn = get_jaxified_logp(model)
@@ -210,6 +247,40 @@ class PfCheesHMC:
         # result is the tuple-order index of the coordinate the kernel puts at position k.
         labelled = dict(zip(self.rvs, jax.tree_util.tree_leaves(unravel_tuple(jnp.arange(d)))))
         return ravel_pytree(labelled)[0].astype(int)
+
+    @staticmethod
+    def _pathfinder_mean(pf_state):
+        """Mean of Pathfinder's Gaussian, as a pytree shaped like ``pf_state.position`` (tuple order).
+
+        The ``mu`` that ``blackjax.optimizers.lbfgs.bfgs_sample`` draws around (lbfgs.py:429):
+        ``position + alpha * grad + beta (gamma (beta^T grad))``, i.e. ``position + formula_1 @ grad``
+        without forming the d x d matrix. Not the stored ``position``: the fit stops at the L-BFGS
+        iterate and the Gaussian is centred one Newton step away from it.
+        """
+        pos, unravel = ravel_pytree(pf_state.position)
+        g, _ = ravel_pytree(pf_state.grad_position)
+        return unravel(pos + pf_state.alpha * g + pf_state.beta @ (pf_state.gamma @ (pf_state.beta.T @ g)))
+
+    def _scale_starts(self, starts, pf_state, scale):
+        """``x_i -> mu_pf + scale * (x_i - mu_pf)`` for every chain start; ``mu_pf`` = Pathfinder mean.
+
+        Acts on chain starts only; the covariance handed to the kernel is not touched. ``starts`` is
+        the tuple (``self.rvs`` order) the pool pick produces or the dict the adapt_diag fallback
+        produces; the result has the same structure. A scale that carries a start to a point with a
+        non-finite log-density or gradient raises instead of leaving a NaN chain.
+        """
+        mu = dict(zip(self.rvs, self._pathfinder_mean(pf_state)))
+        if isinstance(starts, dict):
+            out = {n: mu[n] + scale * (starts[n] - mu[n]) for n in self.rvs}
+        else:
+            out = tuple(mu[n] + scale * (x - mu[n]) for n, x in zip(self.rvs, starts))
+        as_dict = out if isinstance(out, dict) else dict(zip(self.rvs, out))
+        bad = int((~self._usable_mask(as_dict)).sum())
+        if bad:
+            raise ValueError(
+                f"pf_start_scale={scale} puts {bad} of {next(iter(as_dict.values())).shape[0]} chain "
+                "starts at a point with a non-finite log-density or gradient; use a smaller scale")
+        return out
 
     def _metric_to_kernel_order(self, imm, perm):
         """Reorder a dense metric from Pathfinder's tuple order into the kernel's dict order.
@@ -463,7 +534,11 @@ class PfCheesHMC:
         pm_tune: int (default 500)
         pm_seed: int (default self.seed)
         init_source: "pf" | "adapt_diag" (default "pf")
-        ridge: float covariance ridge (default 1e-6)
+        ridge: float covariance ridge (default 1e-6; the "mc" covariance only)
+        imm_source: "mc" (default) | "pf_closed" | "lbfgs_lowrank" | "fisher_lowrank"
+        pf_pool_cap: pool row cap; None -> see resolve_pool_cap (depends on imm_source), 0 = uncapped
+        pf_start_scale: float > 0 (default 1.0). Chain starts become mu_pf + scale * (x - mu_pf), with
+            mu_pf the Pathfinder mean; the covariance is not scaled and 1.0 skips the transform
         pf_jitter_eps, pf_max_backtracks, pf_max_restarts, pf_center, pf_restart_radius
         """
         # ---- Defaults
@@ -489,9 +564,10 @@ class PfCheesHMC:
 
         # WP5: cap on the PF start pool (chains*draws rows). At C=1,024 with the default
         # draws=4,000 the pool is 4.1M rows -- 5.73 GB at d=175 -- and it feeds both the covariance
-        # estimate and the start picks. None (the default) now means
-        # default_pool_cap(chains, d) = max(4C, 4d^2); 0 is the historical uncapped pool; an integer
-        # pins the row count.
+        # estimate and the start picks. None (the default) means resolve_pool_cap(...): 4C rows when
+        # imm_source != "mc" (the pool only feeds start picks), default_pool_cap(chains, d) =
+        # max(4C, 4d^2) when imm_source == "mc"; 0 is the historical uncapped pool; an integer pins
+        # the row count.
         pf_pool_cap = kwargs.get("pf_pool_cap", None)
         # WP5: block size for the vmapped log-density scorings below (peak memory is
         # O(block), not O(pool or chains)).
@@ -578,15 +654,8 @@ class PfCheesHMC:
             for s in jnp.asarray(x0_pf[n]).shape:
                 k *= int(s)
             d_flat += k
-        cap = pf_pool_cap
-        if cap is not None:
-            cap = int(cap)
-            if cap == 0:
-                cap = None
-            elif cap < chains:
-                raise ValueError(f"pf_pool_cap={cap} must be >= chains={chains} (or 0 for uncapped)")
-        else:
-            cap = default_pool_cap(chains, d_flat)
+        imm_source = kwargs.get("imm_source", "mc")
+        cap = resolve_pool_cap(pf_pool_cap, chains, d_flat, imm_source)
         total = chains * draws
         if cap is not None:
             total = min(total, cap)
@@ -660,6 +729,15 @@ class PfCheesHMC:
         else:
             raise ValueError("init_source must be 'pf' or 'adapt_diag'")
 
+        # 5b) Start dispersion. Rescale the picked starts about the Pathfinder mean; the covariance
+        # (6, 6b) is never scaled. Exactly 1.0 skips the transform, so the default is bit-identical
+        # to the code before this knob existed (x + 1.0 * (y - x) is not bitwise y in floating point).
+        pf_start_scale = float(kwargs.get("pf_start_scale", 1.0))
+        if not (pf_start_scale > 0.0 and jnp.isfinite(pf_start_scale)):
+            raise ValueError(f"pf_start_scale must be a finite number > 0, got {pf_start_scale!r}")
+        if pf_start_scale != 1.0:
+            pf_inits_tree = self._scale_starts(pf_inits_tree, pf_state, pf_start_scale)
+
         # 6) Dense covariance from ALL PF samples. This is a COVARIANCE in Pathfinder's own tuple
         # order; whether it is handed to the kernel as-is or inverted is the `imm_orientation` choice
         # decided in step 6c, and the reorder to kernel order happens in step 8.
@@ -677,9 +755,26 @@ class PfCheesHMC:
         # 6b) Optional alternative metric (E4). Default "mc" keeps the empirical covariance above.
         # A low-rank source produces the same kind of object -- a COVARIANCE estimate -- so the
         # orientation is not its property, it is chosen once in 6c.
-        imm_source = kwargs.get("imm_source", "mc")
         if imm_source != "mc":
-            if imm_source == "lbfgs_lowrank":
+            if imm_source == "pf_closed":
+                # The exact covariance Pathfinder's own sampler draws with: bfgs_sample builds
+                # phi = mu + sqrt(alpha) * (Q (L - I) Q^T u + u) with L L^T = I + R gamma R^T and
+                # Q R = beta / sqrt(alpha), whose covariance is diag(alpha) + beta gamma beta^T
+                # (formula II.1 of zhang2022pathfinder). So the MC pool covariance above is a noisy
+                # estimate of this matrix; here it is taken in closed form, from the one fit made in
+                # step 3. It is in Pathfinder's flat (tuple, self.rvs) order and goes through the
+                # same orientation (6c) and kernel-order choke point (8) as "mc". No ridge: it is
+                # positive definite by construction, which is asserted instead of patched over.
+                covariance = bj.optimizers.lbfgs.lbfgs_inverse_hessian_formula_1(
+                    pf_state.alpha, pf_state.beta, pf_state.gamma)
+                lam_min = float(jnp.linalg.eigvalsh(covariance).min())
+                if not lam_min > 0.0:
+                    raise ValueError(
+                        f"imm_source='pf_closed': the closed-form Pathfinder covariance is not "
+                        f"positive definite (min eigenvalue {lam_min:.3e}, dtype {covariance.dtype}, "
+                        f"d={covariance.shape[0]}). No ridge is added by design; use "
+                        "imm_source='mc' or enable float64.")
+            elif imm_source == "lbfgs_lowrank":
                 # Free: these are the L-BFGS factors Pathfinder already fitted (zhang2022pathfinder
                 # formula II.1/II.3). No extra gradients, no extra solve.
                 lr = bj.mcmc.metrics.lbfgs_inverse_hessian_to_low_rank_metric(
@@ -698,10 +793,12 @@ class PfCheesHMC:
                     cutoff=float(kwargs.get("fisher_cutoff", 2.0)))
             else:
                 raise ValueError(
-                    f"imm_source must be 'mc', 'lbfgs_lowrank' or 'fisher_lowrank', got {imm_source!r}")
-            D = jnp.diag(lr.sigma)
-            covariance = (D @ (jnp.eye(lr.sigma.shape[0], dtype=lr.sigma.dtype)
-                               + lr.U @ jnp.diag(lr.lam - 1.0) @ lr.U.T) @ D)
+                    "imm_source must be 'mc', 'pf_closed', 'lbfgs_lowrank' or 'fisher_lowrank', "
+                    f"got {imm_source!r}")
+            if imm_source != "pf_closed":
+                D = jnp.diag(lr.sigma)
+                covariance = (D @ (jnp.eye(lr.sigma.shape[0], dtype=lr.sigma.dtype)
+                                   + lr.U @ jnp.diag(lr.lam - 1.0) @ lr.U.T) @ D)
             # Note: rescaling this metric to the empirical covariance's geometric mean was tried and
             # is NOT implemented -- it made every measured model worse (8 Schools 50,626 -> 13,628
             # ESS/s, radon centered R-hat 2.10 -> 5.69). See docs/ladder-results.md. That comparison
@@ -768,6 +865,26 @@ class PfCheesHMC:
         elif order != "pathfinder":
             raise ValueError(f"imm_order must be 'kernel' or 'pathfinder', got {order!r}")
 
+        self._resolved["pathfinder"] = {
+            "seed": int(seed),
+            "imm_source": imm_source,
+            "imm_orientation": orientation,
+            "imm_order": order,
+            # the ridge is added to the Monte-Carlo covariance only; every other source overwrites it
+            "ridge": float(ridge) if imm_source == "mc" else 0.0,
+            "pf_draws": int(draws),
+            "pf_pool_cap": 0 if cap is None else int(cap),     # 0 = uncapped, as the kwarg
+            "pf_pool_rows": int(total),
+            "pf_start_scale": pf_start_scale,
+            "init_source": init_source,
+            "init_pick": kwargs.get("init_pick", "stratified"),
+            "superchains": kwargs.get("superchains", None),
+            "pm_chains": pm_chains,
+            "pm_init": pm_init,
+            "pm_tune": int(pm_tune),
+            "score_chunk": score_chunk,
+        }
+
         return pf_samples, inverse_mass_matrix
 
 
@@ -800,6 +917,7 @@ class PfCheesHMC:
         ld_fn = self.ld_fn
         num_probes = int(kwargs.get("eps0_probes", 32))
         seed = kwargs.get("seed", self.seed)
+        self._resolved["step_size"] = {"eps0_probes": num_probes, "seed": int(seed)}
 
         n_drawn = int(len(next(iter(pf_samples.values()))))
         take = min(num_probes, n_drawn)
@@ -848,13 +966,31 @@ class PfCheesHMC:
         kwargs.setdefault("max_leapfrog_steps", 1000)
 
         optim = optax.adam(learning_rate=kwargs["adam_lr"])
+        refresh = kwargs.get("metric_refresh", "none")
+        refreshing = refresh in _METRIC_REFRESH_NAMES
+        # What this stage resolved, for idata.attrs["config"]. The three estimator defaults below
+        # repeat the ones in _run_chees_two_phase (a refresh is only applied when `refresh` names an
+        # estimator, so anything else is recorded as "none"); tests/test_pf_closed_form.py spies on
+        # estimate_covariance so the two cannot drift apart unnoticed.
+        self._resolved["warmup"] = {
+            "seed": int(kwargs["seed"]),
+            "num_warmup": int(kwargs["draws"]),
+            "adam_lr": float(kwargs["adam_lr"]),
+            "target_accept": float(kwargs["target_accept"]),
+            "max_leapfrog_steps": int(kwargs["max_leapfrog_steps"]),
+            "iterate": kwargs.get("iterate", "ma"),
+            "warmup_stop": kwargs.get("warmup_stop", None),
+            "metric_refresh": refresh if refreshing else "none",
+            "metric_refresh_ridge": float(kwargs.get("metric_refresh_ridge", 1e-6)) if refreshing else None,
+            "metric_refresh_shrink": float(kwargs.get("metric_refresh_shrink", 0.5)) if refreshing else None,
+            "metric_refresh_rank": int(kwargs.get("metric_refresh_rank", 5)) if refreshing else None,
+        }
         # WP4 two-phase metric refresh. ``metric_refresh`` names an ensemble estimator
         # (see pfcheeshmc/ensemble_metric.py); when set, phase A is a short fixed warmup on the
         # Pathfinder metric, the ensemble covariance is estimated from phase-A draws, and phase B
         # continues on the refreshed metric with a re-searched eps and re-seeded trajectory length.
         # ``"none"`` (default) keeps the single-phase path bit-for-bit.
-        refresh = kwargs.get("metric_refresh", "none")
-        if refresh in _METRIC_REFRESH_NAMES:
+        if refreshing:
             return self._run_chees_two_phase(
                 pf_samples, inverse_mass_matrix, init_step_size, refresh, optim, **kwargs)
         # Stage-scoped key. This site used to be `_, key_warm = jax.random.split(jax.random.key(seed))`,
@@ -875,6 +1011,9 @@ class PfCheesHMC:
             # Warmup stopping rule, e.g. {"block": 250, "window": 100, "rhat": 1.01}.
             # Absent by default: warmup then runs exactly num_steps as before.
             stop_rule=kwargs.get("warmup_stop", None),
+            # Until R2-WP2 this call did not forward `iterate`, so chees_kwargs={"iterate": "raw"}
+            # without a metric refresh silently ran "ma" (only the two-phase path passed it on).
+            iterate=kwargs.get("iterate", "ma"),
         )
         if hasattr(chees_info, "info"):
             # utils.WarmupInfo (the vendored-adapter path) wraps the stacked HMCInfo together with
@@ -1048,6 +1187,8 @@ class PfCheesHMC:
         rng = jax.random.fold_in(jax.random.key(kwargs["seed"]), 2)  # 2 = sampling stage, see _run_chees
         num_chains = kwargs["chains"]
         num_draws = kwargs["draws"]
+        self._resolved["sampling"] = {"seed": int(kwargs["seed"]), "chains": int(num_chains),
+                                      "num_draws": int(num_draws)}
 
         dyn = bj.mcmc.dynamic_hmc.as_top_level_api(
             self.ld_fn,
@@ -1401,8 +1542,12 @@ class PfCheesHMC:
             dynamic_hmc_kwargs["draws"] = kwargs["draws"]
         
 
+        self._resolved = {}
         pf_samples, inverse_mass_matrix = self._run_pathfinder(**pathfinder_kwargs)
         eps0 = self._run_step_size_tune(pf_samples, inverse_mass_matrix, **step_size_tune_kwargs)
+        # Snapshot: the two-phase refresh re-searches eps through the same method, with the CHEES
+        # kwargs, and overwrites this entry. The re-search's own entry is read after warmup.
+        eps0_record = dict(self._resolved["step_size"])
         chees_states, chees_parameters, chees_info = self._run_chees(
             pf_samples,
             inverse_mass_matrix,
@@ -1454,7 +1599,93 @@ class PfCheesHMC:
                   "metric_refresh_lmax_whitened"):
             if _k in chees_parameters:
                 idata.attrs[_k] = chees_parameters[_k]
+        # R2-WP2: the resolved configuration, one JSON string (key list: see _config_record).
+        idata.attrs["config"] = self._config_record(idata, chees_parameters, eps0, eps0_record)
         return idata
+
+    def _config_record(self, idata, chees_parameters, eps0, eps0_record) -> str:
+        """JSON string for ``idata.attrs["config"]``: what the sampler RESOLVED, not what was asked.
+
+        Every value is the one the code applied, defaults filled in, so a harness can compare it with
+        the flags it passed and can never read "None" for a knob that had a default. Keys:
+
+        Pathfinder / pool / metric (``_run_pathfinder``)
+            ``imm_source``, ``imm_orientation``, ``imm_order``; ``ridge`` (added to the Monte-Carlo
+            covariance only, so 0.0 for every other source); ``pf_draws``; ``pf_pool_cap`` (the cap
+            applied, 0 = uncapped) and ``pf_pool_rows`` (rows actually drawn); ``pf_start_scale``;
+            ``init_source``,
+            ``init_pick``, ``superchains`` (null = not set), ``pm_chains``, ``pm_init``, ``pm_tune``,
+            ``score_chunk``.
+        Step-size search (``_run_step_size_tune``)
+            ``eps0_probes`` (number of probe positions) and ``eps0`` (the step size it returned) for
+            the search before warmup; with a refresh, the re-search on the new metric reads its own
+            ``metric_refresh_eps_probes`` from the CHEES kwargs (not the step-size kwargs).
+        Warmup (``_run_chees``)
+            ``num_warmup`` (configured warmup length) and ``warmup_steps_used`` (ran; differs only
+            with a stop rule), ``iterate``, ``adam_lr``, ``target_accept``, ``max_leapfrog_steps``,
+            ``warmup_stop`` (null = no stop rule).
+        Metric refresh
+            ``metric_refresh`` ("none" or the estimator name that ran) and, when one ran,
+            ``metric_refresh_warmup`` (phase-A steps after clamping), ``metric_refresh_pool``,
+            ``metric_refresh_reseed``, ``metric_refresh_ridge``, ``metric_refresh_shrink``,
+            ``metric_refresh_rank``, ``metric_refresh_eps_probes``; all null when ``metric_refresh``
+            is "none" (not applicable).
+        Sampling (``_run_dynamic_hmc``)
+            ``chains``, ``num_draws``.
+        Frozen at the end of warmup
+            ``frozen_step_size`` (eps) and ``frozen_L_nominal`` (L = T/eps).
+        Seeds
+            ``seed`` (the sampler's own) and ``stage_seeds`` for pathfinder / step_size / warmup /
+            sampling, which differ from ``seed`` only if a stage's kwargs overrode it.
+        ``jax_enable_x64`` is recorded because the metric dtype, and with it the pf_closed
+        positive-definiteness check, depends on it.
+        """
+        r = self._resolved
+        pf, ss, wu, sm = r["pathfinder"], eps0_record, r["warmup"], r["sampling"]
+        refreshing = wu["metric_refresh"] != "none"
+        cfg = {
+            "imm_source": pf["imm_source"],
+            "imm_orientation": pf["imm_orientation"],
+            "imm_order": pf["imm_order"],
+            "ridge": pf["ridge"],
+            "pf_draws": pf["pf_draws"],
+            "pf_pool_cap": pf["pf_pool_cap"],
+            "pf_pool_rows": pf["pf_pool_rows"],
+            "pf_start_scale": pf["pf_start_scale"],
+            "init_source": pf["init_source"],
+            "init_pick": pf["init_pick"],
+            "superchains": pf["superchains"],
+            "pm_chains": pf["pm_chains"],
+            "pm_init": pf["pm_init"],
+            "pm_tune": pf["pm_tune"],
+            "score_chunk": pf["score_chunk"],
+            "eps0_probes": ss["eps0_probes"],
+            "eps0": float(eps0),
+            "num_warmup": wu["num_warmup"],
+            "warmup_steps_used": int(idata.attrs["warmup_steps_used"]),
+            "iterate": wu["iterate"],
+            "adam_lr": wu["adam_lr"],
+            "target_accept": wu["target_accept"],
+            "max_leapfrog_steps": wu["max_leapfrog_steps"],
+            "warmup_stop": wu["warmup_stop"],
+            "metric_refresh": wu["metric_refresh"],
+            "metric_refresh_warmup": chees_parameters["metric_refresh_warmup"] if refreshing else None,
+            "metric_refresh_pool": chees_parameters["metric_refresh_pool"] if refreshing else None,
+            "metric_refresh_reseed": chees_parameters["metric_refresh_reseed"] if refreshing else None,
+            "metric_refresh_ridge": wu["metric_refresh_ridge"],
+            "metric_refresh_shrink": wu["metric_refresh_shrink"],
+            "metric_refresh_rank": wu["metric_refresh_rank"],
+            "metric_refresh_eps_probes": r["step_size"]["eps0_probes"] if refreshing else None,
+            "chains": sm["chains"],
+            "num_draws": sm["num_draws"],
+            "frozen_step_size": idata.attrs["frozen_step_size"],
+            "frozen_L_nominal": idata.attrs["frozen_L_nominal"],
+            "seed": int(self.seed),
+            "stage_seeds": {"pathfinder": pf["seed"], "step_size": ss["seed"],
+                            "warmup": wu["seed"], "sampling": sm["seed"]},
+            "jax_enable_x64": bool(jax.config.jax_enable_x64),
+        }
+        return json.dumps(cfg, sort_keys=True, default=_json_default)
     
 
 
