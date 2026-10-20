@@ -61,6 +61,11 @@ Substituted evidence, so the record is not empty: merged-tree suite 99 passed ·
 Several tool calls were unavailable in that session. So the review of `wp/wp2` that was about to launch did **not** launch, and no task could be re-armed. Write this down instead of losing it.
 
 **Durable right now (all committed, nothing pushed):**
+
+> **SUPERSEDED — this block is a mid-run snapshot (pf-r1 at `008ccf3`, suite 99, `G3__gev_meanshift.jsonl`
+> then untracked). The current state is the FINAL STATE section at the end of this file.** Kept because the
+> commit sequence and the pause history recorded here are not repeated anywhere else.
+
 - `pf-r1` = `008ccf3`. Sequence since the pause: `c2993cf` GEV 2×2 → `a03dc0f`/`699be6d` orientation retraction chain → `5a18c88` RETRACTION of my own contradiction (orientation IS wrong) → `13d8379` 4-model verdict → `9ce725e` nested-R̂ common-mode mechanism → `647798b` WP1 lead verification → `ba68aa7` T1 partial → `4770dcb` T1 complete + GEV G3 → `d1fca9c` REPORT updated → `008ccf3` this gate record.
 - `pf-r1-int` = `574f960` — merged `pf-r1` + wp8 + wp0refs + wp1 + wp2 + wp3, suite **99 passed**, and every number in `results/REPORT.md` comes from here.
 - Rows in git or on disk: `T1__r1_sweep.jsonl` (48, complete), `G3__gev_meanshift.jsonl` (10, complete), `WP1__rebaseline.jsonl` (142, 2 VOID-stamped), `WP1__covarm.jsonl` (40), `WP1__gev_2x2.jsonl` (24), `WP2__lgrowth.jsonl` (32), `WP3__nested_k8.jsonl` (23).
