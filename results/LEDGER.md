@@ -674,3 +674,21 @@ No code changed in this correction, so the merged suite count stands at **122 pa
 - **A task's repository write is not an approval.** Review files must record who executed them, and merges remain lead-only. `fd7f81c` is left in history as it happened rather than rewritten, and flagged here.
 
 No code changed, so the merged suite stands at **122 passed**.
+
+---
+
+## 2026-10-20 — production Pathfinder pool at R1: first cell measured, rest running
+
+WP5's statistical review named the run's largest untested variable: **all 48 T1 rows used
+`pathfinder_kwargs.draws = 1`**, while production defaults to 4,000. WP5 made the 4,000-draw pool fit at
+C=1,024, so the measurement is now possible. Driver: `~/scratch/t1_prodpool.sh`, arm `int:prodpool`,
+C=1,024 × D=10, W=50, covariance + raw, one process per cell, under the GPU lock →
+`results/runs/T1__prodpool.jsonl`.
+
+**Cell 1 (8 Schools, seed 1, cold, `pf_draws=4000`):** b² **0.000724**, floor **0.001171** → **resolvable
+pass**; gradients/chain 964; wall 43.65 s; peak 2,076 MiB. Against the one-draw-pool T1 control at the same
+shape (974 grads, b² 0.00060–0.00242), the production pool **reproduces** the result on this model — so the
+8 Schools R1 verdict was not an artifact of the single-draw start.
+
+Remaining 7 cells (GEV, logistic, radon × 2 seeds) run in the background, ~35 min; radon is the one where the
+pool could matter most, since Pathfinder quality is where radon's deficit came from.
