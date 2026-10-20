@@ -956,3 +956,45 @@ posterior — is what `tools/gev_divergence_probe.py` produces, and at C=8 it al
 
 Both write rows under `_common` provenance (`git_sha`, `branch`, `device`, `peak_mem_bytes`) and require the
 GPU lock. The `--pf-pool-cap` flag from earlier today is pinned by `tests/test_pool_cap_rows.py`.
+
+---
+
+## 2026-10-20 14:35 — box clock jumped ~45 min backwards mid-run; three background jobs were reported "completed" while still running
+
+`date` read 14:55, then 14:24, then 14:29/14:30 within minutes. Consequences, all verified against files and
+`ps` rather than notifications:
+
+* **Three tasks reported completion that were not complete.** The R2 pool-cap driver exited at its wall
+  timeout having written **4 of 8** cells (logistic and radon missing — the two that decide the question, since
+  radon d=175 with a 128-row pool is the rank-deficiency case), the T5 split reported complete at **2 of 4**
+  models, and the start-dispersion probe at **1 of 8**. In each case the row file and log showed the script
+  alive with a live GPU process. **Wall-clock job timeouts cannot be trusted while the clock is moving**, so
+  these runs are now written to append per cell and are re-queued for the missing cells only.
+* Row timestamps (`ts`) inside that window are not monotonic and must not be used to order events; use
+  `git_sha` + the row files.
+* Practical rule adopted: treat `<background-task-notification>` as *possible* completion, and confirm with
+  `wc -l` on the row file plus `ps` before drawing any conclusion from a "completed" job.
+
+### Start dispersion: the GEV candidate is confirmed, and the report's unit was ambiguous
+
+`START__dispersion.jsonl`, C=32, `pf_draws=1`, seed 1, GEV (d=3): start sd ÷ reference sd =
+**μ 0.949, σ_log__ 0.865, ξ_interval__ 0.156**. So ξ is the only coordinate under-dispersed (41× in variance)
+and the other two are effectively correct — consistent with the pre-existing "50×" figure, which is a
+**variance** ratio (0.092963 / 0.001844) and was quoted without units. `REPORT.md` T2 and §7 item 4 now say
+variance-vs-sd explicitly. The step-level half of the question remains unmeasurable (trimmed warmup info).
+
+### T5's warmup-output cost, measured on GPU (C=32, W=2,000, reps=3 medians)
+
+| model | ~L | warmup s | +stack s | +progress bar s | stack % | bar % | stack µs/step |
+|---|---|---|---|---|---|---|---|
+| 8 Schools | 13.6 | 3.31 | 3.49 | 3.47 | **5.6 %** | 4.9 % | 92 |
+| GEV | 1.8 | 2.99 | 4.94 | 3.13 | **65.1 %** | 4.8 % | 975 |
+| logistic | 3.5 | 22.15 | 27.74 | 23.19 | **25.3 %** | 4.7 % | 2,796 |
+
+The callback is a flat ~5 % everywhere (as expected for a fixed per-step `jax.debug.callback`).
+The stack cost is **not** proportional to stack bytes: GEV's stack is smaller than 8 Schools' yet costs 10×
+more per step (975 vs 92 µs). The candidate is that `stack_positions=True` routes through the blocked scan,
+which is a different compiled region whose scheduling does not fuse as well when per-step work is small —
+**mechanism NOT ESTABLISHED**, and the numbers are single-seed, so the ratio is reported and not explained.
+Practical reading stands either way: stacking warmup positions is a real cost (5–65 % of warmup), which is why
+it is opt-in and why WP4's refresh pays it.
