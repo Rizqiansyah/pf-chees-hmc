@@ -474,13 +474,13 @@ Two of the four models are identity cases (logistic, 8 Schools), so the permutat
 | logistic | 324 | 2,386 | **487** | passes on all 3 |
 | radon NC | 372 | 5,612 | **579** | b2 0.0081-0.0136 with floor 0.0054 -> **unresolvable** at W=50, not a pass |
 
-Cost of adding trajectory-length learning drops from **3.7-15x** the baseline to **1.34-1.55x**. The re-seed's noise-dominated `L` was the mechanism: the frozen `L` from a 50-step window is garbage, and ChEES then spends the sampling phase on it. The W-ladder for radon (W=100, 200) is running to settle whether radon passes at a resolvable warmup; until it does the claim is limited to three of four models.
+Cost of adding trajectory-length learning drops from **3.7-15x** the baseline to **1.34-1.55x**. The re-seed's noise-dominated `L` was the mechanism: the frozen `L` from a 50-step window is garbage, and ChEES then spends the sampling phase on it. **Radon's W-ladder is now run and the answer is a measurement limit, not a verdict:** W=50 b2 0.0081-0.0136 (floor 0.0054-0.0060), W=100 b2 0.0070-0.0107 (floor 0.0058-0.0070), W=200 b2 0.0058-0.0086 (floor 0.0057-0.0064) at 559 -> 3,401 gradients per chain. Tripling warmup moves b2 by 20%, *raises* the floor, and costs 5.7x the gradients; no cell escapes its noise band. Rows: `WP4__reseed_ab.jsonl`, 18.
 
 ## 2026-10-20 — instrumentation defect: every wall_s includes an O(W) device-sync loop
 
 `tools/r1_bias.py:344` computes `frozen_L_nominal` by calling `integration_steps_fn(i)` once per warmup step in a Python loop, each with a `float(np.asarray(...))` device sync, and it runs **inside** the timed region (timer at :436, `wall_s` stamped at :499). At W=2,000 that is 2,000 synchronisations per cell, on every arm.
 
-Consequence: absolute `wall_s` and therefore ESS/s in the T-tables are overstated by the same mechanism on all arms — so equal-W arm-vs-arm comparisons are approximately fair (the inflation cancels) but absolute times and cross-W comparisons are not. Gradient counts, the run's primary objective, are unaffected. A direct measurement of the size of the effect is running; the fix is to move the nominal-L computation outside the timer.
+Consequence: absolute `wall_s` and therefore ESS/s in the T-tables are overstated by the same mechanism on all arms — so equal-W arm-vs-arm comparisons are approximately fair (the inflation cancels) but absolute times and cross-W comparisons are not. Gradient counts, the run's primary objective, are unaffected. **Measured** on 8 Schools, C=32, D=1250, W=2000, GPU, 2x2 of arm x loop-on/off: warm wall 15.42 -> 10.62 s, cold 42.90 -> 36.74 s, i.e. every absolute wall time in this report is ~52% high warm and every ESS/s figure is low by the same factor. Fixed in `wp/wp3` at `9d5c30d` by resolving the diagnostic after `wall_s` is stamped; the column still ships (43.16 on the same cell).
 
 ---
 
@@ -497,9 +497,9 @@ The statistical-validity reviewer of `wp/wp3` flagged that `g_r1` returns `unres
 | `int:covraw` | 100 | 1 | 0.428 | 0.00528 | unresolvable | **fail** |
 | `int:covraw` | 100 | 2 | 0.033 | 0.00506 | unresolvable | **fail** |
 
-Rule to ship: `unresolvable` only when the bias is *inside* its own noise band (`b² ≤ 3·floor` while `floor > 0.005`); a `b²` many multiples above the floor is a fail however coarse the floor is. Tally moves from 187 pass / 105 fail / 15 unresolvable to **187 / 111 / 9**.
+Rule to ship: `unresolvable` only when the bias is *inside* its own noise band (`b² ≤ 3·floor` while `floor > 0.005`); a `b²` many multiples above the floor is a fail however coarse the floor is. Tally moves from 187 pass / 105 fail / 15 unresolvable to **187 / 111 / 9**. Implemented in `wp/wp3` at `9d5c30d` with a test pinning the measured cells.
 
-No headline conclusion changes — the corrected radon arm was already reported as failing, and WP4's radon cells (b² 0.008–0.014 against floors 0.0054–0.0060) stay genuinely unresolvable under both rules. The code fix waits for `wp/wp3`'s statistical review to land, since that review is judging this function. Script: `~/scratch/reclass_g_r1.py`.
+No headline conclusion changes — the corrected radon arm was already reported as failing, and WP4's radon cells (b² 0.008–0.014 against floors 0.0054–0.0060) stay genuinely unresolvable under both rules. Script: `~/scratch/reclass_g_r1.py`.
 
 ## 2026-10-20 — process error by the lead, reverted
 

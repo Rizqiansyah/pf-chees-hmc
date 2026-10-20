@@ -111,7 +111,17 @@ The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); th
 | logistic | 324 | 2,386 | **487** | passes, 3/3 |
 | radon NC | 372 | 5,612 | **579** | **unresolvable** at W=50 (floor 0.0054 vs the 0.005 rule) |
 
-Refresh overhead drops from 3.7–15× the baseline to **1.34–1.55×**, so the answer to the plan's question is that the cheap opt-in path exists: keep the refresh, drop the re-seed. The rule fixed before the run was "within 1.5× of baseline while radon still passes" — 8 Schools and GEV and logistic meet it; radon is not provable at W=50 and its W=100/200 ladder is running, so the claim is stated for three of four models.
+Refresh overhead drops from 3.7–15× the baseline to **1.34–1.55×**, so the answer to the plan's question is that the cheap opt-in path exists: keep the refresh, drop the re-seed. The rule fixed before the run was "within 1.5× of baseline while radon still passes" — 8 Schools, GEV and logistic meet it.
+
+**Radon cannot be gated at the R1 shape, at any warmup.** Its ladder was run to settle this, and the floor — not the bias — is the wall:
+
+| radon NC, refresh without re-seed | b² | noise floor | gradients/chain |
+|---|---|---|---|
+| W=50 (3 seeds) | 0.0081 – 0.0136 | 0.0054 – 0.0060 | 559 – 711 |
+| W=100 | 0.0070 – 0.0107 | 0.0058 – 0.0070 | 1,128 – 1,498 |
+| W=200 | 0.0058 – 0.0086 | 0.0057 – 0.0064 | 3,236 – 3,401 |
+
+Tripling warmup to W=200 cuts b² by 20% and raises the floor, while costing **5.7× the gradients**. Every cell stays inside its own noise band, so radon is *unmeasurable* against the 0.01 bar at C=1,024 × D=10 — not a pass, not a fail. Resolving it needs more draws per chain (which R1 does not allow) or a reference-based floor reduction, and that is a plan change, not a result.
 
 ## 4. Decisions taken in this run
 
@@ -131,7 +141,7 @@ Refresh overhead drops from 3.7–15× the baseline to **1.34–1.55×**, so the
 | G-R1-diag | REDEFINED | §4.2 |
 | G-MEM peak ≤ 5.0 GB | **MET for radon at C=1,024** | 653 MiB peak — the R1 wall was the `chains × pf_draws` Pathfinder pool chain (radon died at C≥128 before); bounding the pool (`pf_pool_cap≈4C`) and `pm_chains=1` fixes it. GEV/8 Schools already fit at C=1,024 (0.9 / 2.3 GB). Warm init 4.1 s misses the 2 s stretch sub-goal |
 | G3 (default change: ≥5 seeds, no divergence increase, means within 1σ) | NOT MET on GEV, with the terms now separated | shipped arm fails R̂ ≤ 1.01 on **5/5 seeds** (to 1.0688); candidate passes **3/5** and halves mean error, but divergences rise seed-stably 0.025 → 0.400 per 1k. The "means within 1σ" clause is unsatisfiable as written (worst z 3.4 on a 0.026 sd shift) and should be restated in sd units |
-| Instrumentation integrity | ONE OPEN OVERSTATEMENT | `tools/r1_bias.py:344` computes a trajectory-length diagnostic with one device synchronisation per warmup step **inside** the timed region, on every arm. Absolute `wall_s` and every ESS/s figure are therefore overstated by the same mechanism on all arms — equal-warmup arm-vs-arm comparisons cancel, gradient counts (the run's primary objective) are unaffected. Size of the offset is being measured; fix is to move it outside the timer |
+| Instrumentation integrity | ONE OPEN OVERSTATEMENT | `tools/r1_bias.py:344` computes a trajectory-length diagnostic with one device synchronisation per warmup step **inside** the timed region, on every arm. Absolute `wall_s` and every ESS/s figure were overstated by the same mechanism on all arms. **Measured:** 8 Schools at W=2,000 went 15.42 → 10.62 s warm and 42.90 → 36.74 s cold once the loop moved after the timer, i.e. **wall times in this report are ~52% high warm** and ESS/s correspondingly low; equal-warmup comparisons and all gradient counts stand. Fixed in `wp/wp3` at `9d5c30d`, which also fixes a gate that labelled a b² of 63 "unresolvable" (6 radon cells change verdict) |
 
 ## 6. Reference artifacts
 
