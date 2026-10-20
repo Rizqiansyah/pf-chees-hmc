@@ -4,7 +4,7 @@ Read `results/REPORT.md` for findings. This file is the audit surface: what each
 independently re-derived, what is knowingly unmeasurable, and how to reproduce it.
 
 **Tree.** `main` untouched at `ecd9ba1`; `pf-r1` carries the eight merged work packages. Nothing pushed.
-Suite: **122 passed** forced-CPU before `10ec746`; `tests/test_pool_cap_rows.py` adds 2 (expect 124).
+Suite: **125 passed in 169.28 s** forced-CPU at `f95e491` (122 at merge + 2 pool-cap row tests + 1 from splitting the capacity test when the pool default changed contract).
 
 ## 1. Every headline claim and the row file behind it
 
@@ -102,3 +102,32 @@ Reference posteriors live outside git at `~/pf-runs/references/*.npz` (manifest 
 **the sample arrays are the single authority**, the stat columns are display-only, and `mcse_x2__` is the MCSE
 of `E[x²]`, not of the variance. `tools/bench_ladder.py` stubs the sampler globals on model load — `r1_bias`'s
 `build_model` restores them and asserts it did, which is why harness code must not call the loader directly.
+
+## 6. How tests were proven, and two traps in the harness itself
+
+**Teeth checks changed form mid-run and the old recipe is now invalid.** The original check for
+`tests/test_metric_orientation.py` ran the test file against the pre-fix checkout (`~/pf/legacy` @
+`ecd9ba1`) with a `pfcheeshmc.__file__` assert. That no longer proves anything: the current test passes
+kwargs (`imm_orientation`, `pf_pool_cap`) that legacy `_run_pathfinder` rejects, so it would fail with a
+`TypeError` for reasons unrelated to ordering. **The correct form now is mutation on the current tree** —
+neutralise the choke point and require the declared failure signature:
+
+```python
+import pfcheeshmc.sampler as sm
+sm.PfCheesHMC._metric_to_kernel_order = lambda self, imm, perm: imm   # the historical bug
+# -> test fails: diag [9.88e-5, 1.006e4, 1.001e4, 9.69e3] vs [1e4,1e4,1e4,1e-4], max rel err 9.7e7
+```
+
+**Timeouts must go inside the GPU lock.** `tools/gpu_run.sh` is `exec flock /tmp/pf-gpu.lock env
+PF_GPU_LOCK=1 "$@"`, so `timeout N tools/gpu_run.sh CMD` charges lock wait to `N`. Two cells were lost that
+way (one reported as a 43-minute hang that was only waiting). Correct form:
+`tools/gpu_run.sh timeout N CMD`. Related: `flock` grants are **not FIFO**, so queued drivers do not start in
+submission order — do not interleave a sampler commit with a driver that must run entirely on one code
+version (the pool A/B rows were checked with `git diff <sha1> <sha2> -- pfcheeshmc/` to confirm they are
+single-factor).
+
+**Two failures of the same kind to look for elsewhere.** Twice in this run a change to a *default* or a gate
+silently degraded a test's or a table's **statistical resolution** rather than its logic: the `g_r1` floor
+masking, and the dimension-aware pool leaving a d=4 fixture with 64 rows (~18 % MC SE against a 20 %
+tolerance) — which looked like a broken permutation fix. A green or red suite does not distinguish these;
+the check is tolerance-vs-SE for every assertion consuming the affected quantity.
