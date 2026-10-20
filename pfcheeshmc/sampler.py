@@ -14,7 +14,7 @@ import arviz as az
 from tqdm.auto import tqdm
 from .utils import *
 from .ensemble_metric import (
-    estimate_covariance, reseed_trajectory_length, positions_to_draws,
+    estimate_covariance, reseed_trajectory_length, whitened_lambda_max, positions_to_draws,
     ENGLISH_NAMES as _METRIC_REFRESH_NAMES,
 )
 
@@ -898,8 +898,11 @@ class PfCheesHMC:
         and collects its draws. The named ensemble estimator builds a COVARIANCE (kernel order)
         from those draws; eps is re-searched on the new metric (the same traced 32-probe search
         the shipped path uses, so the cost is independent of chain count) and the trajectory
-        length is re-seeded at ``T = (pi/2) * sqrt(l_max(Sigma^-1))``. Phase B then continues the
-        warmup to the budget from phase A's final positions, on the refreshed metric.
+        length is re-seeded at
+        ``T0_B = (pi/2) * sqrt( lambda_max( L^-1 S L^-T ) )`` with ``B = L L^T`` the refreshed
+        metric and ``S`` the sample covariance (ddof=1) of the same phase-A pool, then clipped to
+        ``[eps_B, max_leapfrog_steps * eps_B]`` so ``1 <= L0 <= max_leapfrog_steps``. Phase B then
+        continues the warmup to the budget from phase A's final positions, on the refreshed metric.
 
         Everything downstream of this method is unchanged: it returns the same
         ``(states, parameters), info`` contract as :meth:`_run_chees`, so ``sample()`` and the
@@ -960,12 +963,27 @@ class PfCheesHMC:
         if pos_A is None:
             pos_A = states_A[0]
         eps_B = self._run_step_size_tune(pos_A, imm_B, **kwargs)         # traced, C-independent
-        # metric_refresh_reseed (default True) keeps the current behaviour: re-seed the phase-B
-        # trajectory length at (pi/2)*sqrt(l_max(Sigma^-1)). False skips that re-seed so phase B
-        # starts at L=1 (t0=None -> trajectory_length = step_size) and grows T with its own
-        # dynamics on the refreshed metric -- isolating the cost of the re-seed itself.
+        # metric_refresh_reseed (default True) re-seeds the phase-B trajectory length at
+        #     T0_B = (pi/2) * sqrt( lambda_max( L^-1 S L^-T ) ),  B = L L^T = imm_B,
+        #     S = sample covariance (ddof=1) of the SAME `draws` the estimator above consumed.
+        # Whitening S by the metric makes T0 invariant to the units of the coordinates, which the
+        # run-1 formula (pi/2)/sqrt(lambda_min(imm_B)) was not -- that one read the precision of the
+        # narrowest posterior coordinate in MODEL units, so a coordinate rescale moved T0 and frozen
+        # L landed at 213-283 (plan Part B 1.1). False skips the re-seed entirely: phase B then
+        # starts at L=1 (t0=None -> trajectory_length = step_size) and grows T with its own dynamics
+        # on the refreshed metric, which is the control that isolates the re-seed's effect.
         reseed = bool(kwargs.get("metric_refresh_reseed", True))
-        T0_B = reseed_trajectory_length(imm_B) if reseed else None
+        lmax_B = whitened_lambda_max(imm_B, draws) if reseed else None
+        T0_B = None
+        if reseed:
+            # Clip on the step-size and leapfrog budget this warmup actually has, so the re-seeded
+            # trajectory length L0 = T0_B / eps_B is inside [1, max_leapfrog_steps].
+            # (Plain float min/max, not jnp.clip: that would round T0 to float32 when x64 is off.)
+            # ``kwargs["max_leapfrog_steps"]`` is always set here: ``_run_chees`` does
+            # ``kwargs.setdefault("max_leapfrog_steps", 1000)`` before routing to this method.
+            eps_f = float(eps_B)
+            max_L = int(kwargs["max_leapfrog_steps"])
+            T0_B = float(min(max(reseed_trajectory_length(imm_B, draws), eps_f), max_L * eps_f))
 
         # ---- Phase B: continue to the budget on the refreshed metric -----------------------
         (states_B, params_B), info_B = chees_warmup_with_progress(
@@ -989,6 +1007,9 @@ class PfCheesHMC:
         params_B["metric_refresh_eps_researched"] = float(eps_B)
         params_B["metric_refresh_reseed"] = reseed
         params_B["metric_refresh_T0"] = float(T0_B) if T0_B is not None else None
+        # The unit-invariant quantity behind T0, before the (pi/2) factor and the clip. Kept because
+        # T0 alone cannot distinguish "the pool is badly conditioned" from "the clip bit".
+        params_B["metric_refresh_lmax_whitened"] = float(lmax_B) if lmax_B is not None else None
         # The third return must be the warmup HMCInfo stack for the WHOLE warmup (phase A + phase B)
         # so the exact A8 gradient count (sum of num_integration_steps) and the warmup divergence
         # count span both phases; returning phase B alone would under-count warmup gradients by W_A
@@ -1429,7 +1450,8 @@ class PfCheesHMC:
         # and where the step size moved across the swap.
         for _k in ("metric_refresh", "metric_refresh_warmup", "metric_refresh_pool",
                   "metric_refresh_eps0", "metric_refresh_phaseA_end_eps",
-                  "metric_refresh_eps_researched", "metric_refresh_reseed", "metric_refresh_T0"):
+                  "metric_refresh_eps_researched", "metric_refresh_reseed", "metric_refresh_T0",
+                  "metric_refresh_lmax_whitened"):
             if _k in chees_parameters:
                 idata.attrs[_k] = chees_parameters[_k]
         return idata
