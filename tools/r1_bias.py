@@ -530,6 +530,26 @@ def run_cell(bl, model_name, args, W, seed, rep, cold):
         if row.get("frozen_L_nominal") is None and callable(ch.get("frozen_L_nominal")):
             row["frozen_L_nominal"] = ch["frozen_L_nominal"]()
 
+        # ESS is what this run's efficiency claims are actually made on, and this harness used to
+        # leave it null in every row -- so any gradients/ESS number had to come from
+        # tools/wp1_rebaseline.py, and R1/R2 rows could not be compared with T2 at all. Same helper
+        # and same formula as that tool, so the two are comparable. Its own try: a scoring failure
+        # must not void a bias cell that did measure (the ESS columns stay null and say so).
+        try:
+            scored = bl.score(idata, row["wall_s"], "gpu", model_name, args.chains, cold,
+                              draws=args.draws, warmup=W)
+            min_bulk = float(scored["ess_s_worstvar"]) * row["wall_s"]
+            total_grads = args.chains * ((row.get("grads_per_chain_warmup") or 0.0)
+                                         + (row.get("grads_per_chain_sampling") or 0.0))
+            row.update(ess_s_worst=scored["ess_s_worstvar"],
+                       min_bulk_ess=round(min_bulk, 0),
+                       min_tail_ess=scored.get("min_tail_ess"),
+                       ebfmi_min=scored.get("ebfmi"),
+                       grads_per_ess_worst=(round(total_grads / min_bulk, 3) if min_bulk > 0 else None))
+        except Exception as e:  # noqa: BLE001
+            print(f"[r1_bias] ESS scoring failed ({type(e).__name__}: {str(e)[:120]}); ESS stays null",
+                  flush=True)
+
     from _common import gpu_other_procs
     row["gpu_other_procs"] = gpu_other_procs()   # A5: a foreign process voids a timing
     banner(model=model_name, cold=cold, wp=args.wp, arm=args.arm)
