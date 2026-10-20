@@ -1179,3 +1179,28 @@ the harness:
 **Queue note:** the A/B finished in 10 minutes once it had the card exclusively, after ~50 minutes of four
 drivers contending and two false completion events killing drivers. The serial-driver rule in the 15:40 entry is
 what made the difference, along with the plan being recomputed from the row file (it resumed at 4/12, not 0/12).
+
+---
+
+## 2026-10-20 15:55 — start dispersion, all four models: radon's starts are ~10× too narrow in 173 of 175 coordinates
+
+`START__dispersion.jsonl` (8 rows), ratio = sd across start picks ÷ CPU NUTS reference sd, per coordinate,
+kernel order asserted both sides. Median ratio: GEV 0.865, 8 Schools 0.740, logistic 0.501, **radon 0.100**;
+coordinates ≤ 0.5×: 1, 2, 12, **173 of 175**. Nothing below 0.05, so it is a scale mismatch and not a collapse.
+
+**Why this matters more than the GEV note it grew out of.** Radon fails G-R1 at short warmup without the metric
+refresh (b² 2.15–3.00, 0/3 seeds) and passes with it (0.0021–0.0026, 3/3). An ensemble starting inside a
+~1/100th-variance ellipsoid must *discover* the posterior's scale, and 50 ChEES steps on a Pathfinder metric
+cannot; the refresh rebuilds the metric from the ensemble that has just spread. That is a coherent, measured
+account of the single most consequential result in this run, and it did not exist an hour ago.
+
+**Two limits, stated.** (a) Pool size barely changes it (0.740 → 0.722; 0.100 → 0.105), so `pf_draws` /
+`pf_pool_cap` are not levers for dispersion. (b) Narrow starts are not *sufficient* for GEV's divergence rise —
+8 Schools' `mu` is at 0.159, colder than GEV's ξ at 0.156, with no divergence problem. So §7 item 4 keeps that
+link as a pattern, and the decisive experiment (same model, starts rescaled per coordinate toward the reference
+sd, scored on gradients-to-R̂ < 1.01) is named and unrun.
+
+**Self-correction retained:** I earlier wrote that the dispersion evidence behind the shipped stratified-pick
+default was contaminated by the old metric; that was about the *historical* cells. This measurement is direct, on
+the merged tree, and points the same way — but it reframes the story from "one bad coordinate on GEV" to "the
+whole start ellipsoid is too small, worst by far on radon".

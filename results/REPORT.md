@@ -118,7 +118,7 @@ The wall is the `C × pf_draws` draw pool (draw → flatten → X → XᵀX); th
 | `dense_shrunk` | 1,344 | 4,237 | 2,323 | 5,469 | 0.97, 0.97 | indistinguishable → kill |
 | `diag_lowrank` | 1,400 | 3,778 | 4,934 | 5,317 | 2.07, 0.95 | worse → kill |
 
-   So the shipped recommendation becomes: **keep `sample_diag` as the safe default and `fisher_diag` as the one worth pursuing** (1.45–1.77× fewer gradients on the two correlated models, at a cost on GEV), kill `dense_shrunk` and `diag_lowrank`. All 16 cells pass on bias; cost is the discriminator. `results/reviews/WP4-stats.md` filed two *provenance* problems with this table; **both are refuted against the rows** (`results/LEDGER.md`, 2026-10-20):
+   So the shipped recommendation becomes: **keep `sample_diag` as the safe default and `fisher_diag` as the one worth pursuing** (1.45–1.77× fewer gradients on the two correlated models, at a cost on GEV), kill `dense_shrunk` and `diag_lowrank`. All 16 cells pass on bias; cost is the discriminator — **resolved against 2 seeds per cell** (`WP4__r1.jsonl`, 32 rows = 4 estimators × 4 models × 2 seeds), so a ratio within ~1.2× is not separable from seed spread (see §3e-4 and the b² seed-spread note); the `fisher_diag` margins on logistic and radon (0.57×, 0.69×) are well outside it, and the estimator table's 16 numbers were re-derived from the rows. `results/reviews/WP4-stats.md` filed two *provenance* problems with this table; **both are refuted against the rows** (`results/LEDGER.md`, 2026-10-20):
    - *"the re-seed factor is recorded in no row field, the arms are byte-identical except for their label"* — false. Paired across all 12 common (model, seed, rep) cells, the arms' `kwargs` differ in exactly two recorded fields: `metric_refresh` = `sample_diag` vs `null`, and `metric_refresh_reseed` = `true` vs `null`.
    - *"radon's noise floor swings 2× between nominally identical cells"* — not a defect and not between files. The two radon floors are in the **same file, same model, same W=50**, one per arm (refresh 0.00282, no-refresh 0.00559), and the floor is `max_f (mcse_run[f]²/Var_ref[f]) × 2·ln(2d)` (`tools/r1_bias.py:268-270`) — built from the **run's own** chain MCSE, so any arm that changes the chains changes the floor. This matters for how to read every refresh pass below: the refresh arm is judged against a **looser** bar, so "passes at 0.79× floor" is weaker than the ratio alone implies.
 3. **The cost was the re-seed — and the honest verdict on WP4 is still "reject as an efficiency measure".** The trajectory-length re-seed `T = (π/2)·√λ_max` lands at L = 23–402 against the baseline's converged 10–27 because λ_max of a 50-step ensemble estimate is noise-dominated. The A/B is in `WP4__reseed_ab.jsonl` (42 rows; the three `ab:` arms are 12 rows each = 4 models × **3 seeds**, so every cell below is a 3-seed median) against `WP4__r1.jsonl` (32) and T1's matched controls (48) — warm rows, `sample_diag` on both sides of the re-seed comparison so it is one factor at a time:
@@ -210,6 +210,22 @@ See §6b T5 — the two user-selectable warmup outputs (position stack, progress
 4. **Caveat:** single seed per cell at the R2 shape. The `4C`-versus-default margin on radon (42×) is orders of magnitude beyond the seed spread documented in §3e, but the small differences among 54.7 / 57.5 / 60 are within it and should not be read as a ranking.
 
 **Decision: the default stands and is no longer provisional.** `pf_pool_cap=0` remains the documented escape hatch to the historical uncapped pool.
+
+### 3j. Start dispersion versus the reference posterior — Pathfinder is systematically too narrow, and on radon it is ~10× too narrow everywhere
+
+`START__dispersion.jsonl` (8 rows: 4 models × {`pf_draws=1`, production `4,000`}, C=32, seed 1). Ratio = sd across the start picks ÷ sd of the CPU NUTS reference, per coordinate, both flattened in kernel order with a leaf-mismatch assert so a wrong pairing raises.
+
+| model | d | median ratio (1 / 4000) | coords ≤ 0.5 | coldest coordinates |
+|---|---|---|---|---|
+| GEV | 3 | 0.865 / 0.860 | 1 | `ξ_interval__` 0.156 / 0.115 (μ 0.949, σ_log__ 0.865) |
+| 8 Schools | 10 | 0.740 / 0.722 | 2 | `mu` 0.159 / 0.228, `tau_log__` 0.493 / 0.446 |
+| logistic | 25 | 0.501 / 0.557 | 12 / 9 | `b[0]` 0.315 / 0.367, `b[10]` 0.398 / 0.484 |
+| **radon NC** | 175 | **0.100 / 0.105** | **173 / 171** | `beta_raw[29]` 0.062, `beta_raw[15]` 0.071 |
+
+1. **Radon's starts are about ten times narrower than its posterior in essentially every coordinate** — 173 of 175 below 0.5×, median 0.100, and no coordinate below 0.05 (so it is a scale mismatch, not a collapse). That is a far better explanation of why radon fails G-R1 at W=50 without the metric refresh than any single-variable story: an ensemble that starts inside a 1/100th-variance ellipsoid has to *discover* the posterior's scale, and 50 ChEES steps on a Pathfinder metric cannot do it. The refresh can, because it rebuilds the metric from the ensemble it just spread.
+2. **It is a gradient of severity, not a binary.** GEV is near-correct in 2 of 3 coordinates with one narrow (`ξ_interval__`); 8 Schools is near-correct in 8 of 10 with the two hyperparameters narrow; logistic is broadly narrow (median ≈ 0.5); radon is uniformly narrow. So the earlier framing of this as "GEV's `xi_interval__`" was too narrow a read of the same measurement (see §7 item 4).
+3. **Pool size barely matters** (0.740 → 0.722, 0.100 → 0.105): this is a property of Pathfinder's L-BFGS approximate marginal on these geometries, not of how many draws are taken from it. That also means `pf_draws` and `pf_pool_cap` are *not* levers for it.
+4. **What this does not establish:** that narrow starts *cause* GEV's divergence rise (8 Schools' `mu` is colder than GEV's ξ with no divergence problem), and whether re-dispersing the starts would improve any gate. The named experiment is the same model with starts rescaled per coordinate toward the reference sd, scored on gradients-to-R̂ < 1.01.
 
 ## 4. Decisions taken in this run
 
