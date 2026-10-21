@@ -231,7 +231,11 @@ exists); E8–E12 tagged void. New run-1 defects found in run 2 (LEDGER):
   (`grads_per_chain_sampling / (1250·L) = 0.013` vs 0.50–0.56 in every later row), so run-1's R2
   grads/ESS headline (35.5/71.2/46.1/182.3 vs 58.2/73.4/151.7/501.9) is void as absolute numbers.
 
-__COVERAGE__
+**Plan coverage** (`results/r2/PLAN-COVERAGE.md`, 63 items): DEVIATED 8, DONE 54, SKIPPED 1. Not plain DONE: LEAD (deviated); WP3-split (deviated); WP1.7 (deviated); WP3.6 (deviated); WP4.1 (deviated); M2c (skipped); T4 (deviated); M4x (deviated); M5x (deviated). No silent gaps; no item PENDING.
+
+**Run-1 coverage** (`results/r2/RUN1-COVERAGE.md`, 31 run-1 Part B items): DONE 9, DEVIATED 13, SKIPPED 9 (WP5.1 the known skip, now delivered as R2-WP2).
+
+**Suite:** baseline at `4e07b45` `125 passed in 165.79s`; final at `81054c3` (code identical to the last merge `25d2618`) `191 passed, 4 warnings in 290.57s (0:04:50)`.
 
 ## Open questions for the owner (≤ 5)
 

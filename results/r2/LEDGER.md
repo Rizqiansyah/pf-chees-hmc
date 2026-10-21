@@ -278,3 +278,16 @@ reconstructed E14 estimates (96 / 207 / 319 / 880) match the measured legacy val
 350.7 / 782.5) to within 13%. **GEV regresses in ESS per second** (median 607 → 282) and in
 divergences (0.17–0.33 → 0.42–1.18 per 1k). At R1, legacy passes only 8schools (W=100); the current
 default passes all four. Tables are in REPORT ("Before vs after run 1").
+
+## 2026-10-21 — M3g, M5x done; run 2 closed
+
+- **M3g** (GEV G3): 15 rows that reproduce M3's divergences and R̂ exactly. Shifts are 0.0095–0.028
+  sd; the z form fails on all but one seed. Table in REPORT R2-T3.
+- **M5x** (radon CPU, DEVIATED): every cell at draws 800/1,600 passes. The cheapest is tune 200 + draws
+  800: wall 19.13 s, 273.5 core-s, 37,879 grads/chain.
+- **R2-T4 headline:** GPU ÷ CPU speed-up of 0.56 (8schools), 0.51 (gev), 1.10 (logit) and 0.77
+  (radon).
+- **Final suite** at `81054c3`: `191 passed, 4 warnings in 290.57s (0:04:50)`. Code is unchanged since
+  `25d2618`.
+- **A9:** `main` = `origin/main` = `ecd9ba1`; `pf-r2` is on no remote; PLAN-COVERAGE has 63 items
+  (DONE 54, DEVIATED 8, SKIPPED 1).

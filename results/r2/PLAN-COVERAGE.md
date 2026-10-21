@@ -65,7 +65,7 @@ contract items. An item that is silently absent counts as a run failure (plan A4
 | T5 | R2-T5 decisions D1/D2/D3 with clause-by-clause evaluation and deciding row ids | lead | DONE (results/r2/REPORT.md) |
 | T6 | R2-T6 errata applied + coverage counts | lead | DONE (results/r2/REPORT.md) |
 | OPEN | Open questions for the owner: at most 5, each with the settling measurement | lead | DONE (results/r2/REPORT.md) |
-| A9 | A9 done-checks + print branch, log range, REPORT path | lead | PENDING |
+| A9 | A9 done-checks + print branch, log range, REPORT path | lead | DONE (final suite "191 passed, 4 warnings in 290.57s"; main ecd9ba1 = origin/main; pf-r2 on no remote) |
 | E13 | New run-1 defect: single-phase _run_chees ignored iterate (found in R2-WP2) | r2/wp2 | DONE 5982ee7; LEDGER |
 | M4x | Owner request: legacy ecd9ba1 vs current default (R2 warm, R1 grid) | lead | DEVIATED (added at owner request; M4x__r2/r1.jsonl) |
 | E14 | New run-1 defect: WP1 R2 rows undercount sampling grads ~39x | lead | DONE (LEDGER) |
