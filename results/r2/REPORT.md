@@ -88,7 +88,35 @@ b²); mean shift in sd units `tables/M3_shift_bound.md`.
 The sd-unit shift is √b²_max in unconstrained space: exact where the arg-max moment is first-order
 (all GEV ma/raw seeds), an upper bound otherwise.
 
-__G3__
+**GEV G3 (A1.3; informational, nothing changed on it).** Source `M3g__gev_meanshift.jsonl`, the run-1
+G3 scorer (`results/r2/drivers/g3_meanshift.py`, a copy of `tools/gev_g3b.py` with configurable
+arms). Seeds 1–5 reproduce the M3 rows exactly (same divergences and R̂). Clauses: R̂ ≤ 1.01;
+sampling divergences ≤ 0.10/1k (the run-1 shipped maximum); mean shift "within 1σ" in G3's z form
+(shift ÷ run MCSE), plus the same shift in reference-sd units.
+
+| arm | seed | R̂ ≤ 1.01 | divs/1k ≤ 0.10 | z ≤ 1 | worst shift, sd units | frozen ε / L |
+|---|---|---|---|---|---|---|
+| ma (default) | 1 | 1.0085 ✓ | 1.100 ✗ | 1.35 ✗ | 0.0101 | 0.978 / 8 |
+| ma | 2 | 1.0125 ✗ | 0.425 ✗ | 1.76 ✗ | 0.0284 | 0.857 / 7 |
+| ma | 3 | 1.0078 ✓ | 1.175 ✗ | 2.00 ✗ | 0.0144 | 0.806 / 9 |
+| ma | 4 | 1.0307 ✗ | 0.525 ✗ | 1.04 ✗ | 0.0095 | 0.882 / 5 |
+| ma | 5 | 1.0015 ✓ | 1.200 ✗ | 2.81 ✗ | 0.0195 | 0.817 / 17 |
+| raw | 1 | 1.0174 ✗ | 1.025 ✗ | 1.84 ✗ | 0.0180 | 0.990 / 6 |
+| raw | 2 | 1.0082 ✓ | 0.650 ✗ | 2.33 ✗ | 0.0250 | 0.862 / 9 |
+| raw | 3 | 1.0089 ✓ | 1.050 ✗ | 2.33 ✗ | 0.0185 | 0.808 / 9 |
+| raw | 4 | 1.0045 ✓ | 0.550 ✗ | 1.85 ✗ | 0.0134 | 0.794 / 12 |
+| raw | 5 | 1.0018 ✓ | 14.700 ✗ | 1.82 ✗ | 0.0118 | 0.707 / **269** |
+| raw+refresh | 1 | 1.0296 ✗ | 0.050 ✓ | 1.34 ✗ | 0.0215 | 0.575 / 8 |
+| raw+refresh | 2 | 1.0015 ✓ | 0.025 ✓ | 3.61 ✗ | 0.0246 | 0.404 / 30 |
+| raw+refresh | 3 | 1.0148 ✗ | 0.075 ✓ | 0.95 ✓ | 0.0195 | 0.568 / 9 |
+| raw+refresh | 4 | 1.0018 ✓ | 2.000 ✗ | 1.77 ✗ | 0.0095 | 0.450 / **282** |
+| raw+refresh | 5 | 1.0012 ✓ | 0.825 ✗ | 3.93 ✗ | 0.0212 | 0.354 / **363** |
+
+No arm meets G3 as written on any seed except refresh seed 3. In reference-sd units every shift is
+0.0095–0.028 sd, so the means are far inside 1σ. G3's z form fails because the run MCSE at 40,000
+draws is about 0.01 sd. That is the A1.3 owner question: the clause is unchanged here, and both forms
+are reported. Divergences are the binding G3 failure for the default path, at 0.43–1.20 per 1k against
+0.10. `raw` can also run away in L on GEV (seed 5: L 269, 14.7 divs/1k).
 
 ## R2-T4 — Time to pass: 32-core CPU NUTS vs GPU R1 (headline)
 
