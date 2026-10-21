@@ -335,3 +335,19 @@ are inflated about 2.5× (cold call 89 s against M4's 35.9 s). The compile count
    now listed as DEVIATED in PLAN-COVERAGE; it was previously folded silently into M3 DONE.
 3. **Code reviews** were done by the lead against each WP's checklist, replacing the
    plan's fast-tier review task (A4). This was stated in each `reviews/*.md` but had no coverage row.
+
+## 2026-10-21 — repository clean-up and merge to local `main` (owner request)
+
+- All checkouts are removed: the four `~/pf/r2-*` (merged) and the ten run-1 ones (all clean).
+  To reproduce M4x's legacy arm, recreate `~/pf/legacy` with
+  `git worktree add --detach ~/pf/legacy ecd9ba1`.
+- Branches with commits not on `pf-r2` are kept as tags, not merged (owner choice):
+  - `archive/pf-r1-int`: 7 commits, including the unquarantined buggy `tools/t3_cpu.py`;
+  - `archive/wp-wp4`: 1 commit, a superseded run-1 WP4 rows/SUMMARY version that conflicts.
+- The other merged branches are deleted. `pf-r1` and `pf-r2` become tags of the same name, so every
+  `git log pf-r1..pf-r2` in these docs still resolves.
+- The untracked root copies of the plan files are deleted; they were byte-identical to
+  `docs/review-2026-10/`.
+- `pf-r2` is merged into **local** `main` (owner approved; this lifts the plan's "never commit to
+  main" for this merge only). **Nothing is pushed:** `origin/main` stays at `ecd9ba1`. No default
+  changed in run 2 (D1 = NO, D2 = NO).
