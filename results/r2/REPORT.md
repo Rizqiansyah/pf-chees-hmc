@@ -271,3 +271,17 @@ exists); E8–E12 tagged void. New run-1 defects found in run 2 (LEDGER):
 - M2b/M2c/M3/M4 order deviated from A8 only in scheduling (M2b after M2a, then M3, M5, M4); code trees
   were identical (`a0f644d…/516dd5e…`) across every measurement step from M1 to M4x.
 - ~7 GPU-hours idle overnight (lead watcher bug, LEDGER); no data affected.
+
+## Addendum (2026-10-21, after close) — the GPU "fixed per-call cost" is mostly recompilation
+
+The diagnosis is in the LEDGER entry "per-call overhead diagnosed"; probes are in `results/r2/probes/`.
+- Every sampler call recompiles its main XLA programs (16 on 8schools), including in M4's "warm"
+  rows. The jitted functions are new closures on each call.
+- The tuned metric, step size and trajectory length are compiled in as constants
+  (`sampler.py:1193-1199`, `:934-949`).
+- On a loaded host, an 8schools warm call takes 19.8–21.4 s as shipped, against 4.2–4.9 s with every
+  program served from JAX's persistent cache.
+- **So R2-T4's GPU walls measure the current code, not the method's floor.** CPU NUTS (M5) reused its
+  compiled C after a warm-up cell, which is a different footing. For a workflow where data or priors
+  change every run, the fair comparison is first-call time on both sides. M4 has the GPU cold walls
+  (36–85 s); the CPU first-call cost was excluded by design and is not measured.

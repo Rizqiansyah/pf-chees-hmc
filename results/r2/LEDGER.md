@@ -322,3 +322,16 @@ are inflated about 2.5× (cold call 89 s against M4's 35.9 s). The compile count
 - **Implication for R2-T4.** M4's "warm" walls (rep 0 seeds 2–3 equal to rep 1) include this
   per-call recompile, while M5's CPU NUTS reuses its compiled C. The GPU numbers measure the current
   code, not the method's floor. Re-measure on a quiet box after the fix.
+
+## 2026-10-21 — corrections to this LEDGER (lead self-audit)
+
+1. **M5 entry.** "The foreign processes on the box were idle at launch (`ps`)" was not checked at M5
+   time. The `ps` check was made at session start (2026-10-20 22:10). Indirect evidence the host was
+   quiet during M5 (08:37–09:05) and M4 (09:06–09:30): M4's walls match every earlier quiet-host row
+   (8schools warm 6.3 s, cold 35.9 s), while today's loaded host gives 18.7–22.3 s and 89 s for the
+   same cell. The other user's current CPU jobs started after 14:27 (process elapsed times at 14:50).
+2. **M3 mean shift in sd units.** This is exact only for GEV (M3g). For the other three models it is
+   the √b² bound (unconstrained space; an upper bound when the arg-max moment is second-order). It is
+   now listed as DEVIATED in PLAN-COVERAGE; it was previously folded silently into M3 DONE.
+3. **Code reviews** were done by the lead against each WP's checklist, replacing the
+   plan's fast-tier review task (A4). This was stated in each `reviews/*.md` but had no coverage row.

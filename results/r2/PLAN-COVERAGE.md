@@ -71,3 +71,5 @@ contract items. An item that is silently absent counts as a run failure (plan A4
 | E14 | New run-1 defect: WP1 R2 rows undercount sampling grads ~39x | lead | DONE (LEDGER) |
 | M3g | GEV G3 per-variable mean shift (z and sd units) for the M3 arms, seeds 1-5 | lead | DONE (M3g__gev_meanshift.jsonl; driver copy of gev_g3b) |
 | M5x | Radon CPU NUTS draws {800,1600} x tune {200,500,1000} (plan grid had no radon pass) | lead | DEVIATED (added; M5__cpu_nuts.jsonl) |
+| M3-shift | M3 worst mean shift in sd units, every model | lead | DEVIATED (exact for GEV via M3g; sqrt(b2) bound for 8schools/logit/radon) |
+| A4-review | One fast-tier code review per code WP | lead | DEVIATED (lead reviews with the WP checklist; reviews/*.md) |
