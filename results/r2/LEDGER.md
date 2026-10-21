@@ -291,3 +291,34 @@ default passes all four. Tables are in REPORT ("Before vs after run 1").
   `25d2618`.
 - **A9:** `main` = `origin/main` = `ecd9ba1`; `pf-r2` is on no remote; PLAN-COVERAGE has 63 items
   (DONE 54, DEVIATED 8, SKIPPED 1).
+
+## 2026-10-21 (after close) — per-call overhead diagnosed: every call recompiles (owner question)
+
+Probes are in `results/r2/probes/overhead_probe*.py` (8schools, C=1,024, W=25, D=10, GPU). They were
+run while another user's jobs held the host at load average ~40 on 32 CPUs, so the absolute seconds
+are inflated about 2.5× (cold call 89 s against M4's 35.9 s). The compile counts are exact.
+
+- **A "warm" call recompiles 16 XLA programs** (`jax_log_compiles`): `jit(scan)` ×3, `jit(search)`
+  (ε0), `jit(while)` (Pathfinder L-BFGS), `jit(<lambda>)` ×2 and `jit(_ok)`. This happens even with
+  the same model object and the same seed. The harness shows 8 recompiles per warm cell. cProfile:
+  `backend_compile_and_load` takes 17.2 of 24.8 s.
+- **Cause 1.** The jitted functions are new Python closures on every call, so JAX's in-memory jit
+  cache (keyed on function identity) never hits. No persistent cache is configured
+  (`jax_compilation_cache_dir = None`).
+- **Cause 2.** Tuned values are captured as compile-time constants. The sampling kernel is built with
+  `step_size`, `inverse_mass_matrix` and `integration_steps_fn` (which closes over T/ε) at
+  `sampler.py:1193-1199`, and the ε-search closure captures `inverse_mass_matrix`
+  (`sampler.py:934-949`). With the persistent cache on, a never-seen seed still misses exactly
+  `jit_scan` ×2 and `jit_search` (the HLO differs); a previously seen seed hits everything.
+- **Under load, warm call:**
+
+| condition | wall |
+|---|---|
+| no cache | 19.8–21.4 s |
+| persistent cache, new seed | 16.7–17.8 s |
+| persistent cache, seen seed | 4.2–4.9 s |
+
+  A first call in a fresh process with a populated cache took 12.1 s, against 89 s.
+- **Implication for R2-T4.** M4's "warm" walls (rep 0 seeds 2–3 equal to rep 1) include this
+  per-call recompile, while M5's CPU NUTS reuses its compiled C. The GPU numbers measure the current
+  code, not the method's floor. Re-measure on a quiet box after the fix.
