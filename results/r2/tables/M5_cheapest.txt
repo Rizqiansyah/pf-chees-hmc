@@ -1,4 +1,4 @@
-smallest-pass  144 rows from 1 file(s): results/r2/runs/M5__cpu_nuts.jsonl
+smallest-pass  162 rows from 1 file(s): results/r2/runs/M5__cpu_nuts.jsonl
 8schools           arm=cpu:nuts  seeds=[1, 2, 3]
    -> smallest pass tune=200 draws=250 (cost 450): wall=3.54s core_s=15.7 median grads/chain=3960
       per-seed b2/floor  s1:0.002723/0.003862  s2:0.001048/0.001875  s3:0.001207/0.002026
@@ -12,4 +12,6 @@ logit_1000x25      arm=cpu:nuts  seeds=[1, 2, 3]
       per-seed b2/floor  s1:0.00283/0.00312  s2:0.0007125/0.003476  s3:0.001617/0.003644
       pooled b2/floor: -
 radon_noncentered  arm=cpu:nuts  seeds=[1, 2, 3]
-   -> none <= max cost 1400 (tune+draws, grid up to tune=1000 draws=400)
+   -> smallest pass tune=200 draws=800 (cost 1000): wall=19.13s core_s=273.5 median grads/chain=3.788e+04
+      per-seed b2/floor  s1:0.0006579/0.003383  s2:0.0006319/0.004125  s3:0.001347/0.002666
+      pooled b2/floor: -

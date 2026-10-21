@@ -57,15 +57,17 @@ contract items. An item that is silently absent counts as a run failure (plan A4
 | M3 | M3 R2 matrix 3 arms x 5 seeds = 60 cells + mean shift in sd units + G3 on GEV | steady-tier runner | DONE (M3__r2.jsonl 60 rows; LEDGER) |
 | D1 | D1 rule evaluation (a)-(c) | lead | DONE: NO (clauses b and c fail; LEDGER) |
 | M4 | M4 GPU warm timing at R1 operating point (repeat 2, rep-1 rows; + C=2048 scaling) | steady-tier runner | DONE (M4__*.jsonl; LEDGER) |
-| M5 | M5-cpu CPU NUTS time-to-pass: 4 models x 3 tune x 4 draws x 3 seeds = 144 runs | steady-tier runner | DONE (M5__cpu_nuts.jsonl 144 rows) + M5x radon extension queued (DEVIATED) |
-| T1 | R2-T1 R1 smallest passing W | lead | PENDING |
-| T2 | R2-T2 M1 closed vs MC + D2 | lead | PENDING |
-| T3 | R2-T3 M3 R2 matrix + GEV G3 + D1 | lead | PENDING |
-| T4 | R2-T4 time to pass CPU vs GPU (headline) | lead | PENDING |
-| T5 | R2-T5 decisions D1/D2/D3 with clause-by-clause evaluation and deciding row ids | lead | PENDING |
-| T6 | R2-T6 errata applied + coverage counts | lead | PENDING |
-| OPEN | Open questions for the owner: at most 5, each with the settling measurement | lead | PENDING |
+| M5 | M5-cpu CPU NUTS time-to-pass: 4 models x 3 tune x 4 draws x 3 seeds = 144 runs | steady-tier runner | DONE (M5__cpu_nuts.jsonl: 144 plan rows + 18 M5x rows) |
+| T1 | R2-T1 R1 smallest passing W | lead | DONE (results/r2/REPORT.md) |
+| T2 | R2-T2 M1 closed vs MC + D2 | lead | DONE (results/r2/REPORT.md) |
+| T3 | R2-T3 M3 R2 matrix + GEV G3 + D1 | lead | DONE (results/r2/REPORT.md) |
+| T4 | R2-T4 time to pass CPU vs GPU (headline) | lead | DEVIATED (REPORT; radon CPU config from M5x draws extension) |
+| T5 | R2-T5 decisions D1/D2/D3 with clause-by-clause evaluation and deciding row ids | lead | DONE (results/r2/REPORT.md) |
+| T6 | R2-T6 errata applied + coverage counts | lead | DONE (results/r2/REPORT.md) |
+| OPEN | Open questions for the owner: at most 5, each with the settling measurement | lead | DONE (results/r2/REPORT.md) |
 | A9 | A9 done-checks + print branch, log range, REPORT path | lead | PENDING |
 | E13 | New run-1 defect: single-phase _run_chees ignored iterate (found in R2-WP2) | r2/wp2 | DONE 5982ee7; LEDGER |
-| M4x | Owner request: legacy ecd9ba1 vs current default (R2 warm, R1 grid) | lead | DONE (M4x__r2/r1.jsonl; DEVIATED: added at owner request) |
+| M4x | Owner request: legacy ecd9ba1 vs current default (R2 warm, R1 grid) | lead | DEVIATED (added at owner request; M4x__r2/r1.jsonl) |
 | E14 | New run-1 defect: WP1 R2 rows undercount sampling grads ~39x | lead | DONE (LEDGER) |
+| M3g | GEV G3 per-variable mean shift (z and sd units) for the M3 arms, seeds 1-5 | lead | DONE (M3g__gev_meanshift.jsonl; driver copy of gev_g3b) |
+| M5x | Radon CPU NUTS draws {800,1600} x tune {200,500,1000} (plan grid had no radon pass) | lead | DEVIATED (added; M5__cpu_nuts.jsonl) |

@@ -12,7 +12,33 @@ diagnostic, never a gate.
 
 ## 0. Headline
 
-__HEADLINE__
+**Owner's question: does R1 on the GPU beat 32-core CPU NUTS at equal accuracy?** Not on this box
+for these models. Both sides here pass `g_r1` on all 3 seeds. The RTX A2000 (6 GB) running the
+R1 default path is slower than CPU NUTS on 8 Schools (0.56×), GEV (0.51×) and radon (0.77×), and
+1.1× faster on logistic (R2-T4). The GPU's sampling compute (warmup + draws) alone is 1.1–1.9× faster
+than the whole CPU run. The loss is a fixed per-call cost of 2.8–10.8 s (init + Pathfinder + ε0). On
+radon it is led by an 8 s Pathfinder stage, caused by the `mc` default's 122,500-row pool. Doubling to
+C=2,048 is nearly free (+0–27% wall).
+
+**What runs 1 and 2 changed (M4x, same harness on both trees):**
+- At R1 the pre-run-1 code passes only 8 Schools (W=100). The current default passes all four:
+  8 Schools and GEV at W=25, logistic at W=50, radon at W=300.
+- At R2 the current default is 1.3–2.2× faster in wall time and 1.5–4.6× cheaper in grads/ESS on
+  every model. GEV is the one regression: about 2× fewer ESS per second and about 3× more divergences.
+
+**Decisions:**
+- **D1 = NO.** `iterate` stays `ma`: `raw` passes at smaller W but costs more gradients on 3 of 4
+  models.
+- **D2 = NO.** `imm_source` stays `mc`, missed by one radon seed's R̂ of 1.0101. Otherwise the closed
+  form matches at R2, matches at R1, and halves radon's memory.
+- **D3: recommend the metric refresh stays OFF.** It is 1.30× dearer on logistic, never passes radon,
+  and is 5.6–36× dearer at R2.
+
+**The re-seed fix holds:** frozen L at C=1,024 is 0.6–1.6× that of the no-refresh run (run 1: 213–283).
+
+**Two new run-1 defects:**
+- **E13:** `iterate="raw"` was silently ignored without a refresh.
+- **E14:** the WP1 R2 rows undercounted sampling gradients about 39×, which voids run 1's R2 headline.
 
 ## R2-T1 — R1 smallest passing W (all 3 seeds pass `g_r1`)
 
@@ -126,7 +152,28 @@ C=1,024 × D=10, the default path at its M2a smallest passing W (plus the best a
 warm = median of rep-1 rows over 3 seeds, cold = rep-0 seed 1, peak from a separate single-cell process.
 Speed-up = CPU wall / GPU warm wall (> 1 means the GPU is faster).
 
-__T4__
+| model | CPU config | CPU wall (median) | CPU core-s | GPU config | GPU warm wall | GPU cold wall | GPU peak | warm speed-up | b² CPU / GPU (seeds 1–3) |
+|---|---|---|---|---|---|---|---|---|---|
+| 8schools | tune 200 + draws 250 | 3.54 s | 15.7 | default, W=25 | 6.31 s | 35.9 s | 224 MiB | **0.56×** | .0027 .0010 .0012 / .0007 .0007 .0018 |
+| gev | tune 200 + draws 100 | 5.36 s | 19.5 | default, W=25 | 10.49 s | 46.6 s | 288 MiB | **0.51×** | .00048 .00016 .00051 / .0014 .00033 .00021 |
+| logit_1000x25 | tune 200 + draws 250 | 9.27 s | 198.7 | default, W=50 · raw, W=25 | 8.42 s · 8.35 s | 52.2 s · 51.7 s | 582 MiB | **1.10× · 1.11×** | .0028 .00071 .0016 / .0039 .0045 .0011 · .00055 .0020 .00060 |
+| radon_noncentered | tune 200 + draws 800 † | 19.13 s | 273.5 | default, W=300 · raw, W=100 | 24.93 s · 24.96 s | 85.2 s · 85.6 s | 1,242 MiB | **0.77× · 0.77×** | .00066 .00063 .0013 / .0032 .0059 .0053 · .0025 .0021 .0016 |
+
+† The plan grid (draws ≤ 400) has no radon pass: all cells are "not resolvable", with b² 0.001–0.003
+and floors > 0.005. M5x extended draws to {800, 1,600} (DEVIATED). This is the cheapest of the tested
+grid; draws between 400 and 800 were not tried.
+
+Where the GPU time goes (warm, median s; `stage_s`):
+
+| model | init | Pathfinder | ε0 | warmup | sampling | fixed (init+PF+ε0) | compute (warmup+sampling) | CPU wall ÷ GPU compute |
+|---|---|---|---|---|---|---|---|---|
+| 8schools | 0.53 | 1.15 | 1.07 | 1.69 | 1.52 | 2.75 | 3.21 | 1.10 |
+| gev | 1.55 | 1.89 | 1.48 | 2.68 | 2.09 | 4.92 | 4.77 | 1.12 |
+| logit_1000x25 | 0.51 | 1.38 | 1.14 | 3.22 | 1.73 | 3.03 | 4.95 | 1.87 |
+| radon_noncentered | 0.93 | 8.03 | 1.79 | 7.36 | 2.55 | 10.75 | 9.91 | 1.93 |
+
+C=2,048 at the same W (seed 1, warm) costs 6.49, 10.51, 10.21 and 31.68 s, which is +3%, +0%, +21%
+and +27% for twice the draws.
 
 ## Before vs after run 1 (owner request, M4x)
 
@@ -188,7 +235,26 @@ __COVERAGE__
 
 ## Open questions for the owner (≤ 5)
 
-__OPEN__
+1. **Flip D2 anyway?** `pf_closed` missed only by one radon R̂ (1.0101 vs 1.01). It is cost-neutral
+   at R2, has identical R1 verdicts, halves radon's R1 peak (653 vs 1,242 MiB) and removes the O(d³)
+   pool. It should also shrink radon's 8 s Pathfinder stage, the largest GPU overhead.
+   *Settles it:* 5 more radon R2 seeds per arm (the R̂ count over 8), plus an M4 warm timing of radon
+   with `--imm-source pf_closed`.
+2. **What does a "call" look like in your workload?** The GPU loses on per-call fixed cost, not on
+   sampling: 2.8–4.9 s on the small models, 10.8 s on radon, even warm. If you run many fits per
+   compiled model, or larger C, the balance changes.
+   *Settles it:* profile init, Pathfinder and ε0 (run-1 WP6.3, out of scope here), and time a batch
+   of fits in one process.
+3. **How should G3 read for GEV (A1.3)?** Mean shifts are 0.010–0.028 sd, but the z form (÷ run
+   MCSE ≈ 0.01 sd) fails on every seed. The covariance metric also raises GEV divergences to
+   0.4–1.2/1k (legacy 0.17–0.33) and halves its ESS per second.
+   *Settles it:* a GEV R2 arm at `target_accept=0.9` (divergences, ESS/s), after you choose the G3 form.
+4. **Does the crossover favour the GPU at your model's size?** The CPU cost grows fastest with d
+   (radon: 274 core-s), and the GPU's compute-only advantage is largest there (1.9×).
+   *Settles it:* the M4/M5 pair on your model.
+5. **Per-model iterate for radon?** `ma` W=300 and `raw` W=100 tie in wall time (24.9 s). `raw`
+   passes with 3× fewer warmup steps but runs away in L on GEV (L 269, 14.7 divs/1k on one seed),
+   so it stays opt-in. *Settles it:* nothing further is needed unless you want a per-model recommendation.
 
 ## Caveats
 
