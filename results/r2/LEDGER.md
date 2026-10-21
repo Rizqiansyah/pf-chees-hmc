@@ -268,3 +268,13 @@ Reading:
   on radon.
 - Radon's Pathfinder stage (8.0 s) is the largest single stage. Its `mc` pool is 122,500 rows (4d²);
   `pf_closed` would draw 4,096 (see D2).
+
+## 2026-10-21 — M4x done (owner request; 12 jobs rc=0): legacy `ecd9ba1` vs current default
+
+Rows `M4x__r2.jsonl` (warm, repeat 2) and `M4x__r1.jsonl`. The exact counter is confirmed on both
+trees (sampling grads/(1250·L) = 0.50–0.55). At R2 the current default is faster in wall time on all
+four models (1.27 / 1.71 / 2.21 / 1.53×) and cheaper in grads/ESS (1.75 / 1.47 / 4.61 / 2.68×). The
+reconstructed E14 estimates (96 / 207 / 319 / 880) match the measured legacy values (97.6 / 208.2 /
+350.7 / 782.5) to within 13%. **GEV regresses in ESS per second** (median 607 → 282) and in
+divergences (0.17–0.33 → 0.42–1.18 per 1k). At R1, legacy passes only 8schools (W=100); the current
+default passes all four. Tables are in REPORT ("Before vs after run 1").
