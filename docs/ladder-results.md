@@ -6,6 +6,43 @@ defaults (2,000 draws, 2,000 ChEES warmup, `JAX_COMPILATION_CACHE_DIR` set); CPU
 `pm.sample(draws=1000, tune=1000, target_accept=0.8)` with one BLAS thread per chain, so
 "chains = cores" is literal.
 
+## Corrections applied in pf-r1
+
+The pf-r1 metric findings touch most GPU numbers in this file. Record trail: LEDGER `a03dc0f`
+(orientation retraction, on the 2x2 fixture), `c2993cf` (the same retraction confirmed on GEV:
+shipped arm max R-hat 1.0313-1.0518 against the project's 1.01 bar), `9f892b2` (the three
+`imm_source` arms never shared an orientation). **Retracted** = a measurement refutes the claim;
+the numbers stay as the refuting evidence. **Caveated** = the numbers stand as measured but were
+produced on the shipped metric arm, which fails R-hat <= 1.01 on GEV; re-measurement on the
+corrected arm is pending. Line pointers below are to the corrected text in this file and in
+`README.md`.
+
+Retracted:
+- "Short chains cost quality ... GPU max R-hat rises monotonically with chains" (equal-draw item 3, line 240)
+- "Short chains do not substitute for long ones" (fixed-40,000-draw sweep, line 611)
+- "More warmup does not repair what more chains broke" and "a start needs draws-per-chain to burn off" (warmup x chains grid, line 630)
+- "Fisher's units are 2,000x below the posterior's own scale" (E4, line 153)
+- the "no smaller warmup default" conclusion; the 8 Schools delta of the same A/B stands (line 645)
+- "More chains also means less needed warmup" (README.md line 95)
+- the two memory-model explanations of the OOM ceiling (total stacked draws; warmup stack) - re-qualified in place, 64-chain ceiling kept (line 672)
+
+Caveated (numbers retained, re-measurement pending):
+- E1 grid ESS/s table and the steps-per-draw conclusion built on it (line 64)
+- centered-funnel "quality failure" framing (line 88)
+- four-chain quality half (line 98)
+- E4 rescale A/B reading (line 167); E4 verdict ratios and step-jump tell (line 181)
+- "CPU wins 15 of 16 cells" at equal draws (line 232); W=1,000 lever (line 255); divergence counterweight (line 262)
+- per-gradient ESS/s corollary (line 295); per-step overhead split (line 306)
+- stage-timer absolute walls (line 318)
+- init-policy dispersion table, evidence base of the shipped stratified-pick default `9fdd15d` (line 419)
+- MEADS radon half (line 509)
+- fixed-draws wall / c-per-step magnitudes (line 607); radon W-ladder (line 642)
+- README.md: device choice (line 74); Fisher `imm_source` ratios (line 78); warmup table and "2,000 is enough" heading (line 93); "do not go as low as 1,000" floor (line 95); ESS/s headline (line 72)
+
+Verified clean in both files: the earlier "BlackJAX rhat is blind to between-chain offsets" claim
+and the hand-rolled split-R-hat comparison do not appear in the docs; those lessons live in
+`tests/test_warmup_stop.py` and LEDGER `6a33c00`.
+
 ## Measured cells
 
 115 cells, no errors, median over 4 warm seeds per configuration. CPU arm is `pm.sample` with
@@ -24,6 +61,13 @@ Worst-variable throughput and divergence rates (GPU at 32 chains): 8 Schools 2,9
 0 divergences per 1,000 draws versus CPU 2,062 and 1.344; logistic 521 and 0 versus 281 and 0;
 GEV 504 and 0.328 versus 1,482 and 11.5; radon noncentered 126 and 0 versus 204 and 1.312.
 
+**pf-r1 caveat:** every GPU cell in this table was run on the shipped metric arm, which fails the
+project's own R-hat <= 1.01 bar on GEV (LEDGER `c2993cf`; orientation retraction `a03dc0f`). The
+numbers stand as measured; the ESS/s values and the steps-per-draw conclusion built on them are
+re-measurement pending on the corrected arm. 8 Schools is the only ladder model whose coordinate
+order equals the kernel's sorted-key order, so its cells carry the orientation defect only; GEV,
+logistic and radon carry both orientation and the tuple-vs-dict permutation.
+
 ## Four conclusions
 
 1. **The GPU advantage tracks steps-per-draw, not parameter count.** It went 0.99x -> 1.06x ->
@@ -41,6 +85,9 @@ GEV 504 and 0.328 versus 1,482 and 11.5; radon noncentered 126 and 0 versus 204 
    published pattern exactly: Seyboldt et al. excluded every centered model for non-convergence,
    and Dance et al. report ChEES returning `nan` ESS on a funnel target. We now have the same
    failure on our own box, which makes it testable rather than folklore.
+   pf-r1 caveat: funnels are out of scope for this run and radon centered is never a gate (plan
+   section 8); the R-hat 4.33 / L ~4.8 magnitudes were measured on the failing, permuted metric
+   (LEDGER `c2993cf`; `a03dc0f`), so this row supports "out of scope" and nothing stronger.
 
 3. **Four chains is not a usable GPU configuration, which retroactively justifies the default
    change.** At 4 chains the GPU is 6x to 25x slower than the best CPU on every model and its
@@ -48,6 +95,11 @@ GEV 504 and 0.328 versus 1,482 and 11.5; radon noncentered 126 and 0 versus 204 
    estimates its trajectory length from the ensemble, so with 4 chains it has almost nothing to
    estimate from. The shipped default used to be 4; that setting was not merely slow, it produced
    unconverged output.
+   pf-r1 caveat: the speed half (6x-25x slower than the best CPU) is metric-independent throughput
+   and stands. The quality half (R-hat degrading to 3.59 / 1.21 / 1.13) was measured on the shipped
+   arm, which fails R-hat <= 1.01 on GEV (LEDGER `c2993cf`; `a03dc0f`) and collapses every wide
+   coordinate under the orientation defect; how much of the 4-chain degradation is "too few chains
+   for ChEES" is re-measurement pending on the corrected arm.
 
 4. **Gate G1 is satisfied by measurement.** The threshold was condition number >= 50 or >= 1
    divergence per 1,000 draws on a ladder model. The logistic model alone is at 358, and radon is
@@ -97,8 +149,14 @@ the inverse mass matrix, d=175):
 | lbfgs_lowrank | 0.0069 | 72 | 0.0085 | 0.036 |
 | fisher_lowrank | 0.069 | 2,366 | **1.000** | **1.000** |
 
-Fisher's tail is pinned at exactly 1.0 by the construction's clamp, and its units are 2,000x below
-the posterior's own scale. One step size has to serve both.
+Fisher's tail is pinned at exactly 1.0 by the construction's clamp. The "units are 2,000x below the
+posterior's own scale" comparison is *retracted (pf-r1)* as a metric comparison: the `mc` column is
+the precision (M^-1) while the `lbfgs_lowrank` / `fisher_lowrank` columns expand to approximately
+the covariance and were fed to the same kernel slot un-inverted, so the table compares opposite
+orientations as much as opposite estimators (LEDGER `9f892b2`), from a baseline on the orientation
+the 2x2 fixture shows failing (LEDGER `a03dc0f`, confirmed on GEV at `c2993cf`). The numbers stand
+as measured; if the unit gap is re-quoted, compare same-convention arrays only. One step size has
+to serve both, whichever the convention.
 
 **Rescaling to the empirical covariance's geometric mean was tried and rejected.** It made every
 model worse: 8 Schools 50,626 -> 13,628, logistic 48,986 -> 15,044, radon noncentered 51,971 ->
@@ -106,6 +164,9 @@ model worse: 8 Schools 50,626 -> 13,628, logistic 48,986 -> 15,044, radon noncen
 carrying part of the benefit, which is the honest read of why: with the metric, the step size and
 the trajectory length all adapted jointly, isolating one of them is not a free operation. The code
 for it is not in the repo.
+pf-r1 caveat: both arms of that A/B sat on the failing orientation (LEDGER `a03dc0f`; `c2993cf`),
+so the "joint adaptation carried the benefit" reading is unverified; the rescale experiment is
+re-measurement pending on the corrected arm.
 
 Raising `cutoff` from 2 to 10 (keep fewer eigen-directions) helped radon noncentered modestly --
 514 -> 359 steps, 51,971 -> 60,442 ESS/s -- and did not close the gap to `mc`.
@@ -117,6 +178,10 @@ symptom), which no per-draw diagnostic shows until it is too late. The centered 
 metric problem either: rank 10/40, warmup 2,000/10,000, cutoff 2/10 and scaling all leave R-hat
 between 2.10 and 5.69, while non-centering the same model reaches 1.005. That is a parameterisation
 fix in the user's model, not a sampler fix.
+pf-r1 caveat: the 1.2-2.0x / 5x ratios and the "tens to hundreds of steps" tell were measured
+across arms that never shared an orientation (LEDGER `9f892b2`) from a failing-orientation baseline
+(LEDGER `a03dc0f`; `c2993cf`); the guidance numbers are re-measurement pending. The option itself
+stands; the ratios do not.
 
 ## Equal-draw-budget comparison (time to the same number of samples)
 
@@ -164,22 +229,39 @@ takes 17.3 s for 4,096 draws versus 8.5 s for the CPU at 32x125.
    a throughput statement about long runs with many chains; they do not survive fixing the sample
    count, because the GPU pays two costs the CPU does not: a 2,000-step lockstep warmup and a fresh
    JAX trace for every new chain count (~15-19 s).
+   pf-r1 caveat: every GPU wall and ESS in this item is on the shipped metric arm, which fails
+   R-hat <= 1.01 on GEV (LEDGER `c2993cf`; `a03dc0f`); the corrected arm re-prices the logistic
+   trajectory 136 -> 26 in the plan's re-derivation (section 2c), so the 15-of-16 verdict is
+   re-measurement pending.
 2. **The gap is fixed cost, not sampling speed.** GPU warm time at 8 Schools 40,000 draws (12.2-13.8 s)
    is within 1.5-2.3x of CPU even though the sampling itself is faster; subtract ~6 s of setup and
    ~11 s of warmup and the remaining sampling time is below the CPU's. At 4,000 draws the fixed cost
    is 75-90% of the run, which is why the ratio is worst there.
-3. **Short chains cost quality on both arms, and the GPU more.** At 4,000 draws GPU max R-hat rises
-   monotonically with chains (1.006 -> 1.017 on 8 Schools, 1.025 -> 1.083 on radon); CPU rises less.
-   Worst-variable ESS at 4,000 draws is below the 400 target on radon in every GPU cell (172-333).
-   A 4,000-draw budget is simply not enough for d=175, sliced any way.
+3. **Short chains cost quality on both arms, and the GPU more.** *Retracted as stated (pf-r1):*
+   the signature here -- GPU max R-hat rising monotonically as draws-per-chain falls (1.006 ->
+   1.017 on 8 Schools, 1.025 -> 1.083 on radon; worst-variable ESS1 172-333 on radon) -- was
+   measured on the shipped arm, which fails R-hat <= 1.01 on GEV (LEDGER `c2993cf`; `a03dc0f`),
+   and the same rising signature is reproduced by the chop test cutting one converged run into
+   short chains (plan section 2b: the fixed-draws sweep's 1.0404 at 1024x39 reappears at 1.050
+   when chopped, while an iid control reads 1.0021 at that shape) -- a short-chain split-R-hat
+   artifact, not a quality loss. Short-chain quality in this regime is judged by the bias harness
+   (b^2_max against the CPU NUTS reference: plan section 2e reaches b^2_max < 0.01 at 1024 chains
+   x 10 draws, W=100, 8 Schools) plus nested R-hat, not split R-hat. The table's numbers stand as
+   the artifact's evidence; they are not a basis for a quality claim.
 4. **Warmup 1,000 instead of 2,000 is a real lever only on long chains.** Radon at 40,000 draws:
    33.2-41.1 s with R-hat 1.004-1.009 at 16 and 32 chains. At 4,000 draws it is a disaster:
    R-hat 2.16 at 4 chains. (Different seed from the 2,000-step rows, so read the direction, not the
    decimal.) This is the strongest argument for a stopping criterion rather than a shorter constant.
+   pf-r1 caveat: the radon cells here sit on the failing, permuted metric (LEDGER `c2993cf`;
+   `a03dc0f`) and the 4-chain R-hat 2.16 is inside the short-chain artifact regime; the
+   W=1,000-vs-2,000 lever reading is re-measurement pending on the corrected arm.
 5. **CPU divergences are the counterweight.** CPU NUTS shows 1.3-2.3 divergences per 1,000 on
    8 Schools and ~1 on radon, against 0-0.05 for the GPU. On wall time today the CPU wins at these
    budgets; the GPU's case is divergence-free output plus throughput once the run is long enough for
    the fixed cost to amortise.
+   pf-r1 caveat: the GPU divergence half (0-0.05 per 1,000) comes from the failing arm, whose
+   epsilon/L set the trajectory (LEDGER `c2993cf`; `a03dc0f`); the CPU half stands. GPU divs/1k
+   is re-verified with the corrected arm.
 
 Next work item this points at, in order: kill the warmup fixed cost (criterion-based stop, then a
 tuned-hyperparameter cache for the second run of the same model), and stop re-tracing per chain
@@ -210,7 +292,8 @@ float64, inside a 20-iteration `lax.scan` (dispatch excluded), GPU.
 | radon non-centered | 44.6 | 91.0 | 119.9 | **138.7** | 268.8 | 41.6 |
 
 1. **Chains are effectively free on small models.** 8 Schools costs the same 23-25 us whether 1, 32 or
-   128 chains run. This is why ESS/s scales almost linearly with chains, and it also closes the
+   128 chains run. (The ESS/s corollary is pf-r1 CONFOUNDED -- the throughput table it cites sits on
+   the failing metric arm, LEDGER `c2993cf`; `a03dc0f` -- re-derivation pending.) It also closes the
    chain-batching idea from the sampler side: there is no duplicated per-chain work left to remove.
 2. **Float32 buys nothing on the graphs we ship.** f64 vs f32 at 32 chains: 8 Schools 23.0 vs 22.5,
    radon 138.7 vs 141.4, logistic 116.3 vs 126.7. The 3.3x-20x float32 win in the synthetic probe was
@@ -220,6 +303,9 @@ float64, inside a 20-iteration `lax.scan` (dispatch excluded), GPU.
    transition at 32 chains (12.4 s for 3,250 lockstep steps at the 40,000-draw budget) while 21
    leapfrog steps of the real logp cost ~480 us. That is ~83% overhead. Radon: 11.4 ms per transition
    against 37 x 139 us = 5.1 ms of model, ~55% overhead. Attribution is the next measurement.
+   pf-r1 caveat: those production walls -- and the L values inside them -- were realised on the
+   failing metric arm (LEDGER `c2993cf`; `a03dc0f`); the per-step split is re-measurement pending
+   (WP6.3 owns it).
 
 ## Where the wall time actually lives (stage timers, both models)
 
@@ -228,6 +314,10 @@ result before stopping. Two runs per model in one process; **read the warm run**
 compilation. One correction on first reading: `finite_init` runs *inside* `_run_pathfinder`, so the
 stages overlap and the residual column goes negative. The numbers below have that double count
 removed (pathfinder shown net of finite_init).
+
+pf-r1 caveat: every stage wall in this section is on the shipped metric arm (LEDGER `c2993cf`;
+`a03dc0f`); the stage decomposition stands, the absolute values are re-priced in the corrected-arm
+R-run.
 
 8 Schools, 32 chains, 1,250 draws, 2,000 warmup, warm total 11.86 s:
 
@@ -326,6 +416,11 @@ Pathfinder fit and metric per (warmup, policy) so only the start *pick* varies. 
 per-dimension standard deviation of the 32 chosen starts. Worst R-hat across seeds; min bulk ESS
 across variables.
 
+pf-r1 caveat: this is the evidence base of the shipped stratified-pick default (`9fdd15d`), and it
+was measured on the failing, permuted radon metric (LEDGER `c2993cf`; `a03dc0f`); whether the
+stratified-vs-iid gap at short warmup survives the corrected arm is re-measurement pending (the
+WP1 R-run covers imm arms only, not pick policy).
+
 | warmup | policy | worst R-hat | min bulk ESS | mean steps | spread |
 |---|---|---|---|---|---|
 | 250 | same_point | 1.0379 | 13,037 | 7.0 | 0.0000 |
@@ -410,6 +505,10 @@ is total gradient evaluations divided by the bulk ESS of the *worst* variable, t
 measure. `wall_s` is NOT comparable across arms: the ChEES row times the whole `sample_pf_chees_hmc`
 call including Pathfinder, the MEADS rows time warmup + sampling only. The verdict does not depend on
 wall time -- it is decided by R-hat and ESS.
+
+pf-r1 caveat: the 8 Schools half is a clean A/B (same metric in both arms) and stands as read;
+the radon rows ran on the failing, permuted metric (LEDGER `c2993cf`; `a03dc0f`), so the radon
+degeneration numbers are re-run pending after WP1/WP4.
 
 | model | arm | max R-hat | min bulk ESS | gradients | grad / ESS | mean shift vs ChEES |
 |---|---|---|---|---|---|---|
@@ -505,8 +604,18 @@ and the two terms move in opposite directions: `D/C` shrinks with chains while `
 ChEES warmup is a chain of 2,000 *dependent* adaptation updates; parallelism lives inside a step, so
 adding chains cannot remove one.
 
-Quality moves the same way -- max R-hat 1.0013 -> 1.0404 and worst-variable ESS/s 2,185 -> 940 going
-32 -> 1,024 chains. Short chains do not substitute for long ones.
+pf-r1 caveat: the wall values are on the failing metric arm (LEDGER `c2993cf`; `a03dc0f`) and
+c/step includes O(C) init and host costs (plan A2), so the "each step costs 4.3x more" magnitude
+is re-measurement pending (WP5's T4 replaces it with device cost per step).
+
+The quality sentence this table used to carry -- "max R-hat 1.0013 -> 1.0404 and worst-variable
+ESS/s 2,185 -> 940 going 32 -> 1,024 chains; short chains do not substitute for long ones" -- is
+*retracted as stated (pf-r1)*: the chop test (plan section 2b) reproduces every "degraded" R-hat
+above by cutting one converged run (the 1.0404 at 1024x39 reappears at 1.050 chopped; an iid
+control reads 1.0021 at the same shape), and the GPU rows sat on the failing metric arm (LEDGER
+`c2993cf`; `a03dc0f`). Short-chain quality is judged by the bias harness instead: plan section 2e
+reaches b^2_max < 0.01 at 1024 chains x 10 draws with W=100 on 8 Schools. The wall and c/step
+numbers in the table stand, with the caveat above.
 
 ### Warmup length versus chain count (fixed 10,000 total draws, warm rows)
 
@@ -518,14 +627,22 @@ Quality moves the same way -- max R-hat 1.0013 -> 1.0404 and worst-variable ESS/
 | 1,000 | 7.8 s / 1.0067 | 9.3 s / 1.0215 | 15.5 s / 1.0559 |
 | 2,000 | 9.1 s / 1.0073 | 10.8 s / 1.0245 | 17.3 s / 1.0938 |
 
-More warmup does not repair what more chains broke: at 512 chains (20 draws per chain) R-hat stays
-1.08-1.11 at every warmup length. A Pathfinder start needs draws-per-chain to burn off, not warmup.
+The conclusion drawn from that grid -- "more warmup does not repair what more chains broke" (at 512
+chains, 20 draws per chain, R-hat stays 1.08-1.11 at every warmup length) and "a Pathfinder start
+needs draws-per-chain to burn off, not warmup" -- is *retracted (pf-r1)*: both beliefs are on the
+plan's superseded list (A2), the grid's R-hat values are the short-chain split-R-hat artifact the
+chop test reproduces from one converged run (plan section 2b), and the grid was measured on the
+failing metric arm (LEDGER `c2993cf`; `a03dc0f`). The table above stands as the artifact's
+evidence; warmup length is not the quantity to adapt to chain count, and short-chain quality is
+judged by the bias harness + nested R-hat.
 
 Radon at C=32, the same grid: R-hat 2.2397 (W=100), 1.6646 (250), 1.4540 (500), 1.0698 (1,000),
 1.0381 (2,000) -- monotone, and still above the 1.01 bar at the shipped default for a 10,000-draw
 budget at d=175.
+pf-r1 caveat: radon NC here is on the failing, permuted metric (LEDGER `c2993cf`; `a03dc0f`); the
+W-ladder is re-measurement pending on the corrected arm.
 
-### Warmup 500 versus 2,000, five seeds -- why there is no smaller default
+### Warmup 500 versus 2,000, five seeds -- the "no smaller default" conclusion, retracted in pf-r1
 
 | model | warmup | wall | max R-hat | ESS/s worst var | realised steps/draw |
 |---|---|---|---|---|---|
@@ -537,19 +654,29 @@ budget at d=175.
 A dimension-scaled warmup looked tempting after 8 Schools (20% faster for free) and was killed by its
 own control: logistic is d=25 and at warmup 500 it lost 6x ESS with R-hat 1.043, because ChEES had
 only grown the trajectory to 15.4 steps where the geometry needs ~60. **Required warmup tracks
-realised trajectory length, which is not knowable before warmup runs.** No default change ships from
-this. It is also the strongest argument in the project for a criterion-based stop rule -- and that
-rule currently measures cost-negative (+6.7-9.0 s of block-boundary overhead), so the remaining
-honest option is to move the loop inside the trace, not to pick a smaller constant.
+realised trajectory length, which is not knowable before warmup runs** -- retained as the design
+lesson. The conclusion drawn from the control -- "no smaller default ships" -- is *retracted
+(pf-r1)* with the mechanism now stated: the logistic cell was measured on the shipped metric arm,
+which fails the project's own R-hat <= 1.01 bar on GEV (LEDGER `c2993cf`; orientation retraction
+`a03dc0f`), and a frozen L of 15.4 is the failing-orientation signature the plan re-derives to
+L ~= 26 on the corrected arm (section 2c), compounded by the section 0.3 adapter rate limit. The
+8 Schools delta stands: both arms of that A/B used the same metric, so 8.52 s versus 10.66 s at
+equal R-hat is a valid same-metric comparison. Re-measurement pending: the smallest W passing the
+bias gate (G-R1) on logistic and GEV, corrected arm, >= 5 seeds. It is also the strongest argument
+in the project for a criterion-based stop rule -- and that rule currently measures cost-negative
+(+6.7-9.0 s of block-boundary overhead), so the remaining honest option is to move the loop inside
+the trace, not to pick a smaller constant.
 
 ### Two claims from earlier in this file that these runs refuted
 
-1. "128 chains does not fit because every chain re-reads the data" -- the OOM ceiling is not
-   explained by the draw pool: radon OOMs at 128 chains even with warmup 100, where the stacked
-   warmup output is tiny. Measured and unrefuted fact: **radon's ceiling on this card is 64 chains at
-   any warmup or draw count.** Where the memory actually goes (Pathfinder pool, step-size tuner, or
-   warmup state) is NOT ESTABLISHED -- the earlier explanation was wrong twice and should not be
-   repeated.
+1. "128 chains does not fit because every chain re-reads the data" -- *re-qualified in pf-r1.*
+   Measured and unrefuted fact: **radon's ceiling on this card is 64 chains at any warmup or draw
+   count**, and radon OOMs at 128 chains even with warmup 100, where the stacked warmup output is
+   tiny. Where the radon memory goes remains NOT ESTABLISHED; the two earlier explanations (total
+   stacked draws; warmup stack) stay retracted and should not be repeated. The init-stage OOMs
+   documented for the 1,024-chain logistic run have a confirmed mechanism instead: the Pathfinder
+   draw pool (797 MiB) and the stratified start scoring (500 MiB) (plan section 0.6); WP5 fixes
+   both. The radon C=128 re-test on the corrected arm is open in WP5.
 2. "`c(C)` is roughly flat, so chains are nearly free." True for the 32-chain batched gradient alone
    (23.0 -> 25.3 us from 32 to 128 chains) and false for the full transition, which is what the wall
    is made of: c/step on 8 Schools rises 3.17 -> 13.69 ms from 32 to 1,024 chains.

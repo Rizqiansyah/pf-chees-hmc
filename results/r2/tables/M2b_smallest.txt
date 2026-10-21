@@ -1,0 +1,45 @@
+smallest-pass  128 rows from 1 file(s): results/r2/runs/M2b__r1.jsonl
+8schools           arm=m2b:diag  seeds=[1, 2, 3]
+   -> smallest pass W=25: median grads/chain=616
+      per-seed b2/floor  s1:0.000523/0.001928  s2:0.001246/0.001944  s3:0.001237/0.001855
+      pooled b2/floor: 0.000355/0.0006364 (diagnostic)
+gev                arm=m2b:diag  seeds=[1, 2, 3]
+   -> smallest pass W=25: median grads/chain=324
+      per-seed b2/floor  s1:0.002199/0.001111  s2:0.0001791/0.001309  s3:0.0004054/0.001277
+      pooled b2/floor: 0.0003957/0.0004046 (diagnostic)
+logit_1000x25      arm=m2b:diag  seeds=[1, 2, 3]
+   -> smallest pass W=25: median grads/chain=387
+      per-seed b2/floor  s1:0.0024/0.00254  s2:0.001633/0.002348  s3:0.001738/0.0023
+      pooled b2/floor: 0.001058/0.0007952 (diagnostic)
+radon_noncentered  arm=m2b:diag  seeds=[1, 2, 3]
+   -> none <= max W 300
+smallest-pass  128 rows from 1 file(s): results/r2/runs/M2b__r1.jsonl
+8schools           arm=m2b:diag_norese  seeds=[1, 2, 3]
+   -> smallest pass W=50: median grads/chain=1306
+      per-seed b2/floor  s1:0.0007802/0.002087  s2:0.001377/0.001895  s3:0.0007223/0.001863
+      pooled b2/floor: 0.0002915/0.0006363 (diagnostic)
+gev                arm=m2b:diag_norese  seeds=[1, 2, 3]
+   -> smallest pass W=50: median grads/chain=707
+      per-seed b2/floor  s1:0.0002328/0.001365  s2:0.0003214/0.001302  s3:0.00161/0.001274
+      pooled b2/floor: 0.0001382/0.0004354 (diagnostic)
+logit_1000x25      arm=m2b:diag_norese  seeds=[1, 2, 3]
+   -> smallest pass W=50: median grads/chain=507
+      per-seed b2/floor  s1:0.004021/0.002855  s2:0.0007816/0.002911  s3:0.002386/0.002939
+      pooled b2/floor: 0.00104/0.0009538 (diagnostic)
+radon_noncentered  arm=m2b:diag_norese  seeds=[1, 2, 3]
+   -> none <= max W 50
+smallest-pass  128 rows from 1 file(s): results/r2/runs/M2b__r1.jsonl
+8schools           arm=m2b:fisher  seeds=[1, 2, 3]
+   -> smallest pass W=50: median grads/chain=1165
+      per-seed b2/floor  s1:0.0007781/0.00209  s2:0.00115/0.001817  s3:0.0008868/0.001757
+      pooled b2/floor: 0.0003657/0.000613 (diagnostic)
+gev                arm=m2b:fisher  seeds=[1, 2, 3]
+   -> smallest pass W=50: median grads/chain=1472
+      per-seed b2/floor  s1:0.0011/0.0008547  s2:0.0001351/0.001288  s3:9.372e-05/0.0008132
+      pooled b2/floor: 0.0001737/0.0003285 (diagnostic)
+logit_1000x25      arm=m2b:fisher  seeds=[1, 2, 3]
+   -> smallest pass W=50: median grads/chain=1186
+      per-seed b2/floor  s1:0.001406/0.001693  s2:0.0004124/0.001624  s3:0.001087/0.001821
+      pooled b2/floor: 0.0002343/0.0005662 (diagnostic)
+radon_noncentered  arm=m2b:fisher  seeds=[1, 2, 3]
+   -> none <= max W 100
