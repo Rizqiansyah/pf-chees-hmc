@@ -5,7 +5,8 @@
 prior values end up inside the XLA program: change one and everything recompiles. `lift_graph` builds
 the same function with the *model inputs* replaced by symbolic inputs first (rule C of the F2 plan):
 
-* distribution-parameter constants (direct inputs of a model RV node, whatever their dtype);
+* distribution-parameter constants (direct inputs of a model RV node, whatever their dtype), after
+  widening the scalar ones (see `_widen_model_inputs`);
 * observed-data constants;
 * every non-scalar constant in the graph (data arrays, index arrays, constant matrices);
 * every non-RNG shared variable (``pm.Data``).
@@ -15,6 +16,12 @@ compile-time constant for JAX. Formula constants (the 0.5, log 2 pi and 1 of PyM
 stay static on purpose: lifting them as well blocks PyTensor's value-dependent rewrites
 (``x**2 -> sqr``, ``log(1 + x) -> log1p``). The lift happens BEFORE ``mode.JAX.optimizer.rewrite``, as
 afterwards the prior values have already been folded into ``Composite`` ops.
+
+A Python scalar literal is autocast by PyTensor to the smallest dtype that holds it exactly (0, 10 ->
+int8; 1000 -> int16; 0.5, 10.0 -> float32; 0.1, 10.1 -> float64), so the dtype of a prior would change
+with its value, and with it the program. The scalar prior constants are therefore widened to the model's
+float (or integer) dtype first, which also repairs int8 overflows such as ``pm.Uniform("u", -100, 100)``
+(``upper - lower`` is NaN in PyMC 5.28.5).
 
 The lowered StableHLO of the result then holds no data and no prior values: its sha256 is a
 structure-only key, and a registry maps that key to the first function built for it so that
@@ -34,13 +41,16 @@ import jax
 import jax.numpy as jnp
 import jax.scipy.special as jss
 import numpy as np
+import pytensor
 import pytensor.tensor as pt
 import scipy.special as sps
+from pymc.pytensorf import constant_fold
 from pymc.sampling.jax import get_jaxified_graph
 from pytensor.compile import mode
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.fg import FunctionGraph, Output
-from pytensor.graph.replace import graph_replace
+from pytensor.graph.replace import clone_replace, graph_replace
+from pytensor.graph.traversal import ancestors, toposort
 from pytensor.link.jax.dispatch import jax_funcify
 from pytensor.scalar.math import Erfcx
 from pytensor.tensor.blockwise import Blockwise
@@ -136,7 +146,12 @@ def jax_funcify_Erfcx(op, **kwargs):
 _VALUE_OPS = (Elemwise, CAReduce, Dot, Blockwise, AdvancedSubtensor, AdvancedSubtensor1, Output, Shape, Shape_i)
 
 # Fallback chain, richest rule first. `rule_used` of the result is the first one that worked.
-RULES = ("model_inputs", "arrays_and_shared", "none")
+#   model_inputs              rule C, with the scalar prior constants widened (dtype independent of value)
+#   model_inputs_native_dtype rule C as the plan states it: the constants keep PyTensor's autocast dtype
+#   arrays_and_shared         only non-scalar constants and shared variables
+#   none                      today's behaviour: every constant is compile-time
+RULES = ("model_inputs", "model_inputs_native_dtype", "arrays_and_shared", "none")
+_MODEL_INPUT_RULES = ("model_inputs", "model_inputs_native_dtype")
 
 
 @dataclass(frozen=True)
@@ -187,15 +202,94 @@ def _first_bad_client(fg: FunctionGraph, var) -> str | None:
     return None
 
 
-def _candidates(model, fg: FunctionGraph, outputs, rule: str) -> list:
+def _widened_dtype(const_dtype, rv_dtype) -> str | None:
+    """Target dtype for a scalar distribution-parameter constant, or None to leave it alone.
+
+    A float narrower than floatX goes to floatX; an int or uint parameter goes to floatX for a
+    float-valued RV and to int64 for an int-valued one. Never narrows (so uint64 and, under a float32
+    floatX, int64 are left alone), and leaves bool and anything else alone.
+    """
+    src = np.dtype(const_dtype)
+    floatx = np.dtype(pytensor.config.floatX)
+    if src.kind == "f":
+        target = floatx
+    elif src.kind in "iu":
+        target = floatx if np.dtype(rv_dtype).kind == "f" else np.dtype("int64")
+    else:
+        return None
+    return target.name if target != src and np.promote_types(src, target) == target else None
+
+
+def _constant(value, dtype):
+    return pt.constant(np.asarray(value).astype(dtype), dtype=dtype)
+
+
+def _fingerprint(array):
+    return (array.dtype.str, array.shape, array.tobytes())
+
+
+def _built_from_literals(var) -> bool:
+    """True if ``var`` is computed from scalar constants alone (a literal that was broadcast or cast)."""
+    roots = [v for v in ancestors([var]) if v.owner is None]
+    return all(isinstance(v, TensorConstant) and v.ndim == 0 for v in roots)
+
+
+def _widen_model_inputs(model, outputs):
+    """``outputs`` rebuilt with the scalar distribution-parameter constants of ``model`` widened.
+
+    Returns ``(new_outputs, replaced)`` where ``replaced`` maps each old constant to its widened one.
+    `clone_replace(..., rebuild_strict=False)` remakes every downstream node through ``make_node``, so
+    the new dtype propagates (``graph_replace`` would refuse the type change). The dtype rule is
+    `_widened_dtype`; arrays are left alone, as NumPy arrays already carry a fixed dtype.
+
+    Two forms of a literal reach the graph. For an RV of shape () the parameter is the scalar constant
+    itself. For any RV with a non-trivial shape it is ``ExpandDims(constant)``, which PyMC's logp
+    rewrites fold into a one-element constant of its own, with the literal's autocast dtype and no link
+    back to the scalar. Those folded constants are found by their fingerprint (dtype, shape, bytes) and
+    widened the same way. Only non-scalar ones are matched, so a formula constant such as an exponent can
+    never be mistaken for a prior value.
+    """
+    replaced, folded = {}, {}
+    for rv in model.basic_RVs:
+        node = rv.owner
+        params = node.op.dist_params(node) if hasattr(node.op, "dist_params") else node.inputs
+        for param in params:
+            if isinstance(param, TensorConstant):
+                if param.ndim == 0 and param not in replaced:
+                    target = _widened_dtype(param.dtype, rv.dtype)
+                    if target is not None:
+                        replaced[param] = _constant(param.data, target)
+            elif param.owner is not None and _built_from_literals(param):
+                (value,) = constant_fold([param], raise_not_constant=False)
+                if isinstance(value, np.ndarray) and value.ndim > 0:
+                    target = _widened_dtype(value.dtype, rv.dtype)
+                    if target is not None:
+                        folded.setdefault(_fingerprint(value), _constant(value, target))
+    if folded:
+        for node in toposort(outputs):
+            for inp in node.inputs:
+                if isinstance(inp, TensorConstant) and inp.ndim > 0 and inp not in replaced:
+                    twin = folded.get(_fingerprint(np.asarray(inp.data)))
+                    if twin is not None:
+                        replaced[inp] = twin
+    if not replaced:
+        return list(outputs), replaced
+    return clone_replace(list(outputs), replace=replaced, rebuild_strict=False), replaced
+
+
+def _candidates(model, fg: FunctionGraph, outputs, rule: str, replaced=None) -> list:
     """Constants and shared variables that may be lifted, in order of first appearance in a toposort.
 
     The order is structural (no set or id iteration), so equal structure means equal argument order.
+    ``replaced`` maps the model's own constants to their widened stand-ins in ``outputs``.
     """
+    replaced = replaced or {}
     model_consts = set()  # membership only; never iterated
-    if rule == "model_inputs":
+    if rule in _MODEL_INPUT_RULES:
         for rv in model.basic_RVs:
-            model_consts.update(i for i in rv.owner.inputs if isinstance(i, TensorConstant))
+            model_consts.update(
+                replaced.get(i, i) for i in rv.owner.inputs if isinstance(i, TensorConstant)
+            )
         for rv in model.observed_RVs:
             value = model.rvs_to_values[rv]
             if isinstance(value, TensorConstant):
@@ -247,12 +341,15 @@ def _build(model, inputs, outputs, rule: str):
         jitted = get_jaxified_graph(inputs=inputs, outputs=outputs)
         return (lambda xs, values: jitted(*xs)), (), []
 
+    replaced = {}
+    if rule == "model_inputs":
+        outputs, replaced = _widen_model_inputs(model, outputs)
     fg = FunctionGraph(outputs=outputs, clone=False)
     if any(isinstance(i, SharedVariable) and isinstance(i.type, RandomType) for i in fg.inputs):
         # Same refusal as pymc.sampling.jax._replace_shared_variables.
         raise ValueError("Graph contains shared RandomType variables which cannot be safely replaced")
     lifted, kept, kept_static = [], [], []
-    for var in _candidates(model, fg, outputs, rule):
+    for var in _candidates(model, fg, outputs, rule, replaced):
         bad = _first_bad_client(fg, var)
         if bad is None:
             lifted.append(var)

@@ -129,6 +129,25 @@ def _hlo(model):
     return jax.jit(lambda x, v: fn(x, v)).lower(lifted._abstract(model, inputs), structs).as_text()
 
 
+def _point_dict(model, x):
+    return {v.name: np.asarray(a) for v, a in zip(model.value_vars, x)}
+
+
+def _widened_c_logp(model, x):
+    """The widened logp graph (what rule "model_inputs" lifts) on PyTensor's C backend: the exactness
+    reference for the JAX path, since both start from the same graph."""
+    (out,), _ = lifted._widen_model_inputs(model, [model.logp()])
+    f = pytensor.function(list(model.value_vars), out, on_unused_input="ignore")
+    return float(f(*[np.asarray(a) for a in x]))
+
+
+# The unwidened graph (get_jaxified_logp, compile_logp) differs from the widened one by float32 constant
+# folding: on main a literal that happens to be float32-representable (0.5, 10.0, 1) has its normalising
+# constants (log sigma, ...) folded by PyTensor in float32, 1e-7 relative per constant. Widening makes
+# them float64 (more accurate), so "close to today" is 1e-7, not 1e-12.
+TODAY_RTOL = 1e-7
+
+
 @pytest.fixture(scope="module")
 def ladder():
     return {name: rb.build_model(name) for name in LADDER}
@@ -137,29 +156,69 @@ def ladder():
 # ---------------------------------------------------------------- logp equality
 
 @pytest.mark.parametrize("name", LADDER)
-def test_ladder_logp_equals_todays_jaxified_logp(ladder, name):
+def test_ladder_logp_is_exact_on_the_widened_graph_and_close_to_todays(ladder, name):
     model = ladder[name]
     x = _point(model)
     lg = lift_logp(model)
     assert lg.rule_used == "model_inputs"
     assert lg.n_lifted == len(lg.values) > 0
-    old = float(get_jaxified_logp(model)(x))
     new = float(lg.fn(x, lg.values)[0])
-    assert new == pytest.approx(old, rel=1e-12)
-    # sign and dtype: get_jaxified_logp's default is model.logp() itself (its `negative_logp` is inverted)
-    assert np.sign(new) == np.sign(float(model.compile_logp()({v.name: np.asarray(a) for v, a in zip(model.value_vars, x)})))
-    assert np.asarray(lg.fn(x, lg.values)[0]).dtype == np.asarray(get_jaxified_logp(model)(x)).dtype
+    # exactness of the JAX path: the same widened graph on PyTensor's C backend
+    assert new == pytest.approx(_widened_c_logp(model, x), rel=1e-12)
+    # closeness to today's unwidened graph; sign and dtype are get_jaxified_logp's (= model.logp())
+    old = get_jaxified_logp(model)(x)
+    assert new == pytest.approx(float(old), rel=TODAY_RTOL)
+    assert np.asarray(lg.fn(x, lg.values)[0]).dtype == np.asarray(old).dtype
+
+
+@pytest.mark.parametrize("name", LADDER)
+def test_ladder_gradient_matches_todays(ladder, name):
+    model = ladder[name]
+    x = _point(model)
+    lg = lift_logp(model)
+    g_new = jax.grad(lambda xs: lg.fn(xs, lg.values)[0])(x)
+    g_old = jax.grad(get_jaxified_logp(model))(x)
+    for gn, go in zip(g_new, g_old):
+        gn, go = np.asarray(gn), np.asarray(go)
+        np.testing.assert_allclose(gn, go, rtol=TODAY_RTOL, atol=TODAY_RTOL * np.abs(go).max())
 
 
 @pytest.mark.parametrize("name", sorted(EXTRA))
-def test_extra_model_logp_equals_pymc_c_backend(name):
+def test_extra_model_logp_is_exact_on_the_widened_graph_and_close_to_pymc_c_backend(name):
     model = EXTRA[name](0)
     x = _point(model)
     lg = lift_logp(model)
     assert lg.rule_used == "model_inputs"
-    point = {v.name: np.asarray(a) for v, a in zip(model.value_vars, x)}
-    ref = float(model.compile_logp()(point))
-    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(ref, rel=1e-10)
+    new = float(lg.fn(x, lg.values)[0])
+    assert new == pytest.approx(_widened_c_logp(model, x), rel=1e-12)
+    assert new == pytest.approx(float(model.compile_logp()(_point_dict(model, x))), rel=TODAY_RTOL)
+
+
+def test_uniform_with_int8_literals_has_a_finite_logp():
+    """PyMC 5.28.5: pm.Uniform("u", -100, 100) has logp NaN on the C and the JAX backend, because both
+    literals are int8 and `upper - lower` overflows. Widening the parameters repairs it."""
+    def build(lower, upper):
+        with pm.Model() as m:
+            pm.Uniform("u", lower, upper)
+        return m
+
+    ints, floats = build(-100, 100), build(-100.0, 100.0)
+    x = _point(ints)
+    lg_ints, lg_floats = lift_logp(ints), lift_logp(floats)
+    got, ref = float(lg_ints.fn(x, lg_ints.values)[0]), float(lg_floats.fn(x, lg_floats.values)[0])
+    assert np.isfinite(got)
+    assert got == pytest.approx(ref, rel=1e-12)
+    # the same through the shaped form (ExpandDims-folded constants), which is where most models are
+    with pm.Model() as shaped:
+        pm.Uniform("u", -100, 100, shape=3)
+    xs = _point(shaped)
+    lg_shaped = lift_logp(shaped)
+    assert np.isfinite(float(lg_shaped.fn(xs, lg_shaped.values)[0]))
+    # the native-dtype rule is what main computes
+    native = lift_graph(ints, list(ints.value_vars), [ints.logp()], rule="model_inputs_native_dtype")
+    assert native.rule_used == "model_inputs_native_dtype"
+    if np.isfinite(float(native.fn(x, native.values)[0])):
+        warnings.warn("PyMC no longer overflows on int8 Uniform bounds: this test's premise is gone")
 
 
 def test_truncated_normal_crashes_on_the_old_jax_path_without_tfp():
@@ -184,12 +243,13 @@ def test_truncated_normal_crashes_on_the_old_jax_path_without_tfp():
             get_jaxified_logp(model)(x)
     finally:
         lifted.jax_funcify.register(Erfcx, ours)
-    ref = float(model.compile_logp()({v.name: np.asarray(a) for v, a in zip(model.value_vars, x)}))
     lg = lift_logp(model)
     assert lg.rule_used == "model_inputs"
-    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(ref, rel=1e-10)
+    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(_widened_c_logp(model, x), rel=1e-12)
     # the registration also repairs the stock entry point
-    assert float(get_jaxified_logp(model)(x)) == pytest.approx(ref, rel=1e-10)
+    ref = float(model.compile_logp()(_point_dict(model, x)))
+    assert float(get_jaxified_logp(model)(x)) == pytest.approx(ref, rel=1e-12)
+    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(ref, rel=TODAY_RTOL)
 
 
 # ---------------------------------------------------------------- no leaks
@@ -228,23 +288,119 @@ def test_shape_change_changes_the_key():
     assert lift_logp(build(30)).key == lift_logp(build(30)).key
 
 
-def test_dtype_change_of_a_prior_changes_the_key():
-    """DOCUMENTED, ACCEPTED (plan): an integer-written prior changed to a float-written one is a dtype
-    change, so a new program. The same holds for any Python literal that PyTensor autocasts to a
-    different dtype: it picks the smallest dtype that holds the value exactly (0, 10 -> int8; 1000 ->
-    int16; 0.5, 10.0 -> float32; 0.1, 10.1 -> float64). A change across such a boundary recompiles."""
+def _literal_models():
+    """One model per kind of prior literal: shape () and shaped RVs (whose parameter reaches the logp as a
+    folded one-element constant), float- and int-valued RVs, and a SymbolicRV."""
+    def scalar(mu, sd):
+        with pm.Model() as m:
+            x = pm.Normal("mu", mu, sd)
+            pm.Normal("obs", x, 1.0, observed=np.linspace(-1, 1, 10))
+        return m
+
+    def shaped(mu, sd):
+        with pm.Model() as m:
+            x = pm.Normal("x", mu, sd, shape=3)
+            pm.Normal("obs", x.sum(), 1.0, observed=np.linspace(-1, 1, 10))
+        return m
+
+    def poisson(rate, n):
+        with pm.Model() as m:
+            lam = pm.Gamma("lam", rate, 1.0)
+            pm.Poisson("c", lam, observed=np.array([1, 4, 2]))
+            pm.Binomial("k", n=n, p=0.3, observed=np.array([3, 5, 7]))
+        return m
+
+    def truncated(mu, sd):
+        with pm.Model() as m:
+            a = pm.Normal("a", mu, sd)
+            pm.TruncatedNormal("t", mu=a, sigma=1.0, lower=-0.37, observed=np.abs(np.linspace(-1, 1, 7)) + 0.1)
+        return m
+
+    return {"scalar": scalar, "shaped": shaped, "poisson": poisson, "truncated": truncated}
+
+
+# Literal pairs that PyTensor autocasts to different dtypes: int8 -> float32 -> float64 -> int16 -> int32.
+# Equal constants are merged by PyMC's own logp rewrites, so a prior literal that equals another constant
+# of the model (mu=0 next to lower=0, or a formula constant) shares one graph node with it and gives a
+# different program once it stops being equal. The models below keep their other literals clear of these.
+LITERALS = [(0, 10), (0.0, 10.0), (2.5, 2.7), (0.5, 3.0), (0.1, 10.1), (1, 1000), (100, 40000), (-3, 12.5)]
+# (rate of a Gamma, n of a Binomial): an int-valued RV's integer parameter stays an integer
+LITERALS_INT_RV = [(2.5, 10), (0.1, 1000), (7, 40000), (-3, 12), (3.7, 5), (0.75, 99)]
+
+
+@pytest.mark.parametrize("kind", ["scalar", "shaped", "poisson", "truncated"])
+def test_prior_literal_dtype_does_not_change_the_key(kind):
+    """Changing a prior value must not recompile, whatever literal the user typed (int8 / int16 / int32 /
+    float32 / float64). The scalar prior constants are widened first, so the dtype of the lifted input
+    is the model's, not the value's."""
+    build = _literal_models()[kind]
+    models = [build(*pair) for pair in (LITERALS_INT_RV if kind == "poisson" else LITERALS)]
+    keys = {lift_logp(m).key for m in models}
+    assert len(keys) == 1, f"{len(keys)} different programs for {len(models)} literal pairs"
+    assert all(lift_logp(m).rule_used == "model_inputs" for m in models)
+    assert len({_hlo(m) for m in models}) == 1
+    # the lifted values do differ, and every lifted prior value has the same dtype
+    dtypes = {tuple(str(v.dtype) for v in lift_logp(m).values) for m in models}
+    assert len(dtypes) == 1
+
+
+def test_prior_literal_equal_to_another_constant_is_a_different_program():
+    """KNOWN LIMITATION, pinned so a change is noticed: PyMC's logp rewrites merge equal constants, so a
+    prior literal that equals another constant of the model (here mu=0 and lower=0, both int8) is one
+    graph node with it, and stops being one when it changes. Two programs, each cached by its key."""
+    def build(mu):
+        with pm.Model() as m:
+            a = pm.Normal("a", mu, 3.3)
+            pm.TruncatedNormal("t", mu=a, sigma=1.7, lower=0, observed=np.abs(np.linspace(-1, 1, 7)) + 0.1)
+        return m
+
+    assert lift_logp(build(0)).key != lift_logp(build(4)).key
+    assert lift_logp(build(4)).key == lift_logp(build(5)).key
+
+
+@pytest.mark.parametrize("floatx, src, rv, want", [
+    ("float64", "float32", "float64", "float64"),     # a float narrower than floatX -> floatX
+    ("float64", "float16", "int64", "float64"),
+    ("float64", "float64", "float64", None),           # already wide
+    ("float64", "int8", "float64", "float64"),         # int param of a float RV -> floatX
+    ("float64", "int16", "float64", "float64"),
+    ("float64", "uint8", "float64", "float64"),
+    ("float64", "int64", "float64", "float64"),
+    ("float64", "int8", "int64", "int64"),             # int param of an int RV -> int64
+    ("float64", "uint32", "int64", "int64"),
+    ("float64", "int64", "int64", None),
+    ("float64", "uint64", "int64", None),              # int64 cannot hold it: never narrow
+    ("float64", "bool", "float64", None),              # bool is left alone
+    ("float32", "float64", "float64", None),           # never narrow, whatever floatX says
+    ("float32", "float16", "float32", "float32"),
+    ("float32", "int8", "float32", "float32"),
+    ("float32", "int64", "float32", None),             # int64 does not fit float32
+])
+def test_widened_dtype_never_narrows(floatx, src, rv, want):
+    with pytensor.config.change_flags(floatX=floatx, warn_float64="ignore"):
+        assert lifted._widened_dtype(np.dtype(src), np.dtype(rv)) == want
+
+
+def test_native_dtype_rule_keeps_the_literals_dtype():
+    """The plan's rule C unwidened (the first fallback): an int-written prior and a float-written one are
+    different programs, as are literals across a float32/float64 boundary."""
     def build(mu, sd):
         with pm.Model() as m:
             x = pm.Normal("mu", mu, sd)
             pm.Normal("obs", x, 1.0, observed=np.linspace(-1, 1, 10))
         return m
 
-    base = lift_logp(build(0, 10)).key
-    assert lift_logp(build(0, 12)).key == base                    # int8 -> int8
-    assert lift_logp(build(0.0, 10.0)).key != base                # integer-written -> float-written
-    assert lift_logp(build(1, 1000)).key != base                  # int8 -> int16
-    assert lift_logp(build(0.5, 10.0)).key == lift_logp(build(0.25, 3.0)).key  # float32 -> float32
-    assert lift_logp(build(0.5, 10.0)).key != lift_logp(build(0.5, 10.1)).key  # float32 -> float64
+    def key(*pair):
+        m = build(*pair)
+        lg = lift_graph(m, list(m.value_vars), [m.logp()], rule="model_inputs_native_dtype")
+        assert lg.rule_used == "model_inputs_native_dtype"
+        return lg.key
+
+    assert key(0, 10) == key(0, 12)                 # int8 -> int8
+    assert key(0, 10) != key(0.0, 10.0)             # int-written -> float-written
+    assert key(1, 10) != key(1, 1000)               # int8 -> int16
+    assert key(0.5, 10.0) == key(0.25, 3.0)         # float32 -> float32
+    assert key(0.5, 10.0) != key(0.5, 10.1)         # float32 -> float64
 
 
 def test_static_constant_change_changes_the_key():
@@ -322,8 +478,7 @@ def test_value_use_filter_keeps_shape_positions_static_and_reports_them():
     names = {op for op, _, _ in lg.kept_static}
     assert all(isinstance(op, str) for op in names)
     x = _point(m)
-    ref = float(m.compile_logp()({v.name: np.asarray(a) for v, a in zip(m.value_vars, x)}))
-    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(ref, rel=1e-12)
+    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(_widened_c_logp(m, x), rel=1e-12)
 
 
 def test_lifted_value_that_feeds_a_shape_falls_back_with_a_warning():
@@ -340,32 +495,66 @@ def test_lifted_value_that_feeds_a_shape_falls_back_with_a_warning():
         lg = lift_logp(m)
     msgs = [str(w.message) for w in rec]
     assert msgs and "rule 'model_inputs' failed" in msgs[0]
-    assert len(msgs) == 2 and "falling back to 'arrays_and_shared'" in msgs[0] and "'arrays_and_shared' failed" in msgs[1]
+    assert [m.split("'")[1] for m in msgs] == ["model_inputs", "model_inputs_native_dtype", "arrays_and_shared"], msgs
     assert lg.rule_used == "none" and lg.n_lifted == 0 and lg.values == ()
     ref = float(m.compile_logp()({v.name: np.asarray(a) for v, a in zip(m.value_vars, x0)}))
     assert float(lg.fn(x0, lg.values)[0]) == pytest.approx(ref, rel=1e-12)
 
 
+def test_widening_failure_falls_back_to_the_native_dtype_rule():
+    """A natural failure of the widening: LKJCholeskyCov's `n` is an int parameter of a float-valued RV
+    that must stay an integer, so rebuilding the graph with a float `n` raises. The next rule is the
+    plan's rule C with the literals' own dtypes, which works."""
+    with pm.Model() as m:
+        chol, _, _ = pm.LKJCholeskyCov("chol", n=3, eta=2.0, sd_dist=pm.Exponential.dist(1.0))
+        pm.MvNormal("y", mu=np.zeros(3), chol=chol, observed=np.random.default_rng(0).normal(size=(5, 3)))
+    x = _point(m)
+    with pytest.warns(RuntimeWarning, match=r"rule 'model_inputs' failed with \w+: .*falling back to 'model_inputs_native_dtype'"):
+        lg = lift_logp(m)
+    assert lg.rule_used == "model_inputs_native_dtype" and lg.n_lifted > 0
+    ref = float(m.compile_logp()(_point_dict(m, x)))
+    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(ref, rel=TODAY_RTOL)
+
+
+def test_forced_fallback_to_native_dtype(monkeypatch):
+    m = m_int_priors(0)
+    n_rule_c = lift_logp(m).n_lifted
+
+    def failing(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(lifted, "_widen_model_inputs", failing)
+    with pytest.warns(RuntimeWarning, match=r"rule 'model_inputs' failed with RuntimeError: boom; falling back to 'model_inputs_native_dtype'"):
+        lg = lift_logp(m)
+    assert lg.rule_used == "model_inputs_native_dtype" and lg.n_lifted == n_rule_c
+    x = _point(m)
+    # no widening: this is main's graph, so it agrees with PyMC's C backend to rounding
+    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(float(m.compile_logp()(_point_dict(m, x))), rel=1e-12)
+
+
 def test_forced_fallback_to_arrays_and_shared(monkeypatch):
-    """Rule C raises (patched); the next rule runs and says so."""
+    """Both model-input rules raise (patched); the next rule runs and says so."""
     m = m_pm_data(0)
     n_rule_c = lift_logp(m).n_lifted
     real = lifted._build
 
     def failing(model, inputs, outputs, rule):
-        if rule == "model_inputs":
+        if rule in lifted._MODEL_INPUT_RULES:
             raise RuntimeError("boom")
         return real(model, inputs, outputs, rule)
 
     monkeypatch.setattr(lifted, "_build", failing)
-    with pytest.warns(RuntimeWarning, match=r"rule 'model_inputs' failed with RuntimeError: boom"):
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
         lg = lift_logp(m)
+    texts = [str(w.message) for w in rec]
+    assert [t.split("'")[1] for t in texts] == ["model_inputs", "model_inputs_native_dtype"]
+    assert "RuntimeError: boom; falling back to 'arrays_and_shared'" in texts[1]
     assert lg.rule_used == "arrays_and_shared"
     # this rule lifts the data (a shared variable), not the prior-value constants
     assert 0 < lg.n_lifted < n_rule_c
     x = _point(m)
-    ref = float(m.compile_logp()({v.name: np.asarray(a) for v, a in zip(m.value_vars, x)}))
-    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(ref, rel=1e-12)
+    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(float(m.compile_logp()(_point_dict(m, x))), rel=1e-12)
 
 
 def test_forced_fallback_all_the_way_to_no_lifting(monkeypatch):
@@ -382,11 +571,10 @@ def test_forced_fallback_all_the_way_to_no_lifting(monkeypatch):
         warnings.simplefilter("always")
         lg = lift_logp(m)
     texts = [str(w.message) for w in rec]
-    assert len(texts) == 2 and "'model_inputs'" in texts[0] and "'arrays_and_shared'" in texts[1]
+    assert [t.split("'")[1] for t in texts] == ["model_inputs", "model_inputs_native_dtype", "arrays_and_shared"]
     assert lg.rule_used == "none"
     x = _point(m)
-    ref = float(m.compile_logp()({v.name: np.asarray(a) for v, a in zip(m.value_vars, x)}))
-    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(ref, rel=1e-12)
+    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(float(m.compile_logp()(_point_dict(m, x))), rel=1e-12)
 
 
 def test_rule_can_be_chosen_and_unknown_rules_are_rejected():
@@ -398,7 +586,8 @@ def test_rule_can_be_chosen_and_unknown_rules_are_rejected():
     assert c.n_lifted > b.n_lifted > n.n_lifted == 0
     x = _point(m)
     vals = [float(g.fn(x, g.values)[0]) for g in (c, b, n)]
-    assert vals[0] == pytest.approx(vals[2], rel=1e-12) and vals[1] == pytest.approx(vals[2], rel=1e-12)
+    assert vals[1] == pytest.approx(vals[2], rel=1e-12)       # neither of these widens
+    assert vals[0] == pytest.approx(vals[2], rel=TODAY_RTOL)  # rule C does
     with pytest.raises(ValueError, match="unknown rule"):
         lift_graph(m, list(m.value_vars), [m.logp()], rule="everything")
 
@@ -496,8 +685,7 @@ def test_structurally_identical_models_share_one_function_object():
     for seed, lg in ((10, a), (11, b)):
         m = m_poisson(seed)
         x = _point(m)
-        ref = float(m.compile_logp()({v.name: np.asarray(u) for v, u in zip(m.value_vars, x)}))
-        assert float(lg.fn(x, lg.values)[0]) == pytest.approx(ref, rel=1e-10)
+        assert float(lg.fn(x, lg.values)[0]) == pytest.approx(_widened_c_logp(m, x), rel=1e-12)
 
 
 # ---------------------------------------------------------------- erfcx
@@ -565,4 +753,4 @@ def test_gev_prior_normaliser_needs_erfcx_and_now_works(ladder):
     model = ladder["gev"]
     x = _point(model)
     lg = lift_logp(model)
-    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(float(get_jaxified_logp(model)(x)), rel=1e-12)
+    assert float(lg.fn(x, lg.values)[0]) == pytest.approx(float(get_jaxified_logp(model)(x)), rel=TODAY_RTOL)
