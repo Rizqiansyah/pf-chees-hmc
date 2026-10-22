@@ -170,6 +170,9 @@ class LiftedGraph:
         ``values``. It holds the structure, the static constants and the shapes/dtypes, not the values.
     n_lifted
         ``len(values)``.
+    sources
+        The model's own variables the values were read from (constants and shared variables), in the
+        order of ``values``; `current_values` re-reads the shared ones.
     kept_static
         One ``(client op name, dtype, shape)`` per candidate that was kept static because a client
         needs its value at trace time (the first such client is named).
@@ -183,6 +186,18 @@ class LiftedGraph:
     n_lifted: int
     kept_static: list
     rule_used: str
+    sources: tuple = ()
+
+    def current_values(self) -> tuple:
+        """``values`` as they are now. A ``pm.set_data`` since the build is seen; constants cannot change.
+
+        Same shapes and dtypes as ``values`` unless a shared variable was set to another shape; the
+        caller compares and, if they differ, lifts again (the structure, and so the key, has changed).
+        """
+        return tuple(
+            jnp.asarray(src.get_value(borrow=True)) if isinstance(src, SharedVariable) else value
+            for src, value in zip(self.sources, self.values)
+        )
 
 
 # key -> the first `fn` built for it.
@@ -335,11 +350,11 @@ def _key(fn, input_specs, values) -> str:
 
 
 def _build(model, inputs, outputs, rule: str):
-    """One attempt with one rule: (fn, values, kept_static)."""
+    """One attempt with one rule: (fn, values, kept_static, sources)."""
     if rule == "none":
         # Today's behaviour: shared variables and all constants are compile-time constants.
         jitted = get_jaxified_graph(inputs=inputs, outputs=outputs)
-        return (lambda xs, values: jitted(*xs)), (), []
+        return (lambda xs, values: jitted(*xs)), (), [], ()
 
     replaced = {}
     if rule == "model_inputs":
@@ -373,7 +388,7 @@ def _build(model, inputs, outputs, rule: str):
         jnp.asarray(var.get_value(borrow=True) if isinstance(var, SharedVariable) else var.data)
         for var in lifted
     )
-    return (lambda xs, values: jitted(*xs, *values)), values, kept_static
+    return (lambda xs, values: jitted(*xs, *values)), values, kept_static, tuple(lifted)
 
 
 def lift_graph(model, inputs, outputs, rule: str = "model_inputs") -> LiftedGraph:
@@ -389,7 +404,7 @@ def lift_graph(model, inputs, outputs, rule: str = "model_inputs") -> LiftedGrap
     chain = RULES[RULES.index(rule):]
     for i, name in enumerate(chain):
         try:
-            fn, values, kept_static = _build(model, inputs, outputs, name)
+            fn, values, kept_static, sources = _build(model, inputs, outputs, name)
             key = _key(fn, _abstract(model, inputs), values)
         except Exception as exc:
             if i == len(chain) - 1:
@@ -409,6 +424,7 @@ def lift_graph(model, inputs, outputs, rule: str = "model_inputs") -> LiftedGrap
             n_lifted=len(values),
             kept_static=kept_static,
             rule_used=name,
+            sources=sources,
         )
 
 

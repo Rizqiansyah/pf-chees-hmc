@@ -18,6 +18,7 @@ CPU; the caller is responsible for flattening positions through the kernel's own
 """
 from __future__ import annotations
 
+from functools import partial
 from typing import Optional, Tuple
 
 import jax
@@ -62,6 +63,16 @@ def positions_to_draws(pos_hist, steps: int) -> jnp.ndarray:
 
 def _estimate(name: str, draws: jnp.ndarray, grads: Optional[jnp.ndarray],
               ridge: float, shrink: float, max_rank: int) -> jnp.ndarray:
+    eye = jnp.eye(draws.shape[-1], dtype=draws.dtype)
+    return _regularize_pd(_raw_covariance(name, draws, grads, shrink, max_rank), ridge, eye)
+
+
+# Module level, with the estimator name and rank static: the library estimators run `lax.scan`s whose
+# bodies are closures, which compiled afresh on every call when this ran eagerly. Draws, gradients and
+# the shrinkage are arguments, so a second refresh with other draws compiles nothing.
+@partial(jax.jit, static_argnames=("name", "max_rank"))
+def _raw_covariance(name: str, draws: jnp.ndarray, grads: Optional[jnp.ndarray],
+                    shrink: float, max_rank: int) -> jnp.ndarray:
     from blackjax.adaptation import metric_estimators as ME   # imported lazily: the fork module
 
     d = draws.shape[-1]
@@ -93,7 +104,7 @@ def _estimate(name: str, draws: jnp.ndarray, grads: Optional[jnp.ndarray],
     else:
         raise ValueError(f"unknown estimator {name!r}; expected one of {sorted(ENGLISH_NAMES)}")
 
-    return _regularize_pd(cov, ridge, eye)
+    return cov
 
 
 def _regularize_pd(cov: jnp.ndarray, ridge: float, eye: jnp.ndarray) -> jnp.ndarray:
