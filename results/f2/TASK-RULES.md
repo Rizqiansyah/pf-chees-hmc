@@ -6,7 +6,7 @@ inputs). The lead reviews your branch and merges it into `f2`.
 ## Paths
 - `MAIN="/home/akbar/Documents/Python packages/pf-chees-hmc"` — the lead's tree on branch
   `f2`. **Read only.** Never commit, switch branches, or edit files there.
-- Your checkout `WT=~/pf/f2-<wp>` on branch `f2/<wp>` (already created from `f2`). Edit and commit
+- Your checkout `WT=~/pf/f2-<wp>` on branch `f2-<wp>` (already created from `f2`). Edit and commit
   **only** there.
 - Never commit to `main` or `f2`. Never push. Never touch another checkout.
 - **The spec:** `$WT/docs/review-2026-10/pf-chees-hmc-f2-plan.md`.
@@ -43,7 +43,7 @@ pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" python -m pytest
   a fixed seed, they must; prove it with a test.
 
 ## Deliverables
-1. Commits on `f2/<wp>`. Messages end with a blank line and a commit trailer.
+1. Commits on `f2-<wp>`. Messages end with a blank line and a commit trailer.
 2. A SUMMARY for `results/f2/<WP>/SUMMARY.md`. Do not write this file. Return its content as the last
    section of your final reply, and the lead will commit it. It contains:
    - **DEVIATIONS** (first; "none" if none);
