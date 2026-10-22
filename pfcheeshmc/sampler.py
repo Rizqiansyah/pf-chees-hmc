@@ -1686,9 +1686,9 @@ def sample_pf_chees_hmc(
     chees_kwargs = {} if chees_kwargs is None else dict(chees_kwargs)
     dynamic_hmc_kwargs = {} if dynamic_hmc_kwargs is None else dict(dynamic_hmc_kwargs)
 
-    # One flag controls both bars. Off means no jax.debug.callback in either scan, which removes the
-    # per-step host round-trip and makes both compiled scans eligible for JAX's on-disk compilation
-    # cache. A per-stage value in chees_kwargs / dynamic_hmc_kwargs still wins.
+    # One flag controls both bars. The bars are updated by the host between chunks, so on or off the loops
+    # are the same compiled programs (no host callback is in either, which also keeps them eligible for
+    # JAX's on-disk compilation cache). A per-stage value in chees_kwargs / dynamic_hmc_kwargs still wins.
     chees_kwargs.setdefault("progressbar", progressbar)
     dynamic_hmc_kwargs.setdefault("progressbar", progressbar)
 

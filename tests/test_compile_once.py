@@ -1,23 +1,25 @@
-"""F2b-1: a second sampler call compiles nothing outside the warmup and sampling loops (CPU).
+"""F2b: a second sampler call compiles NOTHING (CPU), and the warmup length W and the number of draws D are free.
 
 What a wrong answer here would silently cost: every `sample()` call recompiles XLA programs (15.9-17.4 s of
 a 19.9-21.9 s call for 8 Schools at C=1,024) because jitted closures are rebuilt per call and per-run values
 (data, priors, metric, step size) are compiled in as constants. Nothing in the draws would show it, so the
 only honest test counts compiles: `compile_counter.count_compiles` listens to JAX's backend-compile event.
 
-Sites (`pfcheeshmc.compiled`, plus the ensemble estimators): the start screening and scoring, the
-Pathfinder fit and draws, the step-size search, the pool gradients, the warmup `batch_init`, and the
-value -> problem-space transform. Their loops are F2b-2's: `LOOPS` below is the number of loop programs a
-second call still compiles, and F2b-2 takes it to 0.
+F2b-1 converted the non-loop sites (`pfcheeshmc.compiled`, plus the ensemble estimators): the start screening
+and scoring, the Pathfinder fit and draws, the step-size search, the pool gradients, the warmup init, and the
+value -> problem-space transform. F2b-2 converted the two loops: the warmup (`compiled.warmup_chunk`) and the
+sampling loop (`compiled.sampling_chunk`) are chunk programs driven from the host with a dynamic active
+count, so W and D are loop bounds on the host. The correctness side (determinism, chunk-size invariance, a
+known posterior, bookkeeping, the progress bars) is in `test_chunked_loops.py`.
 
-Equivalence with the F2 head before this task (`BASE_SHA`) is NOT bit-for-bit, and cannot be:
-  * Pathfinder, the start scoring and the transform used to run op by op (eager); each is now one fused
-    XLA program, which changes floating-point results by an ulp (measured: draws eager vs jit differ by
-    <= 1.1e-15, the L-BFGS fit by <= 2.2e-16 on 8 Schools and 7e-15 on logit);
-  * the log-density used to see data and priors as constants, which XLA folds and simplifies; as
-    arguments they are not (8 Schools start scores differ by 7e-15, GEV's by 1.4e-14, between the two).
-The ulp is then carried through chaotic trajectories, so draws agree to about 1e-10 relative at this size.
-The test pins the discrete statistics exactly and the continuous ones tightly.
+Equivalence with the F2 head before F2b-2 (`BASE_SHA`) is NOT bit-for-bit, and cannot be: the loops are
+different XLA programs (a chunk of steps behind a conditional, the trajectory-length adjustment and the
+step size as arguments instead of constants), which changes floating-point results by an ulp. The ulp is
+then carried through chaotic trajectories, so draws agree to about 1e-10 relative at this size (observed
+worst 1.9e-10, GEV). The key stream is unchanged on the default path, because under the default
+`jax_threefry_partitionable` `split(key, N)[i] == fold_in(key, i)`: the discrete statistics are exactly
+equal. The test pins those exactly and the continuous ones tightly. The refresh path's stream did change
+(its blocks were keyed `fold_in(key, start)` + `split`), so it is compared statistically instead.
 """
 import concurrent.futures
 import contextlib
@@ -48,8 +50,6 @@ from pfcheeshmc.sampler import PfCheesHMC, sample_pf_chees_hmc
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 C, W, D = 16, 20, 10
-LOOPS = 0            # a second call compiles nothing: the loops are module-level chunk programs (F2b-2)
-LOOP_NAME = "jit(scan)"
 SITES = ("pathfinder", "eps0", "usable_mask", "pool_gradients", "batch_init", "transform")
 
 
@@ -83,11 +83,11 @@ def run_sites(model, seed, chains=C, **pathfinder_kw):
     return counts
 
 
-def sample_call(model, seed, progressbar=False, pathfinder_kwargs=None, **chees):
+def sample_call(model, seed, progressbar=False, pathfinder_kwargs=None, chains=C, warmup=W, draws=D, **chees):
     with count_compiles() as cc:
         idata = sample_pf_chees_hmc(
-            model, draws=D, chains=C, random_seed=seed, progressbar=progressbar,
-            chees_kwargs={"draws": W, **chees}, pathfinder_kwargs=pathfinder_kwargs)
+            model, draws=draws, chains=chains, random_seed=seed, progressbar=progressbar,
+            chees_kwargs={"draws": warmup, **chees}, pathfinder_kwargs=pathfinder_kwargs)
     return idata, cc
 
 
@@ -175,12 +175,60 @@ def test_second_invocation_of_a_site_compiles_nothing(variant_counts, variant, s
 
 
 # --------------------------------------------------------------------- 2. the whole sample()
-@pytest.mark.parametrize("progressbar", [False, True])
-def test_second_sample_call_compiles_only_the_loop_programs(progressbar):
-    sample_call(hier(1, 1), seed=1, progressbar=progressbar)
-    idata, cc = sample_call(hier(5, 6), seed=2, progressbar=progressbar)       # new seed, data and priors
-    assert sorted(cc.names) == [LOOP_NAME] * LOOPS, str(cc)
-    assert idata.posterior["mu"].shape == (C, D)
+# After one call, every one of these changes compiles NOTHING: a new seed, new data, new priors, a larger W,
+# a larger D, and the progress bar on or off (it is host-side, so both run the same programs).
+CALL_VARIANTS = {
+    "new seed": dict(model=lambda: hier(1, 1), seed=2),
+    "new data": dict(model=lambda: hier(2, 1), seed=1),
+    "new priors": dict(model=lambda: hier(1, 2), seed=1),
+    "new everything": dict(model=lambda: hier(5, 6), seed=3),
+    "larger W (20 -> 37)": dict(model=lambda: hier(1, 1), seed=1, warmup=37),
+    "smaller W (20 -> 5)": dict(model=lambda: hier(1, 1), seed=1, warmup=5),
+    "larger D (10 -> 23)": dict(model=lambda: hier(1, 1), seed=1, draws=23),
+    "smaller D (10 -> 3)": dict(model=lambda: hier(1, 1), seed=1, draws=3),
+    "W and D beyond a chunk": dict(model=lambda: hier(1, 1), seed=1, warmup=137, draws=211),
+    "progressbar on": dict(model=lambda: hier(1, 1), seed=1, progressbar=True),
+}
+
+
+@pytest.fixture(scope="module")
+def warm_call():
+    sample_call(hier(1, 1), seed=1)                  # the programs of the base call (progressbar off)
+
+
+@pytest.mark.parametrize("variant", list(CALL_VARIANTS))
+def test_second_sample_call_compiles_nothing(warm_call, variant):
+    kw = dict(CALL_VARIANTS[variant])
+    idata, cc = sample_call(kw.pop("model")(), **kw)
+    assert cc.count == 0, f"{variant}: {cc}"
+    assert idata.posterior["mu"].shape == (C, kw.get("draws", D))
+    assert idata.attrs["warmup_steps_used"] == kw.get("warmup", W)
+
+
+@pytest.mark.parametrize("first", [False, True])
+def test_progressbar_on_and_off_run_the_same_programs(first):
+    """The bar is updated by the host between chunks: no callback is traced into any program."""
+    sample_call(hier(1, 1), seed=1, progressbar=first, warmup=21, draws=11)
+    _, cc = sample_call(hier(1, 1), seed=2, progressbar=not first, warmup=21, draws=11)
+    assert cc.count == 0, str(cc)
+
+
+@pytest.fixture
+def small_chunks(monkeypatch):
+    """Chunks small enough that W and D span several of them (and the last one is partial)."""
+    monkeypatch.setattr(compiled, "WARMUP_CHUNK", 6)
+    monkeypatch.setattr(compiled, "SAMPLE_CHUNK", 4)
+    monkeypatch.setattr(compiled, "TRANSFORM_CHUNK", 5)
+
+
+def test_multi_chunk_regime_compiles_each_loop_once_and_then_nothing(small_chunks):
+    """W = 3 chunks and D = 3 chunks first; then 2 chunks + 3 steps and 2 chunks + 3 draws, and other counts."""
+    _, first = sample_call(hier(1, 1), seed=1, warmup=3 * 6, draws=3 * 4)
+    for program in ("warmup_chunk", "sampling_chunk", "transform_draws"):
+        assert first.names.count(f"jit({program})") == 1, (program, str(first))
+    for warmup, draws in [(2 * 6 + 3, 2 * 4 + 3), (6 + 1, 4 + 1), (1, 1), (7 * 6, 9 * 4 + 2)]:
+        _, cc = sample_call(hier(2, 2), seed=2, warmup=warmup, draws=draws)
+        assert cc.count == 0, f"W={warmup} D={draws}: {cc}"
 
 
 # ------------------------------------------------------------------------------ 3. shapes
@@ -195,6 +243,17 @@ def test_shape_change_recompiles_the_affected_sites_once_and_changing_back_compi
     assert smaller["pathfinder"].count and smaller["transform"].count, "a model with other shapes must compile"
     assert_no_compiles(run_sites(hier(2, 2, J=6), seed=2), "J=6 with other values")
     assert_no_compiles(run_sites(hier(3, 3), seed=3), "back to the original J")
+
+
+def test_a_shape_change_of_the_whole_call_compiles_one_set_of_programs_and_changing_back_none(warm_call):
+    """C is a shape of the loop programs and the transform: C=20 compiles each of them exactly once."""
+    _, new_c = sample_call(hier(1, 1), seed=1, chains=20)
+    for program in ("warmup_init", "warmup_chunk", "sampling_chunk", "transform_draws"):
+        assert new_c.names.count(f"jit({program})") == 1, (program, str(new_c))
+    _, again = sample_call(hier(2, 2), seed=2, chains=20)
+    assert again.count == 0, str(again)
+    _, back = sample_call(hier(3, 3), seed=3, chains=C)
+    assert back.count == 0, str(back)
 
 
 # ------------------------------------------------------------------------------- 5. paths
@@ -227,20 +286,50 @@ def test_every_ensemble_estimator_compiles_nothing_on_a_second_call(estimator):
     assert cc.count == 0, str(cc)
 
 
-def test_metric_refresh_path_second_call_compiles_only_the_loop_programs():
+def test_metric_refresh_path_second_call_compiles_nothing():
     refresh = dict(metric_refresh="fisher_diag", metric_refresh_warmup=10)
     sample_call(hier(1, 1), seed=1, **refresh)
     idata, cc = sample_call(hier(5, 6), seed=2, **refresh)
-    # phase A (position-stacking scan), phase B, and the sampling scan
-    assert sorted(cc.names) == [LOOP_NAME] * (LOOPS + 1), str(cc)
+    assert cc.count == 0, str(cc)
     assert idata.attrs["metric_refresh"] == "fisher_diag"
 
 
-def test_superchain_path_second_call_compiles_only_the_loop_programs():
+@pytest.mark.parametrize("estimator", ["fisher_diag", "sample_diag"])
+def test_metric_refresh_with_another_W_and_W_A_compiles_nothing(estimator):
+    """W_A is a loop bound. The estimator's pool is min(W_A, 20) draws, so it is the same shape while W_A >= 20."""
+    kw = dict(metric_refresh=estimator)
+    sample_call(hier(1, 1), seed=1, warmup=60, metric_refresh_warmup=30, **kw)
+    idata, cc = sample_call(hier(2, 2), seed=2, warmup=83, metric_refresh_warmup=41, **kw)
+    assert cc.count == 0, str(cc)
+    assert idata.attrs["metric_refresh_warmup"] == 41 and idata.attrs["warmup_steps_used"] == 83
+
+
+def test_metric_refresh_in_the_multi_chunk_regime_compiles_nothing_for_another_W_A(small_chunks):
+    kw = dict(metric_refresh="fisher_diag")
+    sample_call(hier(1, 1), seed=1, warmup=3 * 6 + 20, metric_refresh_warmup=2 * 6 + 3 + 20, **kw)
+    _, cc = sample_call(hier(2, 2), seed=2, warmup=7 * 6 + 1 + 20, metric_refresh_warmup=6 + 1 + 20, **kw)
+    assert cc.count == 0, str(cc)
+
+
+def test_superchain_path_second_call_compiles_nothing():
     kw = dict(pathfinder_kwargs={"superchains": 4})
     sample_call(hier(1, 1), seed=1, **kw)
     _, cc = sample_call(hier(5, 6), seed=2, **kw)
-    assert sorted(cc.names) == [LOOP_NAME] * LOOPS, str(cc)
+    assert cc.count == 0, str(cc)
+
+
+def test_stop_rule_path_second_call_compiles_nothing_also_for_another_W():
+    """The block and window are settings (one program per rule); the last, shorter block is the same program."""
+    rule = {"block": 8, "window": 8, "rhat": 0.0}            # never fires: every block runs
+    sample_call(hier(1, 1), seed=1, warmup=20, warmup_stop=rule)
+    idata, cc = sample_call(hier(2, 2), seed=2, warmup=28, warmup_stop=rule)
+    assert cc.count == 0, str(cc)
+    assert idata.attrs["warmup_steps_used"] == 28
+    fires = {"block": 8, "window": 8, "rhat": 100.0, "eps_stability": 100.0}      # fires after the first block
+    sample_call(hier(1, 1), seed=1, warmup=40, warmup_stop=fires)
+    idata, cc = sample_call(hier(2, 2), seed=2, warmup=30, warmup_stop=fires)
+    assert cc.count == 0, str(cc)
+    assert idata.attrs["warmup_steps_used"] == 8
 
 
 # --------------------------------------------------------- pm.set_data and replaced log-densities
@@ -384,7 +473,7 @@ def test_a_replaced_ld_fn_is_honoured_by_the_compiled_sites_and_is_one_static_ar
 
 
 # ---------------------------------------------------------------------- 4. equivalence
-BASE_SHA = "1eda92c"            # the f2 head before F2b-1
+BASE_SHA = "c35fbba"            # the f2 head before F2b-2
 EQUIV_CASES = {                  # name -> (model, extra args for compile_equiv_run.py)
     "8schools": ("8schools", []),
     "gev": ("gev", []),
@@ -395,7 +484,11 @@ EQUIV_CASES = {                  # name -> (model, extra args for compile_equiv_
     "8schools+pf_closed+superchains": ("8schools", ["--pathfinder", json.dumps(
         {"imm_source": "pf_closed", "superchains": 4})]),
 }
-EQUIV_RTOL = 1e-7        # relative to (1 + |x|); observed worst 1.2e-10 at C=8, W=20, D=10, x64
+# The refresh path's phase A and B were keyed `split(fold_in(key, 0), n)`: a stream that depended on the block
+# length. They are keyed `fold_in(key, global_step)` now, so that run is a different realisation of the same
+# algorithm. It is compared on structure here, and statistically in test_chunked_loops.py.
+NEW_STREAM_CASES = {"8schools+refresh"}
+EQUIV_RTOL = 1e-7        # relative to (1 + |x|); observed worst 1.9e-10 at C=8, W=20, D=10, x64
 
 
 def _base_tree(tmp):
@@ -446,7 +539,9 @@ def test_draws_match_the_f2_head_before_this_task(equivalence, case):
         a, b = old[key], new[key]
         if key == "config":
             continue
-        assert a.shape == b.shape, key
+        assert a.shape == b.shape and a.dtype == b.dtype, key
+        if case in NEW_STREAM_CASES:
+            continue
         if a.dtype.kind in "biu":                       # steps, divergences, accepts: a flip is a different run
             assert np.array_equal(a, b), key
             continue
@@ -456,6 +551,8 @@ def test_draws_match_the_f2_head_before_this_task(equivalence, case):
     old_cfg, new_cfg = json.loads(str(old["config"])), json.loads(str(new["config"]))
     assert old_cfg.keys() == new_cfg.keys()
     for k, v in old_cfg.items():                        # every resolved setting; floats only up to the ulp
+        if case in NEW_STREAM_CASES and k in ("eps0", "frozen_step_size", "frozen_L_nominal"):
+            continue                                    # adaptation outputs of a different realisation
         if isinstance(v, float):
             assert new_cfg[k] == pytest.approx(v, rel=EQUIV_RTOL), k
         else:
