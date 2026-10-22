@@ -43,6 +43,7 @@ from . import chees as _chees_vendored
 
 __all__ = [
     "HALTON_BITS",
+    "JITTER_STREAM",
     "LogDensity",
     "HostStack",
     "SAMPLE_CHUNK",
@@ -56,7 +57,9 @@ __all__ = [
     "chees_harmonic_acceptance_np",
     "feasible_mask",
     "halton_jitter",
+    "initial_point",
     "integration_steps",
+    "jittered_initial_points",
     "pathfinder_draw",
     "pathfinder_fit",
     "plain_log_density",
@@ -66,6 +69,7 @@ __all__ = [
     "score_pool",
     "score_positions",
     "search_step_size",
+    "search_step_sizes",
     "transform_draws",
     "usable_mask",
     "warmup_chunk",
@@ -188,10 +192,8 @@ def pathfinder_draw(sample, key, state, num_samples):
 # --------------------------------------------------------------------------------------------------
 # step-size search
 # --------------------------------------------------------------------------------------------------
-@partial(jax.jit, static_argnames=_STATIC)
-def search_step_size(fn, names, values, inverse_mass_matrix, key, position):
+def _search_step_size(ld, inverse_mass_matrix, key, position):
     """BlackJAX's doubling/halving search (target acceptance 0.651) from one position, for one metric."""
-    ld = _logdensity(fn, names, values)
     return bj.adaptation.step_size.find_reasonable_step_size(
         key,
         lambda eps: bj.hmc(ld, eps, inverse_mass_matrix, num_integration_steps=1).step,
@@ -199,6 +201,94 @@ def search_step_size(fn, names, values, inverse_mass_matrix, key, position):
         initial_step_size=1e-2,
         target_accept=0.651,
     )
+
+
+@partial(jax.jit, static_argnames=_STATIC)
+def search_step_size(fn, names, values, inverse_mass_matrix, key, position):
+    """The step-size search from one position (the serial reference of `search_step_sizes`)."""
+    return _search_step_size(_logdensity(fn, names, values), inverse_mass_matrix, key, position)
+
+
+@partial(jax.jit, static_argnames=_STATIC + ("take",))
+def search_step_sizes(fn, names, values, inverse_mass_matrix, key, stack, *, take):
+    """The initial step size from the first ``take`` rows of ``stack``: ONE program for any number of feasible probes.
+
+    ``stack`` is a dict of ``(n, ...)`` arrays (positions). Returns ``(eps0, eps, n_ok)``: the geometric median
+    of the finite positive step sizes the search finds from those of the ``take`` probes that have a finite
+    log-density (NaN if none), the ``take`` step sizes (the first ``n_ok`` are the feasible probes', in order),
+    and how many probes are feasible.
+
+    * A probe at a non-finite log-density has NaN acceptance, which the search reads as "halve forever", so
+      those are left out. The feasible ones are moved to the front in their original order, and the slots
+      behind them repeat the first feasible probe, so every row of the batch is a valid search and the
+      result depends on the probes only through the feasible ones.
+    * Probe ``i`` uses ``fold_in(key, i)``, which is ``split(key, n)[i]`` (`jax_threefry_partitionable`) and
+      does not depend on ``n``.
+    * ``jax.vmap`` of the search is the serial search per probe: JAX lowers a batched ``while`` predicate by
+      evaluating the body for every element and keeping the previous carry for the finished ones.
+    """
+    probes = jax.tree_util.tree_map(lambda x: x[:take], stack)
+    ld = _logdensity(fn, names, values)
+    n = take
+    feasible = jax.vmap(lambda p: jnp.isfinite(ld(p)))(probes)
+    n_ok = jnp.sum(feasible)
+    order = jnp.argsort(~feasible, stable=True)
+    slot = order[jnp.where(jnp.arange(n) < n_ok, jnp.arange(n), 0)]
+    keys = jax.vmap(lambda i: jax.random.fold_in(key, i))(jnp.arange(n))
+    eps = jax.vmap(lambda k, p: _search_step_size(ld, inverse_mass_matrix, k, p))(
+        keys, jax.tree_util.tree_map(lambda x: x[slot], probes))
+    good = (jnp.arange(n) < n_ok) & jnp.isfinite(eps) & (eps > 0.0)
+    # geometric median: the values are dyadic, so a linear median biases upward
+    return jnp.exp(jnp.nanmedian(jnp.where(good, jnp.log(eps), jnp.nan))), eps, n_ok
+
+
+# --------------------------------------------------------------------------------------------------
+# initial points
+# --------------------------------------------------------------------------------------------------
+# `fold_in` index of the jitter stream within a root key made from `pm_seed`. `_run_pathfinder` splits the key
+# made from `seed` in five (`fold_in` 0..4, `jax_threefry_partitionable`), and `pm_seed` defaults to `seed`.
+JITTER_STREAM = 17
+
+
+@partial(jax.jit, static_argnames=("fn",))
+def initial_point(fn, values):
+    """The model's un-jittered initial point: a tuple of arrays, one per value variable (`lifted.lift_initial_point`)."""
+    return tuple(fn((), values))
+
+
+@partial(jax.jit, static_argnames=_STATIC + ("chains",))
+def jittered_initial_points(fn, names, values, base, key, max_retries, *, chains):
+    """``chains`` copies of ``base`` plus a U(-1, 1) jitter per coordinate, redrawn while the log-density is not finite.
+
+    PyMC's ``jitter+adapt_diag`` start (``pymc.sampling.mcmc._init_jitter``) in JAX: the jitter is added in the
+    space of the value variables, and a chain whose point has a non-finite log-density gets a whole new jitter,
+    up to ``max_retries`` times (``jitter_max_retries``), while the chains that are finite keep theirs.
+    ``base`` is a tuple of arrays in ``names`` order (`initial_point`). Attempt ``a`` draws all chains' jitter at
+    once, from ``fold_in(fold_in(key, a), variable index)``, and keeps the rows of the chains that still need one.
+    Returns ``(points, finite)``: a tuple of ``(chains, ...)`` arrays, and per chain whether its point has a
+    finite log-density at the end (False only after ``max_retries`` retries).
+    """
+    ld = _logdensity(fn, names, values)
+
+    def draw(attempt):
+        k = jax.random.fold_in(key, attempt)
+        return tuple(
+            b + jax.random.uniform(jax.random.fold_in(k, j), (chains,) + b.shape, b.dtype, -1.0, 1.0)
+            for j, b in enumerate(base))
+
+    def finite(points):
+        return jax.vmap(lambda p: jnp.isfinite(ld(p)))(points)
+
+    def retry(state):
+        attempt, points, ok = state
+        fresh = draw(attempt + 1)
+        points = tuple(jnp.where(ok.reshape((-1,) + (1,) * (p.ndim - 1)), p, f) for p, f in zip(points, fresh))
+        return attempt + 1, points, ok | finite(fresh)
+
+    points = draw(0)
+    _, points, ok = lax.while_loop(
+        lambda state: (state[0] < max_retries) & ~jnp.all(state[2]), retry, (jnp.int32(0), points, finite(points)))
+    return points, ok
 
 
 # --------------------------------------------------------------------------------------------------

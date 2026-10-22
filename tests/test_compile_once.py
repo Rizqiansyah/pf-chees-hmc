@@ -12,14 +12,18 @@ sampling loop (`compiled.sampling_chunk`) are chunk programs driven from the hos
 count, so W and D are loop bounds on the host. The correctness side (determinism, chunk-size invariance, a
 known posterior, bookkeeping, the progress bars) is in `test_chunked_loops.py`.
 
-Equivalence with the F2 head before F2b-2 (`BASE_SHA`) is NOT bit-for-bit, and cannot be: the loops are
-different XLA programs (a chunk of steps behind a conditional, the trajectory-length adjustment and the
-step size as arguments instead of constants), which changes floating-point results by an ulp. The ulp is
-then carried through chaotic trajectories, so draws agree to about 1e-10 relative at this size (observed
-worst 1.9e-10, GEV). The key stream is unchanged on the default path, because under the default
-`jax_threefry_partitionable` `split(key, N)[i] == fold_in(key, i)`: the discrete statistics are exactly
-equal. The test pins those exactly and the continuous ones tightly. The refresh path's stream did change
-(its blocks were keyed `fold_in(key, start)` + `split`), so it is compared statistically instead.
+Equivalence with the F2 head before F2c/F2d/eps0 (`BASE_SHA`, cdc4a55). The initial points are PyMC's own
+(equal to the last digit on these models), the batched step-size search is the per-probe one bit for bit, and
+the stratified start pick scores the whole pool whenever it has at most 4C rows (d <= sqrt(C)), so 8 Schools,
+GEV and logit at C=1,024 are BIT-identical to cdc4a55, every array. Radon's pool is 4d^2 = 122,500 rows, of
+which F2c now scores 4,084 instead of all: its picks, hence its draws, change by design, and it is compared on
+structure only (as is the refresh case, whose stream already differed from before F2b-2, see
+`test_chunked_loops.py`).
+
+Before that, F2b-2 versus c35fbba was NOT bit-for-bit: the loops are different XLA programs (a chunk of steps
+behind a conditional, the trajectory-length adjustment and the step size as arguments instead of constants),
+which changes floating-point results by an ulp, carried through chaotic trajectories to about 1e-10 relative
+(observed worst 1.9e-10, GEV).
 """
 import concurrent.futures
 import contextlib
@@ -40,8 +44,8 @@ import numpy as np
 import pymc as pm
 import pytest
 
-from compile_counter import count_compiles
-from seeded_models import hier
+from compile_counter import count_compiles, count_pytensor_functions
+from seeded_models import dims_model, hier
 
 from pfcheeshmc import compiled
 from pfcheeshmc.ensemble_metric import ENGLISH_NAMES, estimate_covariance, positions_to_draws
@@ -203,6 +207,37 @@ def test_second_sample_call_compiles_nothing(warm_call, variant):
     assert cc.count == 0, f"{variant}: {cc}"
     assert idata.posterior["mu"].shape == (C, kw.get("draws", D))
     assert idata.attrs["warmup_steps_used"] == kw.get("warmup", W)
+
+
+# F2d / eps0: the PyTensor side. A warm call used to build 3 PyTensor functions (`pm.init_nuts`: the log-density
+# and gradient of a NUTS step, and an initial-point function per chain count) and, for a model with `dims=`,
+# one more per lift (`lifted._abstract` read the unknown static shapes off `model.initial_point()`).
+PYTENSOR_CASES = {
+    "new seed, data and priors": (lambda: hier(1, 1), lambda: hier(2, 3), None),
+    "jitter+adapt_diag": (lambda: hier(1, 1), lambda: hier(3, 2), {"pm_init": "jitter+adapt_diag"}),
+    "pm_chains=C": (lambda: hier(1, 1), lambda: hier(2, 2), {"pm_chains": C, "pm_init": "jitter+adapt_diag"}),
+    "a model with dims=": (lambda: dims_model(1, 1), lambda: dims_model(2, 3), None),
+}
+
+
+@pytest.mark.parametrize("case", list(PYTENSOR_CASES))
+def test_a_warm_second_sample_call_builds_no_pytensor_function_and_compiles_no_xla_program(case):
+    first, second, pathfinder_kwargs = PYTENSOR_CASES[case]
+    sample_call(first(), seed=1, pathfinder_kwargs=pathfinder_kwargs)
+    with count_pytensor_functions() as pf, count_compiles() as cc:
+        idata = sample_pf_chees_hmc(
+            second(), draws=D, chains=C, random_seed=2, progressbar=False, chees_kwargs={"draws": W},
+            pathfinder_kwargs=pathfinder_kwargs)
+    assert pf.count == 0 and cc.count == 0, f"{case}: {pf}; {cc}"
+    assert idata.posterior["s" if "dims" in case else "mu"].shape[:2] == (C, D)
+
+
+def test_the_first_sample_call_of_a_dims_model_builds_no_pytensor_function_either():
+    """Not only the warm one: nothing in the sampler asks PyTensor for a function (the model's own build aside)."""
+    m = dims_model(5, 5)
+    with count_pytensor_functions() as pf:
+        sample_pf_chees_hmc(m, draws=D, chains=C, random_seed=1, progressbar=False, chees_kwargs={"draws": W})
+    assert pf.count == 0, str(pf)
 
 
 @pytest.mark.parametrize("first", [False, True])
@@ -473,11 +508,11 @@ def test_a_replaced_ld_fn_is_honoured_by_the_compiled_sites_and_is_one_static_ar
 
 
 # ---------------------------------------------------------------------- 4. equivalence
-BASE_SHA = "c35fbba"            # the f2 head before F2b-2
+BASE_SHA = "cdc4a55"            # the f2 head before F2c, F2d and the one-dispatch eps0 search
 EQUIV_CASES = {                  # name -> (model, extra args for compile_equiv_run.py)
-    "8schools": ("8schools", []),
-    "gev": ("gev", []),
-    "logit_1000x25": ("logit_1000x25", []),
+    "8schools": ("8schools", ["--chains", "1024"]),
+    "gev": ("gev", ["--chains", "1024"]),
+    "logit_1000x25": ("logit_1000x25", ["--chains", "1024"]),
     "radon_noncentered": ("radon_noncentered", []),
     "8schools+refresh": ("8schools", ["--chees", json.dumps(
         {"metric_refresh": "fisher_diag", "metric_refresh_warmup": 10})]),
@@ -486,9 +521,12 @@ EQUIV_CASES = {                  # name -> (model, extra args for compile_equiv_
 }
 # The refresh path's phase A and B were keyed `split(fold_in(key, 0), n)`: a stream that depended on the block
 # length. They are keyed `fold_in(key, global_step)` now, so that run is a different realisation of the same
-# algorithm. It is compared on structure here, and statistically in test_chunked_loops.py.
-NEW_STREAM_CASES = {"8schools+refresh"}
-EQUIV_RTOL = 1e-7        # relative to (1 + |x|); observed worst 1.9e-10 at C=8, W=20, D=10, x64
+# algorithm. It is compared on structure here, and statistically in test_chunked_loops.py. Radon's start picks
+# changed with F2c (a pool of 122,500 rows is scored on 4,084 of them), at C=8 too (the refresh case as well).
+STRUCTURE_ONLY_CASES = {"8schools+refresh", "radon_noncentered"}
+# d <= sqrt(C): the whole 4C-row pool is scored, as before; nothing in the run differs.
+BIT_IDENTICAL_CASES = {"8schools", "gev", "logit_1000x25"}
+EQUIV_RTOL = 1e-7        # relative to (1 + |x|), for the other cases (observed worst 1.9e-10 across F2b-2)
 
 
 def _base_tree(tmp):
@@ -532,6 +570,8 @@ def equivalence(tmp_path_factory):
 
 @pytest.mark.parametrize("case", list(EQUIV_CASES))
 def test_draws_match_the_f2_head_before_this_task(equivalence, case):
+    """BIT-identical for d <= sqrt(C) (every array, every config value); within EQUIV_RTOL otherwise; structure only
+    where F2c changes the start picks."""
     old, new = equivalence[(case, "old")], equivalence[(case, "new")]
     assert sorted(old.files) == sorted(new.files)
     worst = 0.0
@@ -540,7 +580,10 @@ def test_draws_match_the_f2_head_before_this_task(equivalence, case):
         if key == "config":
             continue
         assert a.shape == b.shape and a.dtype == b.dtype, key
-        if case in NEW_STREAM_CASES:
+        if case in STRUCTURE_ONLY_CASES:
+            continue
+        if case in BIT_IDENTICAL_CASES:
+            assert np.array_equal(a, b, equal_nan=True), f"{key}: not bit-identical to {BASE_SHA}"
             continue
         if a.dtype.kind in "biu":                       # steps, divergences, accepts: a flip is a different run
             assert np.array_equal(a, b), key
@@ -551,9 +594,11 @@ def test_draws_match_the_f2_head_before_this_task(equivalence, case):
     old_cfg, new_cfg = json.loads(str(old["config"])), json.loads(str(new["config"]))
     assert old_cfg.keys() == new_cfg.keys()
     for k, v in old_cfg.items():                        # every resolved setting; floats only up to the ulp
-        if case in NEW_STREAM_CASES and k in ("eps0", "frozen_step_size", "frozen_L_nominal"):
+        if case in STRUCTURE_ONLY_CASES and k in ("eps0", "frozen_step_size", "frozen_L_nominal"):
             continue                                    # adaptation outputs of a different realisation
-        if isinstance(v, float):
+        if case in BIT_IDENTICAL_CASES:
+            assert new_cfg[k] == v, k
+        elif isinstance(v, float):
             assert new_cfg[k] == pytest.approx(v, rel=EQUIV_RTOL), k
         else:
             assert new_cfg[k] == v, k

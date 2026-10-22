@@ -27,6 +27,10 @@ The lowered StableHLO of the result then holds no data and no prior values: its 
 structure-only key, and a registry maps that key to the first function built for it so that
 structurally identical models share one function object (and with it JAX's in-memory caches).
 
+`lift_initial_point` lifts PyMC's own initial-point graph (`initial_point_expression`) the same way, so the
+chains' start needs no PyTensor function either; `_abstract` reads the unknown static shapes of a model with
+``dims=`` off the folded shapes of that graph instead of compiling ``model.initial_point()``.
+
 Importing this module also registers JAX's own ``erfcx`` for PyTensor's ``Erfcx`` (see `_erfcx`).
 """
 from __future__ import annotations
@@ -44,6 +48,7 @@ import numpy as np
 import pytensor
 import pytensor.tensor as pt
 import scipy.special as sps
+from pymc.initial_point import make_initial_point_expression
 from pymc.pytensorf import constant_fold
 from pymc.sampling.jax import get_jaxified_graph
 from pytensor.compile import mode
@@ -61,7 +66,7 @@ from pytensor.tensor.shape import Shape, Shape_i
 from pytensor.tensor.subtensor import AdvancedSubtensor, AdvancedSubtensor1
 from pytensor.tensor.variable import TensorConstant
 
-__all__ = ["LiftedGraph", "lift_graph", "lift_logp"]
+__all__ = ["LiftedGraph", "initial_point_expression", "lift_graph", "lift_initial_point", "lift_logp"]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -341,15 +346,57 @@ def _candidates(model, fg: FunctionGraph, outputs, rule: str, replaced=None) -> 
     return found
 
 
+def initial_point_expression(model) -> list:
+    """PyMC's own initial point of the free random variables, as PyTensor expressions (nothing compiled).
+
+    The same graph ``pymc.initial_point.make_initial_point_fn`` compiles, built with the same arguments
+    (``Model.rvs_to_initial_values``, the default ``support_point`` strategy), un-jittered and in the
+    transformed space: one expression per ``model.value_vars`` entry, in that order, equal to
+    ``model.initial_point()``.
+    """
+    with warnings.catch_warnings():
+        # "Support point not defined ... defaulting to a draw from the prior": `lift_initial_point` refuses
+        # that graph, and PyMC says it again when the caller falls back to it.
+        warnings.simplefilter("ignore", UserWarning)
+        return make_initial_point_expression(
+            free_rvs=model.free_RVs,
+            rvs_to_transforms=model.rvs_to_transforms,
+            initval_strategies=model.rvs_to_initial_values,
+            jitter_rvs=None,
+            default_strategy="support_point",
+            return_transformed=True,
+        )
+
+
+def _initial_point_shapes(model) -> dict:
+    """``{value variable name: shape}`` at the model's current dim lengths and data, without compiling.
+
+    The shape of each initial-point expression, with the shared variables (dim lengths, ``pm.Data``)
+    replaced by their values, folded to integers.
+    """
+    exprs = initial_point_expression(model)
+    shapes = [pt.shape(e) for e in exprs]
+    shared = {v: pt.constant(v.get_value(borrow=True)) for v in ancestors(shapes) if isinstance(v, SharedVariable)}
+    if shared:
+        shapes = graph_replace(shapes, shared, strict=False)
+    return {rv.name: tuple(int(n) for n in shape)
+            for rv, shape in zip(model.value_vars, constant_fold(shapes))}
+
+
 def _abstract(model, inputs):
-    """``ShapeDtypeStruct`` per input. Unknown static dims are read off the model's initial point."""
-    specs, point = [], None
+    """``ShapeDtypeStruct`` per input. Unknown static dims (``dims=``, a ``pm.Data``-sized RV) are read off the
+    model's initial point: its shapes folded from the graph, or, if that raises, ``model.initial_point()``
+    (which compiles a PyTensor function)."""
+    specs, shapes = [], None
     for inp in inputs:
         shape = tuple(inp.type.shape)
         if any(s is None for s in shape):
-            if point is None:
-                point = model.initial_point()
-            shape = np.shape(point[inp.name])
+            if shapes is None:
+                try:
+                    shapes = _initial_point_shapes(model)
+                except Exception:
+                    shapes = {k: np.shape(v) for k, v in model.initial_point().items()}
+            shape = shapes[inp.name]
         specs.append(jax.ShapeDtypeStruct(shape, jax.dtypes.canonicalize_dtype(inp.type.dtype)))
     return tuple(specs)
 
@@ -360,10 +407,15 @@ def _struct(array):
 
 def _key(fn, input_specs, values) -> str:
     # `as_text()` omits source locations by default, so two builds of one model lower to equal text.
+    # `keep_unused`: the arguments a function does not read are still part of its calling convention. By
+    # default JAX drops them from the lowered module, so the identity transform of a model (one input, no
+    # value) and the initial point of a model with an array prior (no input, the prior as its one used
+    # value, next to others it does not read) lowered to the same text, hence the same key, and the registry
+    # handed one the other's function, which takes another number of arguments.
     def lifted(inputs, values):
         return fn(inputs, values)
 
-    text = jax.jit(lifted).lower(input_specs, tuple(_struct(v) for v in values)).as_text()
+    text = jax.jit(lifted, keep_unused=True).lower(input_specs, tuple(_struct(v) for v in values)).as_text()
     return hashlib.sha256(text.encode()).hexdigest()
 
 
@@ -463,3 +515,23 @@ def lift_logp(model) -> LiftedGraph:
     ``negative_logp=True`` default is the *positive* log density; its naming is inverted).
     """
     return lift_graph(model, list(model.value_vars), [model.logp()])
+
+
+def lift_initial_point(model) -> LiftedGraph:
+    """`lift_graph` of the model's un-jittered initial point (`initial_point_expression`), no inputs.
+
+    ``fn((), values)`` is the list of the transformed initial values of ``model.value_vars``, in order, with the
+    model's prior values and data as ``values``: the same function, hence the same compiled program, for any
+    prior and data values of one structure.
+
+    Raises ``NotImplementedError`` for an initial point that is a random draw (``initval="prior"``, or a
+    distribution without a ``support_point``): it needs an RNG, which the lifted function does not have.
+    """
+    exprs = initial_point_expression(model)
+    if any(isinstance(v.type, RandomType) for v in ancestors(exprs)):
+        raise NotImplementedError(
+            "the initial point draws from the prior (initval='prior', or a distribution without a support_point)")
+    names = [v.name for v in model.value_vars]
+    if len(exprs) != len(names):
+        raise ValueError(f"{len(exprs)} initial values for {len(names)} value variables")
+    return lift_graph(model, [], exprs)
