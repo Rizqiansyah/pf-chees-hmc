@@ -5,14 +5,13 @@ from jax import lax
 import optax
 
 import pymc as pm
-from pymc.sampling.jax import get_jaxified_graph
 from pymc import modelcontext
 from pymc.util import get_default_varnames
-from pymc.sampling.jax import get_jaxified_logp
 import arviz as az
 
 from tqdm.auto import tqdm
 from .utils import *
+from .lifted import lift_graph, lift_logp
 from .ensemble_metric import (
     estimate_covariance, reseed_trajectory_length, whitened_lambda_max, positions_to_draws,
     ENGLISH_NAMES as _METRIC_REFRESH_NAMES,
@@ -182,7 +181,11 @@ class PfCheesHMC:
         self._resolved = {}
 
         self.rvs = [rv.name for rv in model.value_vars]
-        self._ld_fn = get_jaxified_logp(model)
+        # The log-density with the model's data and prior values as runtime arguments (F2a). Here the
+        # values are still closed over, so behaviour is as before; F2b threads `self._lifted.values`
+        # through as jit arguments.
+        self._lifted = lg = lift_logp(model)
+        self._ld_fn = lambda seq: lg.fn(seq, lg.values)[0]
         self._seed = seed
 
     def ld_fn(self, position):
@@ -1359,8 +1362,8 @@ class PfCheesHMC:
         vars_to_sample = list(
             get_default_varnames(var_names, include_transformed=keep_untransformed)
         )
-        jax_fn = get_jaxified_graph(inputs=model.value_vars, outputs=vars_to_sample)
-        return jax_fn, vars_to_sample
+        lg = lift_graph(model, list(model.value_vars), vars_to_sample)
+        return (lambda *xs: lg.fn(xs, lg.values)), vars_to_sample
 
     def _transform_value_samples_to_problem_space(
         self,
