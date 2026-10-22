@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""F2b: per-stage wall time and XLA compile counts of repeated `sample_pf_chees_hmc` calls (CPU or GPU).
+"""F2b: per-stage wall time, XLA compiles and PyTensor functions of repeated `sample_pf_chees_hmc` calls (CPU or GPU).
 
     python tools/warm_stages.py TREE MODEL CHAINS DRAWS WARMUP [--calls 3] [--json OUT]
                                 [--progressbar] [--chees JSON] [--pathfinder JSON]
@@ -17,8 +17,9 @@ instrumentation as `tools/r1_bias.instrument`, without the GPU lock `--timed` re
   warmup      _run_chees (loop programs included)
   sampling    _run_dynamic_hmc (loop program included)
   transform   _transform_value_samples_to_problem_space
-Compiles are counted with `tests/compile_counter.py` (JAX's backend-compile event) over each stage and the
-whole call; the program names of a warm call are printed.
+Compiles are counted with `tests/compile_counter.py` over each stage and the whole call: XLA programs (JAX's
+backend-compile event; the program names of a warm call are printed) and PyTensor functions (each is a
+`FunctionMaker`: rewrites plus the C backend, e.g. `pm.init_nuts`). Cells are `seconds / XLA / PyTensor`.
 """
 import argparse
 import collections
@@ -50,7 +51,7 @@ sys.path.insert(1, os.path.join(HERE, "..", "tests"))
 import jax  # noqa: E402
 import pfcheeshmc.sampler as sm  # noqa: E402
 import r1_bias  # noqa: E402
-from compile_counter import count_compiles  # noqa: E402
+from compile_counter import count_compiles, count_pytensor_functions  # noqa: E402
 from seeded_models import hier  # noqa: E402
 
 METHODS = {
@@ -58,7 +59,7 @@ METHODS = {
     "_run_step_size_tune": "eps0", "_run_chees": "warmup", "_run_dynamic_hmc": "sampling",
     "_transform_value_samples_to_problem_space": "transform",
 }
-REC = collections.defaultdict(lambda: {"s": 0.0, "n": 0})
+REC = collections.defaultdict(lambda: {"s": 0.0, "n": 0, "pt": 0})
 
 
 def instrument(method, label):
@@ -66,7 +67,7 @@ def instrument(method, label):
 
     def timed(self, *a, **k):
         t0 = time.perf_counter()
-        with count_compiles() as cc:
+        with count_compiles() as cc, count_pytensor_functions() as pf:
             out = original(self, *a, **k)
             try:
                 jax.block_until_ready(out[0] if isinstance(out, tuple) else out)
@@ -74,6 +75,7 @@ def instrument(method, label):
                 pass
         REC[label]["s"] += time.perf_counter() - t0
         REC[label]["n"] += cc.count
+        REC[label]["pt"] += pf.count
         return out
 
     setattr(sm.PfCheesHMC, method, timed)
@@ -92,25 +94,27 @@ for call in range(1, args.calls + 1):
     REC.clear()
     model = build(call)
     t0 = time.perf_counter()
-    with count_compiles() as total:
+    with count_compiles() as total, count_pytensor_functions() as total_pt:
         idata = sm.sample_pf_chees_hmc(
             model, draws=args.draws, chains=args.chains, random_seed=call, progressbar=args.progressbar,
             chees_kwargs={"draws": args.warmup, **json.loads(args.chees)},
             pathfinder_kwargs=json.loads(args.pathfinder))
         jax.block_until_ready(next(iter(idata.posterior.values())).values)
     wall = time.perf_counter() - t0
-    init_s, init_n = REC["init"]["s"] + REC["init2"]["s"], REC["init"]["n"] + REC["init2"]["n"]
+    init = tuple(REC["init"][f] + REC["init2"][f] for f in ("s", "n", "pt"))
     stage = {
-        "init": (init_s, init_n),
-        "pathfinder": (REC["pathfinder+init"]["s"] - init_s, REC["pathfinder+init"]["n"] - init_n),
-        **{k: (REC[k]["s"], REC[k]["n"]) for k in ("eps0", "warmup", "sampling", "transform")},
+        "init": init,
+        "pathfinder": tuple(REC["pathfinder+init"][f] - i for f, i in zip(("s", "n", "pt"), init)),
+        **{k: (REC[k]["s"], REC[k]["n"], REC[k]["pt"]) for k in ("eps0", "warmup", "sampling", "transform")},
     }
-    stage["rest"] = (wall - sum(s for s, _ in stage.values()), total.count - sum(n for _, n in stage.values()))
+    stage["rest"] = (wall - sum(v[0] for v in stage.values()), total.count - sum(v[1] for v in stage.values()),
+                     total_pt.count - sum(v[2] for v in stage.values()))
     results.append({"call": call, "wall": wall, "compiles": total.count, "compile_s": total.seconds,
-                    "stage": stage, "names": sorted(total.names)})
-    print(f"call {call}: wall {wall:6.2f}s  compiles {total.count} ({total.seconds:.2f}s of compile)")
-    for k, (s, n) in stage.items():
-        print(f"    {k:11s} {s:7.2f}s  compiles {n}")
+                    "pytensor_functions": total_pt.count, "stage": stage, "names": sorted(total.names)})
+    print(f"call {call}: wall {wall:6.2f}s  compiles {total.count} ({total.seconds:.2f}s of compile)  "
+          f"pytensor functions {total_pt.count}")
+    for k, (s, n, p) in stage.items():
+        print(f"    {k:11s} {s:7.2f}s  compiles {n}  pytensor {p}")
     if call > 1:
         print("    programs:", sorted(total.names))
 if args.json:

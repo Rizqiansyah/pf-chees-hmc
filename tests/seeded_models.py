@@ -21,3 +21,19 @@ def hier(data_seed, prior_seed=None, J=8):
         theta = pm.Deterministic("theta", mu + tau * z)
         pm.Normal("obs", theta, se_data, observed=y)
     return m
+
+
+def dims_model(data_seed=1, prior_seed=None, J=5):
+    """A model with `dims=`: the value variable `th` has the unknown static shape `(None,)`.
+
+    `lifted._abstract` used to read its shape off `model.initial_point()`, which compiles a PyTensor function.
+    `data_seed` moves a `pm.Data` and the observed array; `prior_seed` the two prior values.
+    """
+    prior_seed = data_seed if prior_seed is None else prior_seed
+    data, prior = np.random.default_rng(data_seed), np.random.default_rng(2000 + prior_seed)
+    with pm.Model(coords={"g": list(range(J))}) as m:
+        x = pm.Data("x", data.normal(size=J), dims="g")
+        th = pm.Normal("th", x, float(prior.uniform(0.5, 2.0)), dims="g")
+        s = pm.HalfNormal("s", float(prior.uniform(2.0, 4.0)))
+        pm.Normal("y", th, s, observed=data.normal(size=J), dims="g")
+    return m

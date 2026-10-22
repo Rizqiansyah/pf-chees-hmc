@@ -27,6 +27,10 @@ The lowered StableHLO of the result then holds no data and no prior values: its 
 structure-only key, and a registry maps that key to the first function built for it so that
 structurally identical models share one function object (and with it JAX's in-memory caches).
 
+`lift_initial_point` lifts PyMC's own initial-point graph (`initial_point_expression`) the same way, so the
+chains' start needs no PyTensor function either; `_abstract` reads the unknown static shapes of a model with
+``dims=`` off the folded shapes of that graph instead of compiling ``model.initial_point()``.
+
 Importing this module also registers JAX's own ``erfcx`` for PyTensor's ``Erfcx`` (see `_erfcx`).
 """
 from __future__ import annotations

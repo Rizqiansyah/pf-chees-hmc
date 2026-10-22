@@ -38,7 +38,7 @@ pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
 import r1_bias as rb  # noqa: E402
 from compile_counter import count_compiles, count_pytensor_functions  # noqa: E402
-from seeded_models import hier  # noqa: E402
+from seeded_models import dims_model as m_dims, hier  # noqa: E402
 
 from pfcheeshmc import compiled, lifted, sampler as sampler_module  # noqa: E402
 from pfcheeshmc.lifted import lift_initial_point, lift_logp  # noqa: E402
@@ -77,16 +77,6 @@ def m_data():
         k = pm.Data("k", 2.5)
         th = pm.Normal("th", x * k, 1.0)
         pm.Normal("y", th, 1.0, observed=np.zeros(3))
-    return m
-
-
-def m_dims(values=(0.0, 1.0, 2.0, 3.0, 4.0), scale=2.5):
-    """`dims=`: the value variable has an unknown static dimension (`(None,)`)."""
-    with pm.Model(coords={"g": list("abcde")}) as m:
-        x = pm.Data("x", np.asarray(values), dims="g")
-        th = pm.Normal("th", x, 1, dims="g")
-        s = pm.HalfNormal("s", scale)
-        pm.Normal("y", th, s, observed=np.arange(5.0), dims="g")
     return m
 
 
