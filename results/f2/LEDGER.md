@@ -70,3 +70,17 @@
   - The JAX rewrite: 0.07–0.26 s.
   - The rest: widening and the key lowering.
   - A later memo (per model object, or a pre-rewrite signature) could save most of this.
+- 2026-10-23 09:25 — GPU smoke, `tools/warm_stages.py TREE MODEL 1024 10 25 --calls 3` under
+  `tools/gpu_run.sh`. TREE was `main` (a `git archive` of 232ae58) or `f2` (a417002). Host load
+  about 1.2, GPU idle. Logs are in `results/f2/runs/smoke_*`. Wall time per call:
+
+  | model | tree | cold call | warm call |
+  |---|---|---|---|
+  | 8schools | main | 35.9 s, 457 compiles | 6.2 s, 8 compiles |
+  | 8schools | f2 | 18.5 s, 141 compiles | 0.82–1.04 s, 0 compiles |
+  | radon (W=25) | main | 76.5 s | 16.1–16.7 s |
+  | radon (W=25) | f2 | 38.6 s | 2.9–3.0 s, 0 compiles |
+
+  - Breakdown of f2's warm radon call: init 0.66, pathfinder 0.40, eps0 0.65 (32 serial probe
+    dispatches), warmup 0.46, sampling 0.23, transform 0.18, rest 0.31 s.
+  - XLA:GPU's per-step `cond` shows no visible cost (8schools warmup takes 0.06 s).
