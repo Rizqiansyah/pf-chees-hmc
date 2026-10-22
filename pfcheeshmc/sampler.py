@@ -6,6 +6,7 @@ import optax
 
 import pymc as pm
 from pymc import modelcontext
+from pymc.sampling.mcmc import all_continuous
 from pymc.util import get_default_varnames
 import arviz as az
 
@@ -13,7 +14,7 @@ from tqdm.auto import tqdm
 from .utils import *
 from . import compiled
 from .compiled import LogDensity
-from .lifted import lift_graph, lift_logp
+from .lifted import lift_graph, lift_initial_point, lift_logp
 from .ensemble_metric import (
     estimate_covariance, reseed_trajectory_length, whitened_lambda_max, positions_to_draws,
     ENGLISH_NAMES as _METRIC_REFRESH_NAMES,
@@ -27,8 +28,17 @@ import json
 import re
 import logging
 import contextlib
+import warnings
 
 __all__ = ["sample_pf_chees_hmc"]
+
+# The stratified start pick scores at most this many Pathfinder pool rows per chain, whatever the pool size
+# (under the default pool, max(4C, 4d^2) rows, d > sqrt(C) would otherwise score 4d^2 of them).
+START_SCORE_PER_CHAIN = 4
+
+# PyMC's default (`pm.init_nuts(jitter_max_retries=...)`): redraws of the jitter of a chain whose point has a
+# non-finite log-density.
+JITTER_MAX_RETRIES = 10
 
 
 # The sampling scan's per-draw projections are defined with the chunk program that returns them.
@@ -219,7 +229,12 @@ class PfCheesHMC:
         return self._ld_fn(seq) 
 
     def dict_to_position(self, model, names):
-        ip = model.initial_point()
+        """The model's initial point as a list in ``names`` order (JAX; ``model.initial_point()`` if it cannot)."""
+        try:
+            lg = lift_initial_point(model)
+            ip = dict(zip((v.name for v in model.value_vars), compiled.initial_point(lg.fn, lg.values)))
+        except Exception:
+            ip = model.initial_point()
         return [jnp.asarray(ip[n]) for n in names]
 
     def _kernel_flat(self, position):
@@ -438,6 +453,31 @@ class PfCheesHMC:
             for lg, lvl in old_levels:
                 lg.setLevel(lvl)
 
+    def _jax_initial_points(self, chains: int, *, jitter: bool, random_seed, jitter_max_retries: int):
+        """PyMC's ``adapt_diag`` / ``jitter+adapt_diag`` initial points with no PyTensor compile.
+
+        The un-jittered point is PyMC's own initial-point graph (`lifted.lift_initial_point`: the model's
+        prior values and data are lifted, so a new prior compiles nothing) evaluated by a module-level jit.
+        With ``jitter``, each chain adds U(-1, 1) per coordinate and redraws while its log-density is not
+        finite (`compiled.jittered_initial_points`; the stream is ``pm_seed``'s, not PyMC's).
+        Returns ``(dict{name: (chains, ...)} in self.rvs order, indices of the chains left non-finite)``.
+        """
+        lg = lift_initial_point(self.model)
+        base = compiled.initial_point(lg.fn, lg.values)
+        names = tuple(self.rvs)
+        if len(base) != len(names):
+            raise ValueError(f"{len(base)} initial values for {len(names)} value variables")
+        if not jitter:
+            points, bad = tuple(jnp.broadcast_to(b, (chains,) + b.shape) for b in base), np.zeros(0, dtype=int)
+        else:
+            seed = random_seed if random_seed is not None else int(np.random.SeedSequence().generate_state(1)[0])
+            key = jax.random.fold_in(jax.random.key(int(seed)), compiled.JITTER_STREAM)
+            ld = self._logdensity()
+            points, ok = compiled.jittered_initial_points(
+                ld.fn, ld.names, ld.values, base, key, int(jitter_max_retries), chains=chains)
+            bad = np.flatnonzero(~np.asarray(ok))
+        return dict(zip(names, points)), bad
+
     def _pymc_adapt_diag_start(
         self,
         chains: int,
@@ -445,12 +485,38 @@ class PfCheesHMC:
         init: str = "adapt_diag",   # or "jitter+adapt_diag"
         tune: int = 500,
         random_seed: Optional[int] = None,
+        jitter_max_retries: int = JITTER_MAX_RETRIES,
     ):
         """
-        Run PyMC's NUTS initializer to get per-chain feasible initial points
-        (no posterior sampling). Returns dict{name: (chains, ...)} keyed by self.rvs.
+        PyMC's per-chain initial points for ``init`` (no posterior sampling). Returns dict{name: (chains, ...)}
+        keyed by self.rvs.
+
+        ``pm.init_nuts`` builds a whole NUTS step (PyTensor compiles of the log-density and its gradient on the
+        C backend, 0.5-1.6 s) and the sampler keeps only its ``init_points``. For ``adapt_diag`` those are the
+        initial values of the model (the test point, in the transformed space) for every chain; for
+        ``jitter+adapt_diag`` the same plus a U(-1, 1) jitter per coordinate, redrawn while the log-density is
+        not finite. That is computed in JAX instead (`_jax_initial_points`): ``adapt_diag`` points equal
+        PyMC's, the jitter is the same distribution from ``random_seed``'s own JAX stream. ``tune`` is not
+        used by either (``init_nuts`` reads it only for ``jitter+adapt_diag_grad``). Any other ``init``, a
+        model with discrete variables, or an initial point that cannot be built in JAX (a random draw, or a
+        graph that fails to lift: a warning names the exception) goes to ``pm.init_nuts`` as before.
         """
         print(f"Initializing ChEES-HMC using pathfinder+{init}...")
+        kind = init.lower() if isinstance(init, str) else init
+        if kind in ("adapt_diag", "jitter+adapt_diag") and all_continuous(self.model.value_vars):
+            try:
+                found, bad = self._jax_initial_points(
+                    chains, jitter=kind == "jitter+adapt_diag", random_seed=random_seed,
+                    jitter_max_retries=jitter_max_retries)
+            except Exception as exc:
+                reason = (str(exc).splitlines() or [""])[0]
+                warnings.warn(
+                    f"initial points in JAX failed with {type(exc).__name__}: {reason}; "
+                    "falling back to pm.init_nuts", RuntimeWarning, stacklevel=2)
+            else:
+                if bad.size:     # as PyMC after its last retry: the error that names the non-finite term
+                    self.model.check_start_vals({n: np.asarray(a[bad[0]]) for n, a in found.items()})
+                return found
         with self._silence_pymc_init():
             init_points, _ = pm.init_nuts(
                 init=init,
@@ -459,6 +525,7 @@ class PfCheesHMC:
                 model=self.model,
                 random_seed=random_seed,
                 progressbar=True,
+                jitter_max_retries=jitter_max_retries,
             )
         # list[chain] of dicts -> dict of stacked arrays in self.rvs order
         return {
@@ -686,12 +753,13 @@ class PfCheesHMC:
             if pick == "iid":
                 pick_global = jax.random.randint(key_pick, shape=(chains,), minval=0, maxval=total)
             elif pick == "stratified":
-                # Score a strided subset -- ranking the whole uncapped pool would cost more than
-                # the benefit, which only exists at short warmup. With the pool capped at ~4C the
-                # stride is 1 and the whole pool is scored, chunked to keep the vmapped
-                # log-density activation at O(score_chunk) rows (a single 65,536-row vmap was
-                # the second R1 OOM, ~500 MiB at d=25).
-                stride = max(total // max(chains * 64, 1), 1)
+                # Score a strided subset of at most START_SCORE_PER_CHAIN * C rows -- ranking the whole
+                # pool would cost more than the benefit, which only exists at short warmup, and the
+                # default pool is max(4C, 4d^2) rows (122,500 evaluations at d=175, 1,000,000 at d=500).
+                # With a pool of at most 4C rows the stride is 1 and the whole pool is scored, chunked to
+                # keep the vmapped log-density activation at O(score_chunk) rows (a single 65,536-row vmap
+                # was the second R1 OOM, ~500 MiB at d=25). The stride rounds up, so the cap holds.
+                stride = max(-(-total // (START_SCORE_PER_CHAIN * max(chains, 1))), 1)
                 subset_idx = jnp.arange(0, total, stride)
                 def _score_pool(idx):
                     return compiled.score_pool(ld.fn, ld.names, ld.values, samples_flat, idx)
@@ -915,9 +983,10 @@ class PfCheesHMC:
         What changed is the execution, not the rule: the search used to be rebuilt from
         Python once per chain, which re-traced the kernel every doubling step and measured
         77.07 s / 32 chains = 2.4 s per chain in the instrumented run (~1.1 s per chain
-        uninstrumented). Here it is traced once and dispatched per probe, so cost is
-        independent of the number of sampling chains — the sampler itself is flat from 32
-        to 256 chains (+2% per transition), and the old stage made wall time grow linearly.
+        uninstrumented). Here it is traced once and run for all probes in one vmapped
+        dispatch (`compiled.search_step_sizes`), so cost is independent of the number of
+        sampling chains — the sampler itself is flat from 32 to 256 chains (+2% per
+        transition), and the old stage made wall time grow linearly.
 
         Probes are positions, not chains: 32 of them are enough to estimate a global ε0,
         and ChEES re-tunes ε by dual averaging from iteration 1. Do not read ε0 as a mere
@@ -934,37 +1003,16 @@ class PfCheesHMC:
         seed = kwargs.get("seed", self.seed)
         self._resolved["step_size"] = {"eps0_probes": num_probes, "seed": int(seed)}
 
-        n_drawn = int(len(next(iter(pf_samples.values()))))
-        take = min(num_probes, n_drawn)
-        probes = [{k: jnp.asarray(v)[i] for k, v in pf_samples.items()} for i in range(take)]
+        take = min(num_probes, int(len(next(iter(pf_samples.values())))))
 
-        # A probe at a position with non-finite logp yields nan acceptance, which BlackJAX
-        # turns into "halve forever" (step_size.py:239), dragging the median to the float floor.
-        feasible = compiled.feasible_mask(
-            ld.fn, ld.names, ld.values, {k: jnp.stack([p[k] for p in probes]) for k in probes[0]})
-        keep = [bool(k) for k in feasible]
-        probes = [p for p, k in zip(probes, keep) if k]
-        if not probes:
-            return 1e-2  # nothing usable; ChEES dual averaging still runs
-
-        def search(key, pos_i):
-            return compiled.search_step_size(
-                ld.fn, ld.names, ld.values, inverse_mass_matrix, key, pos_i)
-
-        # One trace, then one dispatch per probe. Per-probe rather than vmapped for cost
-        # and clarity of failure modes, not correctness: `jax.vmap` over this search is also
-        # correct, because JAX lowers a batched `while` predicate by re-evaluating it in the
-        # body and selecting the previous carry for finished elements, so converged probes
-        # are frozen (verified in jax/_src/lax/control_flow/loops.py:2210-2224 and by
-        # comparing per-probe values vmap vs serial: identical).
-        keys = jax.random.split(jax.random.key(seed), len(probes))
-        eps_list = [float(search(keys[i], probes[i])) for i in range(len(probes))]
-        eps_ok = [e for e in eps_list if jnp.isfinite(e) and e > 0.0]
-        if not eps_ok:
-            return 1e-2
-
-        # geometric median: the values are dyadic, so a linear median biases upward
-        return float(jnp.exp(jnp.median(jnp.log(jnp.asarray(eps_ok)))))
+        # One dispatch: the probes with a finite log-density (a probe at a non-finite one yields nan
+        # acceptance, which BlackJAX turns into "halve forever", step_size.py:239, dragging the median to
+        # the float floor) are searched in one vmapped program of a fixed number of probes, so the number
+        # of feasible ones does not change the program, and reduced by geometric median.
+        eps0, _, _ = compiled.search_step_sizes(
+            ld.fn, ld.names, ld.values, inverse_mass_matrix, jax.random.key(seed), pf_samples, take=take)
+        eps0 = float(eps0)
+        return eps0 if np.isfinite(eps0) else 1e-2      # nothing usable; ChEES dual averaging still runs
 
     def _run_chees(self, pf_samples, inverse_mass_matrix, init_step_size, **kwargs):
         #Default values
