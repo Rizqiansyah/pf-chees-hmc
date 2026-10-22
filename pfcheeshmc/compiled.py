@@ -229,9 +229,17 @@ HALTON_BITS = 30
 # Steps per chunk. A chunk program has a static length, so these are the loop bounds a run can change
 # for free: any W (D) is `ceil(W / WARMUP_CHUNK)` calls of ONE program, the last with a smaller active
 # count. They are read at call time (tests set them small to exercise the multi-chunk path).
+#
+# Why 50 (`tools/chunk_overhead.py`, CPU, 8 Schools, W=200, D=500): a chunk costs the host a dispatch and
+# the copy of its outputs, about 0.05-0.2 ms with one chunk kept in flight (0.3 ms without), whatever the
+# chunk length. At C=32, the cheapest realistic case (0.25 ms per step), a chunk of 50 steps is 12 ms of
+# compute, so the overhead is under 1.5%; at C=1,024 (8 ms per step) it is under 0.1%, and chunk lengths
+# from 5 to 500 are indistinguishable. Longer chunks buy nothing and cost more: the last chunk is padded
+# (its skipped rows are written as zeros and copied back), which is 50 rows of waste at most, and a chunk
+# is also the unit of progress-bar granularity.
 WARMUP_CHUNK = 50
-SAMPLE_CHUNK = 100
-TRANSFORM_CHUNK = 100       # draws per call of `transform_draws` (the last call is padded)
+SAMPLE_CHUNK = 50
+TRANSFORM_CHUNK = 50        # draws per call of `transform_draws` (the last call is padded)
 
 
 class WarmupScanInfo(NamedTuple):
