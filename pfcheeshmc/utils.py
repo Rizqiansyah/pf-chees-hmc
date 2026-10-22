@@ -1,4 +1,3 @@
-from functools import partial
 import jax, jax.numpy as jnp
 import time
 from typing import Any, Callable, Dict, NamedTuple, Optional
@@ -6,12 +5,12 @@ from typing import Any, Callable, Dict, NamedTuple, Optional
 import numpy as np
 import arviz as az
 import blackjax as bj
-from jax import lax
 from tqdm.auto import tqdm
-import blackjax.mcmc.dynamic_hmc as dynamic_hmc
 
-from . import chees as _chees_vendored
 from . import compiled as _compiled
+# The warmup scan's per-step projection and the acceptance the bars show live with the chunk program
+# that produces them (`compiled.warmup_chunk`); they are re-exported here, where they have always been.
+from .compiled import WarmupScanInfo, chees_harmonic_acceptance
 
 
 class WarmupInfo(NamedTuple):
@@ -47,19 +46,6 @@ class WarmupInfo(NamedTuple):
     positions: Any = None
 
 
-class WarmupScanInfo(NamedTuple):
-    """The only per-step fields of the warmup scan that a consumer reads.
-
-    num_integration_steps -- exact gradient counts (A8: sum of steps, never an estimate)
-    is_divergent          -- divergence counters and the harmonic-acceptance mask
-    acceptance_rate       -- the ChEES step-size signal (harmonic mean over chains)
-    """
-
-    num_integration_steps: Any
-    is_divergent: Any
-    acceptance_rate: Any
-
-
 __all__ = [
     "chees_warmup_with_progress",
     "chees_harmonic_acceptance",
@@ -67,18 +53,6 @@ __all__ = [
     "WarmupInfo",
     "WarmupScanInfo",
 ]
-
-
-def chees_harmonic_acceptance(acc_vals, is_divergent):
-    """The acceptance ChEES actually adapts on: harmonic mean over the non-divergent chains.
-
-    Mirrors `blackjax.adaptation.chees_adaptation` (harmonic_mean, :358-363), including the
-    non-finite -> 0 guard. The arithmetic mean of per-trajectory acceptances is systematically
-    higher than this (Jensen), so displaying it hides exactly the heterogeneity the step-size
-    adaptation reacts to -- it already caused a wrong diagnosis in this project.
-    """
-    hm = 1.0 / jnp.mean(1.0 / acc_vals, where=~is_divergent)
-    return jnp.where(jnp.isfinite(hm), hm, 0.0)
 
 
 def block_max_rhat(pos_window):
@@ -116,17 +90,19 @@ def chees_warmup_with_progress(
     rng_key,
     positions,                 # dict {"mu": (C,), "tau_log__": (C,), "theta": (C,J)}
     initial_step_size,
-    optim,
+    optim,                     # the Adam learning rate (a stable static for the chunk program), or an
+                             #     optax transformation (a new static value per object)
     num_steps,
     inverse_mass_matrix,
     *,
     target_acceptance_rate=0.651,
     decay_rate=0.5,
     jitter_amount=1.0,
-    max_sampling_steps=1000,
+    max_sampling_steps=1000,   # unused: the Halton depth is fixed (compiled.HALTON_BITS)
     max_leapfrog_steps=1000,
-    update_every=25,           # <-- throttle UI updates to keep overhead tiny
-    progressbar=True,          # False removes jax.debug.callback from the compiled scan
+    update_every=25,           # unused: the bar is updated between chunks
+    progressbar=True,          # a tqdm bar updated by the host between chunks; no host callback exists
+                             #     in any compiled program, so True and False run the same programs
     stop_rule=None,            # None = fixed num_steps, identical to the previous behaviour.
                              #     Measured net negative on all four ladder models (block
                              #     boundaries cost 6.7-9.0 s, more than any warmup saving);
@@ -137,10 +113,21 @@ def chees_warmup_with_progress(
     stack_positions=False,    # True = also stack warmup positions (WP4's two-phase metric
                              #     refresh reads phase-A draws from them). Off by default:
                              #     the position stack is the warmup memory wall at C=1,024.
+    positions_last=None,       # with stack_positions: keep only the last k steps' positions (the
+                             #     refresh needs its pool, not the whole of phase A)
     t0=None,                   # initial trajectory length in time units (paper: pi/2);
                              #     None keeps the installed initialisation (step_size)
     single_step_iters=0,       # run L=1 for this many steps while the step size settles
 ):
+    """ChEES warmup, as host-driven chunks of ONE jitted program (`compiled.warmup_chunk`).
+
+    The warmup length is the host's loop bound, not a shape or a constant of any program, so a different
+    ``num_steps`` compiles nothing. Per-step keys are ``fold_in(rng_key, global_step_index)``; the Halton
+    jitter index runs in the carried state. Both are independent of ``num_steps`` and of the chunk size.
+
+    Returns ``(last_states, parameters), WarmupInfo``; ``WarmupInfo.info`` / ``.trace`` / ``.positions``
+    are NumPy stacks with one row per step run.
+    """
     # --- metric shape guard -------------------------------------------------
     # The metric is a flat kernel-order quantity: its dimension must equal the
     # number of unconstrained coordinates the chains carry. Ordering is another
@@ -163,152 +150,48 @@ def chees_warmup_with_progress(
     else:
         raise ValueError(f"inverse_mass_matrix must be 1-D or 2-D, got ndim={imm_arr.ndim}")
 
-    # --- Halton jitter (same idea as BJ’s ChEES) ---
-    def halton_u(i):
-        return dynamic_hmc.halton_sequence(
-            i, int(np.ceil(np.log2(num_steps + max_sampling_steps)))
-        )
-    def jitter_gn(i):
-        return halton_u(i) * jitter_amount + (1.0 - jitter_amount)
+    num_steps = int(num_steps)
+    ld = ld_fn if isinstance(ld_fn, _compiled.LogDensity) else _compiled.plain_log_density(ld_fn, tuple(positions))
 
-    # RNG arg increments each step
-    next_random_arg_fn = lambda i: i + 1
-    init_random_arg = 0
+    # Settings the chunk programs branch on (static for jit); everything else is an argument.
+    if optim is None:
+        optim = 0.05                       # the vendored adapter's own default learning rate
+    settings = dict(
+        optim=optim if hasattr(optim, "init") else float(optim),
+        target_accept=float(target_acceptance_rate), decay_rate=float(decay_rate),
+        jitter_amount=float(jitter_amount), max_leapfrog_steps=int(max_leapfrog_steps),
+        iterate=iterate, single_step_iters=int(single_step_iters))
 
-    def integration_steps_fn(random_generator_arg, trajectory_length_adjusted):
-        # ceil(jitter * L/eps); must accept kw name 'trajectory_length_adjusted'
-        return jnp.asarray(
-            jnp.ceil(jitter_gn(random_generator_arg) * trajectory_length_adjusted),
-            dtype=int,
-        )
+    # Start: HMC states for every chain, and the adapter's state. Step size and t0 are values.
+    eps0 = jnp.asarray(initial_step_size, dtype=jnp.result_type(initial_step_size))
+    t0_val = jnp.asarray(0.0 if t0 is None else t0, dtype=eps0.dtype)
+    init_states, adaptation_state = _compiled.warmup_init(
+        ld.fn, ld.names, ld.values, positions, eps0, t0_val, has_t0=t0 is not None, **settings)
 
-    # Dynamic-HMC step builder (same as BJ uses internally)
-    step_fn = dynamic_hmc.build_kernel(
-        next_random_arg_fn=next_random_arg_fn,
-        integration_steps_fn=integration_steps_fn,
-    )
-
-    # Low-level ChEES adapter (init, update). Vendored in pfcheeshmc/chees.py:
-    # iterate="ma" (default) is bit-for-bit the installed BlackJAX base();
-    # update additionally returns a scalar per-step trace (see WarmupInfo).
-    init_adapt, update_adapt = _chees_vendored.base(
-        jitter_gn, next_random_arg_fn, optim, target_acceptance_rate, decay_rate, max_leapfrog_steps,
-        iterate=iterate, t0=t0, single_step_iters=single_step_iters,
-    )
-
-    # Batch-initialize states for all chains
-    num_chains_local = next(iter(positions.values())).shape[0]
-    if isinstance(ld_fn, _compiled.LogDensity):
-        # Module-level program: static fn, dynamic values, so a second call compiles nothing.
-        init_states = _compiled.batch_init(
-            ld_fn.fn, ld_fn.names, ld_fn.values, positions, init_random_arg)
-    else:
-        batch_init = jax.jit(jax.vmap(lambda p: dynamic_hmc.init(p, ld_fn, init_random_arg)))
-        init_states = batch_init(positions)
-    adaptation_state = init_adapt(init_random_arg, initial_step_size)
-
-    # ChEES whitens its trajectory-length criterion by 1/sqrt(imm), so it needs
-    # the diagonal of the inverse mass matrix (variances). The HMC kernel itself
-    # still gets the full dense Pathfinder metric.
-    imm_diag = (
-        jnp.diag(inverse_mass_matrix)
-        if jnp.ndim(inverse_mass_matrix) == 2
-        else inverse_mass_matrix
-    )
+    def chunk_call(size, stack):
+        def call(carry, start, n):
+            return _compiled.warmup_chunk(
+                ld.fn, ld.names, ld.values, carry, imm_arr, rng_key, np.int32(start), np.int32(n),
+                chunk=size, stack_positions=stack, **settings)
+        return call
 
     # --- one progress bar, like your dynamic-HMC bar ------------------------
-    # With progressbar=False no host callback enters the jaxpr at all. That is not cosmetic:
-    # a scan containing jax.debug.callback cannot be written to JAX's on-disk compilation cache,
-    # so leaving the bar on costs every fresh process a full recompile of the warmup scan.
+    # The host updates it between chunks from the chunk's own outputs (divergences, the harmonic
+    # acceptance and the step size), so the bar costs the compiled programs nothing, and is not a
+    # reason for a second program: no host callback is traced into any of them.
     bar = tqdm(total=num_steps, desc="ChEES Adaptation", position=0, leave=True) if progressbar else None
-    _div_total = {"n": 0}  # host-side mutable counter
+    div_total = [0]
 
-    def _host_update(i, div_step, acc_mean, step_size_now):
-        _div_total["n"] += int(div_step)
-        bar.n = int(i) + 1
+    def tick(done, info, trace):
+        """``info`` / ``trace``: the chunk's real rows, on the host."""
+        if bar is None:
+            return
+        div_total[0] += int(np.sum(info.is_divergent))
+        bar.n = done
         bar.set_postfix_str(
-            f"Divergence: {_div_total['n']}, Acceptance rate: {float(acc_mean):.2f}, ε: {float(step_size_now):.3g}"
-        )
+            f"Divergence: {div_total[0]}, Acceptance rate: {float(trace.harmonic_acceptance[-1]):.2f}, "
+            f"ε: {float(trace.step_size[-1]):.3g}")
         bar.refresh()
-
-    # One ChEES step (vectorized over chains) with throttled host callback.
-    # `stack_positions` (a trace-time constant) selects the scan output: the stop-rule
-    # path needs the position window for block_max_rhat, the default path's consumers
-    # read nothing from it. Stacking the full HMCInfo either way was the warmup memory
-    # wall at large C (proposal.position/momentum/logdensity_grad duplicate the state).
-    def _step_body(carry, xs, stack_positions):
-        i, key = xs
-        states, astate = carry
-        keys = jax.random.split(key, num_chains_local)
-
-        _step = partial(
-            step_fn,
-            logdensity_fn=ld_fn,
-            step_size=astate.step_size,
-            inverse_mass_matrix=inverse_mass_matrix,
-            # BlackJAX >=1.7: the trajectory-length adjustment is unpacked into
-            # integration_steps_fn at call time, not passed as a named kwarg.
-            integration_steps_params=(astate.trajectory_length / astate.step_size,),
-        )
-        new_states, info = jax.vmap(_step)(keys, states)
-
-        # accept field name can be acceptance_probability or acceptance_rate depending on BJ version
-        acc_vals = getattr(info, "acceptance_probability", None)
-        if acc_vals is None:
-            acc_vals = info.acceptance_rate
-
-        # diagnostics for this iteration (across chains)
-        div_step  = jnp.sum(info.is_divergent)
-        acc_mean  = chees_harmonic_acceptance(acc_vals, info.is_divergent)
-
-        # Scan output projection: the only fields a downstream consumer reads. Everything else
-        # in HMCInfo (momentum, proposal.*) duplicates state leaves the scan does not need to
-        # keep, and was the warmup memory wall at large C (~14 GB at d=175, W=2,000, C=1,024).
-        proj = WarmupScanInfo(info.num_integration_steps, info.is_divergent, acc_vals)
-
-        # Update adaptation state (vendored adapter: state + scalar trace)
-        new_astate, trace = update_adapt(
-            astate,
-            info.proposal.position,
-            info.proposal.momentum,
-            states.position,
-            acc_vals,              # accepts vector of acceptances
-            info.is_divergent,
-            imm_diag,              # 1.7 requires the diagonal metric here
-        )
-
-        # JAX-safe throttling of host callback. Removed at trace time when the bar is off, so the
-        # compiled scan is cacheable and carries no callback overhead.
-        if progressbar:
-            should_cb = jnp.logical_or(((i + 1) % update_every) == 0,
-                                       (i + 1) == num_steps)
-
-            def do_cb(_):
-                jax.debug.callback(
-                    _host_update, i, div_step, acc_mean, new_astate.step_size, ordered=True
-                )
-                return ()
-            def dont_cb(_):  # no-op
-                return ()
-
-            lax.cond(should_cb, do_cb, dont_cb, operand=None)
-
-        if stack_positions:
-            return (new_states, new_astate), (new_states.position, proj, trace)   # carry, ys
-        return (new_states, new_astate), (proj, trace)                            # carry, ys
-
-    one_step_jit = jax.jit(lambda c, x: _step_body(c, x, False))          # default path
-    one_step_pos_jit = jax.jit(lambda c, x: _step_body(c, x, True))       # stop-rule path
-
-    def _scan_block(carry, start, n):
-        """Run n warmup steps whose *global* step indices start at `start`.
-
-        The Halton trajectory jitter and the progress bar are functions of the step index, so a
-        resumed block has to be told where it sits in the run. Restarting the index at 0 would make
-        every block replay the same jitter sequence.
-        """
-        ks = jax.random.split(jax.random.fold_in(rng_key, start), n)
-        return jax.lax.scan(one_step_pos_jit, carry, (jnp.arange(start, start + n), ks))
 
     def _stop_met(pos_win, info_win, astate):
         """Rank-normalised split-R-hat over a window, plus step-size quietness.
@@ -346,43 +229,58 @@ def chees_warmup_with_progress(
                   f"-> {'STOP' if met else 'continue'}", flush=True)
         return met, {"rhat": rhat, "accept": hm, "eps_gap": eps_gap}
 
-    if stop_rule or stack_positions:
-        # `stack_positions` is WP4's metric-refresh need, routed through the same blocked scan that
-        # already stacks positions. With no stop rule there is exactly one block of num_steps, so
-        # this costs one extra scan trace and no boundary overhead; positions stay None on the plain
-        # default path, which is what keeps WP5's C=1,024 memory win intact.
-        block = int(stop_rule.get("block", 250)) if stop_rule else num_steps
+    carry = (init_states, adaptation_state)
+    if stop_rule:
+        # The stop rule's blocks are chunks: the block length is a setting (static), so a rule compiles
+        # once, and the last, shorter block is the same program with a smaller active count. After a
+        # block the rule reads the position window and the adapter state, so this path is synchronous.
+        block = int(stop_rule.get("block", 250))
         # Default window = the whole block. A 50-draw window made split-R-hat read 1.04 on a unit
         # Normal no matter how long warmup ran; 250 draws per chain reads 1.003-1.010.
-        window = int(stop_rule.get("window", block)) if stop_rule else num_steps
-        carry = (init_states, adaptation_state)
+        window = int(stop_rule.get("window", block))
+        call = chunk_call(block, True)
         done = 0
         stopped_at = None
         while done < num_steps:
             n = min(block, num_steps - done)
             _t = time.perf_counter()
-            carry, (pos_blk, info_blk, trace_blk) = _scan_block(carry, done, n)
+            carry, (pos_blk, info_blk, trace_blk) = call(carry, done, n)
+            jax.block_until_ready(carry)
             _t_scan = time.perf_counter() - _t
             done += n
             if bar is not None:
-                bar.n = done
-                bar.refresh()
-            if stop_rule and done < num_steps and _stop_met(
+                tick(done, *[jax.tree_util.tree_map(lambda x: np.asarray(x)[:n], t)
+                             for t in (info_blk, trace_blk)])
+            if done < num_steps and _stop_met(
                     jax.tree_util.tree_map(lambda p: p[-window:], pos_blk), info_blk, carry[1])[0]:
                 stopped_at = done
-            if stop_rule and stop_rule.get("debug"):
+            if stop_rule.get("debug"):
                 print(f"    block {done:5d}: scan {_t_scan:6.2f} s", flush=True)
             if stopped_at is not None:
                 break
-        (last_states, last_adapt_state), (pos_hist, warm_info, trace_hist) = carry, (pos_blk, info_blk, trace_blk)
+        # The last block's stacks only, as before.
+        pos_hist, warm_info, trace_hist = jax.tree_util.tree_map(
+            lambda x: np.asarray(x)[:n], (pos_blk, info_blk, trace_blk))
     else:
-        # Default path: one scan, same key stream as before the stop rule existed.
-        # Positions are not stacked: nothing on this path reads them.
-        keys = jax.random.split(rng_key, num_steps)
-        (last_states, last_adapt_state), (warm_info, trace_hist) = jax.lax.scan(
-            one_step_jit, (init_states, adaptation_state), (jnp.arange(num_steps), keys))
-        pos_hist = None
+        # Default path: chunks of WARMUP_CHUNK steps. Positions are stacked only when asked (WP4's
+        # metric refresh); that stack is the memory wall at C=1,024, so the plain path never builds it.
+        rest = _compiled.HostStack(num_steps)
+        pos = _compiled.HostStack(num_steps, keep_last=positions_last) if stack_positions else None
+
+        def consume(start, n, out):
+            host = jax.tree_util.tree_map(np.asarray, out)
+            if stack_positions:
+                pos.add(start, n, host[0])
+                host = host[1:]
+            rest.add(start, n, host)
+            tick(start + n, *[jax.tree_util.tree_map(lambda x: x[:n], t) for t in host])
+
+        carry = _compiled.run_chunks(chunk_call(_compiled.WARMUP_CHUNK, bool(stack_positions)), carry,
+                                     num_steps, _compiled.WARMUP_CHUNK, consume)
+        warm_info, trace_hist = rest.result()
+        pos_hist = pos.result() if stack_positions else None
         stopped_at = None
+    last_states, last_adapt_state = carry
 
     if bar is not None:
         bar.close()
@@ -399,12 +297,16 @@ def chees_warmup_with_progress(
         "step_size": jnp.exp(last_adapt_state.log_step_size_moving_average),
         "frozen_step_size": jnp.exp(last_adapt_state.log_step_size_moving_average),
         "inverse_mass_matrix": inverse_mass_matrix,
-        "next_random_arg_fn": next_random_arg_fn,
-        "integration_steps_fn": lambda arg: integration_steps_fn(arg, traj_len_adj),
+        "next_random_arg_fn": _compiled._next_random_arg,
+        "integration_steps_fn": lambda arg: _compiled.integration_steps(arg, traj_len_adj, float(jitter_amount)),
         # Nominal leapfrog count L = T/eps before the Halton jitter, i.e. the
         # frozen trajectory length in integration steps. This is the quantity the
         # trajectory-growth literature quotes ("L 136 -> 27").
         "frozen_L_nominal": traj_len_adj,
+        # What the sampling stage's chunk program takes as arguments in place of the closure above:
+        # the trajectory-length adjustment (a value) and the jitter setting.
+        "traj_len_adj": traj_len_adj,
+        "jitter_amount": float(jitter_amount),
         # Number of warmup steps actually executed: equals num_steps unless a stop rule fired.
         "warmup_steps_used": int(stopped_at) if stopped_at else int(num_steps),
     }
@@ -415,5 +317,5 @@ def chees_warmup_with_progress(
     # design: nothing there reads it. WP4's two-phase metric refresh does need phase-A
     # positions, and sampler.py raises rather than sampling from a stale metric when they
     # are absent -- so the refresh runs only when positions are actually stacked
-    # (i.e. under a stop rule). See LEDGER 2026-10-20 "wp4 x wp5 interaction".
+    # (stack_positions=True, or under a stop rule). See LEDGER 2026-10-20 "wp4 x wp5 interaction".
     return (last_states, parameters), WarmupInfo(info=warm_info, trace=trace_hist, positions=pos_hist)

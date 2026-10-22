@@ -20,6 +20,7 @@ from .ensemble_metric import (
 )
 
 from typing import Tuple, Optional, Dict, Any, NamedTuple
+import numpy as np
 from datetime import date
 import io
 import json
@@ -30,31 +31,9 @@ import contextlib
 __all__ = ["sample_pf_chees_hmc"]
 
 
-class _SampledState(NamedTuple):
-    """The sampling scan's state output: only the leaves a consumer reads.
+# The sampling scan's per-draw projections are defined with the chunk program that returns them.
+_SampledState, _SampledInfo = compiled.SampledState, compiled.SampledInfo
 
-    `position` feeds the posterior, `logdensity` feeds sample_stats `lp`.
-    `momentum` / `logdensity_grad` are not needed after the step and used to be
-    stacked for every (draw, chain) anyway.
-    """
-
-    position: Any
-    logdensity: Any
-
-
-class _SampledInfo(NamedTuple):
-    """The sampling scan's info output: exactly the six sample_stats fields minus lp.
-
-    Field names match blackjax's HMCInfo so `_to_inference_data` reads them unchanged.
-    The dropped fields (momentum, proposal.*) duplicate the state leaves at ~2x their
-    volume -- the whole point of the projection.
-    """
-
-    is_divergent: Any
-    acceptance_rate: Any
-    is_accepted: Any
-    num_integration_steps: Any
-    energy: Any
 
 def default_pool_cap(chains, d):
     """Row count for the Pathfinder start/metric pool when the caller does not name one.
@@ -125,18 +104,21 @@ def _concat_warmup_info(a, b):
     downstream reader sees one warmup of length ``a_steps + b_steps``. ``positions`` is set to
     None: it is consumed only to build the refreshed estimator and is not read downstream, and
     keeping it would hold the (steps, C, ...) position stack for no reason.
+
+    The stacks are host (NumPy) arrays and are joined with NumPy: a device concatenate has a W-dependent
+    shape, which is one XLA compile per W.
     """
     from .utils import WarmupInfo
     ainfo = getattr(a, "info", a)
     binfo = getattr(b, "info", b)
     info = jax.tree_util.tree_map(
-        lambda x, y: jnp.concatenate([x, y], axis=0), ainfo, binfo)
+        lambda x, y: np.concatenate([np.asarray(x), np.asarray(y)], axis=0), ainfo, binfo)
     atr, btr = getattr(a, "trace", None), getattr(b, "trace", None)
     if atr is not None and btr is not None:
         # trace is a ChEESTrace named tuple (one (steps,) array per field), not a 2-D array,
-        # so concatenate field-wise through the pytree, not with a single jnp.concatenate.
+        # so concatenate field-wise through the pytree, not with a single concatenate.
         trace = jax.tree_util.tree_map(
-            lambda x, y: jnp.concatenate([x, y], axis=0), atr, btr)
+            lambda x, y: np.concatenate([np.asarray(x), np.asarray(y)], axis=0), atr, btr)
     else:
         trace = None
     return WarmupInfo(info=info, trace=trace, positions=None)
@@ -993,7 +975,9 @@ class PfCheesHMC:
         kwargs.setdefault("target_accept", bj.adaptation.chees_adaptation.OPTIMAL_TARGET_ACCEPTANCE_RATE)
         kwargs.setdefault("max_leapfrog_steps", 1000)
 
-        optim = optax.adam(learning_rate=kwargs["adam_lr"])
+        # The Adam learning rate, not an optax object: it is a static argument of the warmup program, and
+        # a fresh optax object would be a new value (hence a new program) on every call.
+        optim = float(kwargs["adam_lr"])
         refresh = kwargs.get("metric_refresh", "none")
         refreshing = refresh in _METRIC_REFRESH_NAMES
         # What this stage resolved, for idata.attrs["config"]. The three estimator defaults below
@@ -1085,6 +1069,10 @@ class PfCheesHMC:
         key_warm = jax.random.fold_in(jax.random.key(kwargs["seed"]), 1)
         keyA, keyB = jax.random.split(key_warm)
 
+        # Ensemble pool: the last `pool` phase-A steps, flattened in kernel order.
+        pool = int(kwargs.get("metric_refresh_pool", min(W_A, 20)))
+        pool = max(2, min(pool, W_A))
+
         # ---- Phase A: short fixed warmup on the Pathfinder metric, collect draws ----------
         (states_A, params_A), info_A = chees_warmup_with_progress(
             self._logdensity(), keyA, pf_samples, eps_A, optim, W_A, imm_A,
@@ -1092,14 +1080,14 @@ class PfCheesHMC:
             max_leapfrog_steps=kwargs["max_leapfrog_steps"],
             progressbar=False, stop_rule=None,
             stack_positions=True,      # phase A must keep its draws for the ensemble estimate
+            positions_last=pool,       # ... of which only the last `pool` steps are read
             iterate=kwargs.get("iterate", "ma"))
         pos_hist = getattr(info_A, "positions", None)
         if pos_hist is None:
             # Unreachable on the current routing: the phase-A call above passes stack_positions=True,
-            # which sends that one call through the blocked scan that stacks positions (f2055aa).
-            # Kept as a regression tripwire -- if the routing is ever changed back to the plain
-            # default path the refresh would silently build its ensemble from nothing, and a stale
-            # metric is worse than no refresh.
+            # which makes that one call stack its positions. Kept as a regression tripwire -- if the
+            # routing is ever changed back to the plain default path the refresh would silently build its
+            # ensemble from nothing, and a stale metric is worse than no refresh.
             raise RuntimeError(
                 "two-phase metric refresh asked for phase-A positions (stack_positions=True) and got "
                 "None. This is a routing regression in utils.chees_warmup_with_progress, not a "
@@ -1107,10 +1095,8 @@ class PfCheesHMC:
                 "purpose (that stack is WP5's C=1,024 memory win), and the refresh must not be "
                 "routed through it.")
 
-        # Ensemble pool: the last `pool` phase-A steps, flattened in kernel order.
-        pool = int(kwargs.get("metric_refresh_pool", min(W_A, 20)))
-        pool = max(2, min(pool, W_A))
-        pos_pool = {n: jnp.asarray(p)[-pool:] for n, p in pos_hist.items()}
+        # The pool is the stacked positions' last rows, already gathered on the host (NumPy).
+        pos_pool = {n: jnp.asarray(p) for n, p in pos_hist.items()}
         draws = positions_to_draws(pos_pool, pool)                       # (pool*C, d)
 
         # Gradients are needed only by the Fisher estimator; chunked so peak memory is O(chunk).
@@ -1206,6 +1192,13 @@ class PfCheesHMC:
             for i in range(0, N, chunk)], axis=0)
     
     def _run_dynamic_hmc(self, chees_states, chees_parameters, inverse_mass_matrix, **kwargs):
+        """Sample from the frozen kernel: host-driven chunks of ONE jitted program (`compiled.sampling_chunk`).
+
+        The number of draws is the host's loop bound, so a different D compiles nothing. The frozen step
+        size, metric and trajectory-length adjustment are arguments of the kernel call, and the per-step
+        key is ``fold_in(stage_key, draw_index)``. Returns the final state and the per-draw stacks as
+        NumPy arrays, ``(draws, chains, ...)``.
+        """
         # Defaults
         kwargs.setdefault("chains", 32)
         kwargs.setdefault("draws", 1000)
@@ -1213,170 +1206,48 @@ class PfCheesHMC:
 
         rng = jax.random.fold_in(jax.random.key(kwargs["seed"]), 2)  # 2 = sampling stage, see _run_chees
         num_chains = kwargs["chains"]
-        num_draws = kwargs["draws"]
+        num_draws = int(kwargs["draws"])
         self._resolved["sampling"] = {"seed": int(kwargs["seed"]), "chains": int(num_chains),
                                       "num_draws": int(num_draws)}
 
-        dyn = bj.mcmc.dynamic_hmc.as_top_level_api(
-            self._logdensity(),
-            step_size=chees_parameters["step_size"],
-            inverse_mass_matrix=inverse_mass_matrix,
-            next_random_arg_fn=chees_parameters["next_random_arg_fn"],
-            integration_steps_fn=chees_parameters["integration_steps_fn"],
-        )
-        kernel_step = dyn.step
+        ld = self._logdensity()
+        imm = jnp.asarray(inverse_mass_matrix)
+        step_size = jnp.asarray(chees_parameters["step_size"])
+        # The frozen nominal trajectory length L = T/eps (a value), and the jitter setting the warmup used.
+        traj_len_adj = jnp.asarray(chees_parameters.get("traj_len_adj", chees_parameters["frozen_L_nominal"]))
+        jitter_amount = float(chees_parameters.get("jitter_amount", 1.0))
+        rng, key_sample = jax.random.split(rng)
 
-        # vmapped step over chains
-        def _vmapped_step(state, keys):
-            return jax.vmap(kernel_step)(keys, state)
-
-        # ---------- discover real paths to fields (once, outside jit) ----------
-        # Only the structure and dtypes of the step's info are read, so trace the step abstractly:
-        # running one real step eagerly would compile its while/scan programs on every call.
-        probe_keys = jax.random.split(jax.random.fold_in(rng, 3), num_chains)
-        _, info_probe = jax.eval_shape(_vmapped_step, chees_states, probe_keys)
-
-        def _find_path(obj, want_bool=False, substr=""):
-            """Find a tuple of attribute names whose leaf matches dtype/name criteria."""
-            # namedtuple / dataclass-like
-            if hasattr(obj, "_fields"):
-                for name in obj._fields:
-                    child = getattr(obj, name)
-                    path = _find_path(child, want_bool, substr)
-                    if path is not None:
-                        return (name,) + path
-                    # direct leaf
-                    if hasattr(child, "dtype") and substr in name.lower():
-                        if want_bool and child.dtype == jnp.bool_:
-                            return (name,)
-                        if (not want_bool) and jnp.issubdtype(child.dtype, jnp.floating):
-                            return (name,)
-            # mapping
-            if isinstance(obj, dict):
-                for name, child in obj.items():
-                    path = _find_path(child, want_bool, substr)
-                    if path is not None:
-                        return (name,) + path
-                    if hasattr(child, "dtype") and substr in str(name).lower():
-                        if want_bool and child.dtype == jnp.bool_:
-                            return (name,)
-                        if (not want_bool) and jnp.issubdtype(child.dtype, jnp.floating):
-                            return (name,)
-            # list/tuple (use indices as names)
-            if isinstance(obj, (list, tuple)):
-                for i, child in enumerate(obj):
-                    path = _find_path(child, want_bool, substr)
-                    if path is not None:
-                        return (i,) + path
-                    if hasattr(child, "dtype") and substr in "":  # lists rarely carry names; skip
-                        pass
-            return None
-
-        path_div = _find_path(info_probe, want_bool=True, substr="diverg")
-        path_acc = _find_path(info_probe, want_bool=False, substr="accept")
-
-        def _getter(path):
-            if path is None:
-                return None
-            def g(x):
-                for p in path:
-                    x = x[p] if isinstance(p, int) else getattr(x, p)
-                return x
-            return g
-
-        get_div = _getter(path_div)   # -> (chains,) bool or (chains, ... bool ...)
-        get_acc = _getter(path_acc)   # -> (chains,) float or (chains, ...)
-
-        # ---------- progress bar and host aggregator ----------
-        update_every = 25
-        # Same reason as the warmup bar: with the bar off, no jax.debug.callback enters the jaxpr,
-        # the sampling scan becomes eligible for JAX's on-disk compilation cache, and the per-step
-        # host round-trip disappears.
+        # ---------- progress bar: updated by the host between chunks, from the chunk's own outputs ----------
         progressbar = bool(kwargs.get("progressbar", True))
         hmc_bar = (tqdm(total=num_draws, desc="Sampling Dynamic HMC", position=0, leave=True)
                    if progressbar else None)
-        _div_total = {"n": 0}
+        div_total = [0]
+        stack = compiled.HostStack(num_draws)
 
-        def _host_update(i, window_div_sum, acc_mean):
-            _div_total["n"] += int(window_div_sum)
-            hmc_bar.n = int(i) + 1
-            if jnp.isnan(acc_mean):
-                hmc_bar.set_postfix_str(f"Divergence: {_div_total['n']}")
-            else:
-                hmc_bar.set_postfix_str(f"Divergence: {_div_total['n']}, Acceptance Rate: {float(acc_mean):.3f}")
+        def consume(start, n, out):
+            host = jax.tree_util.tree_map(np.asarray, out)
+            stack.add(start, n, host)
+            if hmc_bar is None or n == 0:
+                return
+            info = host[1]
+            div_total[0] += int(np.sum(info.is_divergent[:n]))
+            hmc_bar.n = start + n
+            # Show the acceptance ChEES targeted, not the arithmetic mean of trajectories
+            # (see utils.chees_harmonic_acceptance), at the chunk's last draw.
+            acc_mean = compiled.chees_harmonic_acceptance_np(info.acceptance_rate[n - 1], info.is_divergent[n - 1])
+            hmc_bar.set_postfix_str(f"Divergence: {div_total[0]}, Acceptance Rate: {acc_mean:.3f}")
             hmc_bar.refresh()
 
-        vmapped_step_jit = jax.jit(_vmapped_step)
+        def call(state, start, n):
+            return compiled.sampling_chunk(
+                ld.fn, ld.names, ld.values, state, imm, step_size, traj_len_adj, key_sample,
+                np.int32(start), np.int32(n), chunk=compiled.SAMPLE_CHUNK, jitter_amount=jitter_amount)
 
-        def _one_step(carry, xs):
-            state, window_div = carry                      # window_div has a fixed dtype
-            i, key = xs
-            keys = jax.random.split(key, num_chains)
-            new_state, info = vmapped_step_jit(state, keys)
-
-            # --- divergence per step ---
-            if get_div is not None:
-                div_leaf = get_div(info)
-                if div_leaf.ndim > 1:
-                    div_vec = jnp.any(div_leaf, axis=tuple(range(1, div_leaf.ndim)))
-                else:
-                    div_vec = div_leaf
-                div_step = jnp.sum(div_vec.astype(jnp.int32))       # base int32
-            else:
-                div_step = jnp.asarray(0, dtype=jnp.int32)
-
-            # *** critical: match carry dtype ***
-            div_step = div_step.astype(window_div.dtype)
-            window_div = window_div + div_step
-
-            # --- acceptance (optional) ---
-            if get_acc is not None:
-                acc_leaf = get_acc(info)
-                if acc_leaf.ndim > 1:
-                    acc_leaf = jnp.mean(acc_leaf, axis=tuple(range(1, acc_leaf.ndim)))
-                # Show the acceptance ChEES targeted, not the arithmetic mean of trajectories
-                # (see utils.chees_harmonic_acceptance). Same number in both bars now.
-                div_mask = div_vec if get_div is not None else jnp.zeros(acc_leaf.shape, dtype=bool)
-                acc_mean = chees_harmonic_acceptance(acc_leaf, div_mask)
-            else:
-                acc_mean = jnp.asarray(jnp.nan, dtype=jnp.float32)
-
-            if progressbar:
-                should_cb = jnp.logical_or(((i + 1) % update_every) == 0,
-                                        (i + 1) == num_draws)
-
-                def do_cb(_):
-                    jax.debug.callback(_host_update, i, window_div, acc_mean, ordered=True)
-                    # *** reset to 0 with same dtype as carry ***
-                    return jnp.zeros((), dtype=window_div.dtype)
-
-                def dont_cb(_):
-                    # *** ensure dtype stays consistent in false branch too ***
-                    return window_div.astype(window_div.dtype)
-
-                window_div_next = lax.cond(should_cb, do_cb, dont_cb, operand=None)
-            else:
-                window_div_next = window_div.astype(window_div.dtype)
-            # Projection: keep only what _to_inference_data reads (position + logdensity for
-            # the posterior/lp, and the five sample_stats fields). momentum, proposal.position,
-            # proposal.momentum and proposal.logdensity_grad duplicate state leaves and are the
-            # bulk of the scan volume.
-            return (new_state, window_div_next), (
-                _SampledState(new_state.position, new_state.logdensity),
-                _SampledInfo(info.is_divergent, info.acceptance_rate, info.is_accepted,
-                             info.num_integration_steps, info.energy),
-            )
-
-        rng, key_sample = jax.random.split(rng)
-        step_keys = jax.random.split(key_sample, num_draws)
-
-        one_step_jit = jax.jit(_one_step)
-        (dhmc_state, _), (states_hist, infos_hist) = jax.lax.scan(
-            one_step_jit,
-            # *** choose a single dtype for the carry counter up front ***
-            (chees_states, jnp.zeros((), dtype=jnp.int32)),
-            (jnp.arange(num_draws), step_keys),
-        )
+        dhmc_state = compiled.run_chunks(call, chees_states, num_draws, compiled.SAMPLE_CHUNK, consume)
+        if hmc_bar is not None:
+            hmc_bar.close()
+        states_hist, infos_hist = stack.result()
         return dhmc_state, states_hist, infos_hist
 
 
@@ -1416,7 +1287,7 @@ class PfCheesHMC:
         # Mirror PyMC’s postprocessing: nested vmap over (chains, draws)
         # (optionally you could reproduce their device placement/chunking too)
         if postprocessing_chunks is None:
-            result = compiled.transform_draws(lg.fn, lg.values, raw_mcmc_samples)
+            result = self._transform_in_draw_chunks(lg, raw_mcmc_samples)
         else:
             from jax.experimental.maps import SerialLoop, xmap
             jax_fn = lambda *xs: lg.fn(xs, lg.values)
@@ -1433,6 +1304,42 @@ class PfCheesHMC:
         posterior = {v.name: arr for v, arr in zip(vars_to_sample, result)}
         return posterior
 
+
+    @staticmethod
+    def _transform_in_draw_chunks(lg, raw_mcmc_samples):
+        """``lg.fn`` over every (chain, draw), in chunks of ``compiled.TRANSFORM_CHUNK`` draws.
+
+        ``raw_mcmc_samples`` are host arrays ``(chains, draws, ...)``. The transform is one program for a
+        ``(chains, TRANSFORM_CHUNK)`` batch, with the last chunk padded (by repeating its final draw, so
+        the padding is a valid point of the model) and cut again on the host. D is only the number of
+        calls, so a different D compiles nothing. One chunk is kept in flight, as in the loops.
+        """
+        S = int(compiled.TRANSFORM_CHUNK)
+        D = int(raw_mcmc_samples[0].shape[1])
+        out = None
+
+        def pad(a, n):
+            return a if n == S else np.pad(a, [(0, 0), (0, S - n)] + [(0, 0)] * (a.ndim - 2), mode="edge")
+
+        def take(pending):
+            nonlocal out
+            lo, n, res = pending
+            res = [np.asarray(r) for r in res]
+            if out is None:
+                out = [np.empty((r.shape[0], D) + r.shape[2:], r.dtype) for r in res]
+            for o, r in zip(out, res):
+                o[:, lo:lo + n] = r[:, :n]
+
+        pending = None
+        for lo in range(0, D, S):
+            n = min(S, D - lo)
+            res = compiled.transform_draws(lg.fn, lg.values, [pad(a[:, lo:lo + n], n) for a in raw_mcmc_samples])
+            if pending is not None:
+                take(pending)
+            pending = (lo, n, res)
+        if pending is not None:
+            take(pending)
+        return out
 
     def _collect_raw_mcmc_samples(self, states_hist):
         """
@@ -1465,8 +1372,10 @@ class PfCheesHMC:
         # 3) Reorder leading axes to (chains, draws, ...)
         def to_chains_draws(a):
             # Our scan stacked over draws first, then we vmapped over chains,
-            # so leaves are typically (draws, chains, ...). Swap the first two axes.
-            return jnp.swapaxes(a, 0, 1) if a.ndim >= 2 else a
+            # so leaves are typically (draws, chains, ...). Swap the first two axes. On the host, in
+            # NumPy: a device swap has a D-dependent shape, which is one XLA compile per D.
+            a = np.asarray(a)
+            return np.swapaxes(a, 0, 1) if a.ndim >= 2 else a
 
         raw_mcmc_samples = [to_chains_draws(a) for a in arrs]
         return raw_mcmc_samples
@@ -1501,7 +1410,7 @@ class PfCheesHMC:
                 raise ValueError("draw_axis and chain_axis must be different.")
             rest = [ax for ax in range(na) if ax not in (ca, da)]
             perm = [ca, da] + rest
-            return np.asarray(jnp.transpose(x, perm))
+            return np.transpose(np.asarray(x), perm)
 
         # ---- 1) Posterior in PROBLEM space (and deterministics)
         posterior_ps = self._transform_value_samples_to_problem_space(

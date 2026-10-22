@@ -48,7 +48,7 @@ from pfcheeshmc.sampler import PfCheesHMC, sample_pf_chees_hmc
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 C, W, D = 16, 20, 10
-LOOPS = 2            # warmup scan + sampling scan: what a second call still compiles until F2b-2
+LOOPS = 0            # a second call compiles nothing: the loops are module-level chunk programs (F2b-2)
 LOOP_NAME = "jit(scan)"
 SITES = ("pathfinder", "eps0", "usable_mask", "pool_gradients", "batch_init", "transform")
 
