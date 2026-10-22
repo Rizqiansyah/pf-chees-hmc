@@ -403,6 +403,15 @@ def test_rule_can_be_chosen_and_unknown_rules_are_rejected():
         lift_graph(m, list(m.value_vars), [m.logp()], rule="everything")
 
 
+def test_graph_with_a_shared_rng_is_refused_like_pymc_does():
+    with pm.Model() as m:
+        pm.Normal("x", 0.0, 1.0)
+    draw = pt.random.normal(0.0, 1.0)                  # reads a shared RandomType variable
+    with pytest.warns(RuntimeWarning, match="RandomType"):
+        with pytest.raises(ValueError, match="shared RandomType variables"):
+            lift_graph(m, [], [draw])
+
+
 def test_last_rule_failure_is_not_swallowed(monkeypatch):
     def failing(*a, **k):
         raise ValueError("last")

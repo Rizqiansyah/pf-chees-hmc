@@ -248,6 +248,9 @@ def _build(model, inputs, outputs, rule: str):
         return (lambda xs, values: jitted(*xs)), (), []
 
     fg = FunctionGraph(outputs=outputs, clone=False)
+    if any(isinstance(i, SharedVariable) and isinstance(i.type, RandomType) for i in fg.inputs):
+        # Same refusal as pymc.sampling.jax._replace_shared_variables.
+        raise ValueError("Graph contains shared RandomType variables which cannot be safely replaced")
     lifted, kept, kept_static = [], [], []
     for var in _candidates(model, fg, outputs, rule):
         bad = _first_bad_client(fg, var)
