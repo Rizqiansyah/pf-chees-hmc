@@ -51,3 +51,4 @@
   mutation M11 reproduces the wrong answer.
 - 2026-10-23 04:01 — F2b-1 merged (ed67175). Lead suite:
   `315 passed, 13 warnings in 393.53s (0:06:33)`. SUMMARY is in `results/f2/F2b-1/`.
+- 2026-10-23 04:05 — F2b-2 task launched (checkout `~/pf/f2-b2` from c35fbba). Design: host-driven chunks with a dynamic count; per-step `fold_in` keys (stream change); no `jax.debug.callback`; per-step outputs gathered to NumPy; Halton fixed at 30 bits.
