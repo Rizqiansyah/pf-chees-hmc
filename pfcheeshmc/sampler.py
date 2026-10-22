@@ -196,11 +196,13 @@ class PfCheesHMC:
         """Re-read the lifted values, so a ``pm.set_data`` since the last call is seen.
 
         Shapes and dtypes are part of the program, so if a shared variable was set to another shape the
-        log-density is lifted again (a new structure, hence a new key).
+        log-density is lifted again (a new structure, hence a new key). So it is when a shared variable
+        that is baked into the program as a constant (kept static: a ``pm.Data`` that is a basic index,
+        a shape, ...) has another value: ``fn`` would silently go on computing with the old one.
         """
         lg = self._lifted
         values = lg.current_values()
-        if any(v.shape != o.shape or v.dtype != o.dtype for v, o in zip(values, lg.values)):
+        if lg.is_stale() or any(v.shape != o.shape or v.dtype != o.dtype for v, o in zip(values, lg.values)):
             self._lifted = lg = lift_logp(self.model)
             values = lg.values
         self._values = values

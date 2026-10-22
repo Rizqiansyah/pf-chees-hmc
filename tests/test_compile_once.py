@@ -292,6 +292,61 @@ def test_set_data_to_another_shape_lifts_again():
     assert float(s.ld_fn(pos)) == pytest.approx(expect, rel=1e-12)
 
 
+def _static_index_model(idx=2):
+    """A ``pm.Data`` integer that is a basic index: ``Subtensor`` needs it at trace time, so it is baked in."""
+    with pm.Model() as m:
+        i = pm.Data("idx", np.array(idx, dtype="int64"))
+        theta = pm.Normal("theta", 0.0, 1.0, shape=5)
+        pm.Deterministic("sel", theta[i])
+        pm.Normal("obs", theta[i], 1.0, observed=10.0)
+    return m
+
+
+def test_a_shared_variable_baked_into_the_program_is_never_silently_stale():
+    m = _static_index_model(2)
+    s = PfCheesHMC(m, seed=0)
+    first = s._lifted
+    assert any("Subtensor" in client or "ScalarFromTensor" in client for client, _, _ in first.kept_static), \
+        f"the index must stay static for this test to mean anything: {first.kept_static}"
+    assert [v.name for v, _ in first.static_shared] == ["idx"] and not first.is_stale()
+    pos = {"theta": jnp.arange(5.0)}
+    before = float(s.ld_fn(pos))
+    with m:
+        pm.set_data({"idx": np.array(3, dtype="int64")})
+    assert first.is_stale()                                  # `values` cannot see it: nothing lifted changed
+    s._refresh_values()
+    fresh = PfCheesHMC(_static_index_model(3), seed=0)
+    assert not s._lifted.is_stale() and s._lifted.key != first.key
+    assert float(s.ld_fn(pos)) == pytest.approx(float(fresh.ld_fn(pos)), rel=1e-12)
+    assert float(s._logdensity()(pos)) == pytest.approx(float(fresh.ld_fn(pos)), rel=1e-12)
+    assert float(s.ld_fn(pos)) != before
+    with m:
+        pm.set_data({"idx": np.array(2, dtype="int64")})     # and back: the registry entry is found again
+    s._refresh_values()
+    assert s._lifted.fn is first.fn and float(s.ld_fn(pos)) == pytest.approx(before, rel=1e-12)
+
+
+def test_sample_after_set_data_of_a_static_shared_variable_uses_the_new_value():
+    m = _static_index_model(2)
+    s = PfCheesHMC(m, seed=1)
+
+    def run():
+        return s.sample(chains=8, draws=20, chees_kwargs={"draws": 40, "progressbar": False},
+                        dynamic_hmc_kwargs={"progressbar": False}, pathfinder_kwargs={},
+                        step_size_tune_kwargs={})
+
+    # obs = 10 with prior N(0, 1): the indexed coordinate has posterior N(5, 0.7), the others N(0, 1)
+    mean = lambda idata, k: float(idata.posterior["theta"].values[..., k].mean())
+    a = run()
+    assert mean(a, 2) > 3.0 and mean(a, 3) < 1.5
+    with m:
+        pm.set_data({"idx": np.array(3, dtype="int64")})
+    b = run()                                               # the same sampler instance
+    assert mean(b, 3) > 3.0 and mean(b, 2) < 1.5, (mean(b, 2), mean(b, 3))
+    # the value -> problem-space transform is lifted afresh each call, so the Deterministic follows too
+    np.testing.assert_array_equal(b.posterior["sel"].values, b.posterior["theta"].values[..., 3])
+
+
 def test_a_replaced_ld_fn_is_honoured_by_the_compiled_sites_and_is_one_static_argument():
     s = PfCheesHMC(hier(1, 1), seed=0)
     default_mask = s._usable_mask({n: jnp.zeros((4,) + np.shape(v)) for n, v in

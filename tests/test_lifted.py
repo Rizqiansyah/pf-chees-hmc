@@ -124,7 +124,7 @@ def _hlo(model):
     """Lowered text of the lifted logp of a FRESH build (bypassing the registry, which would hand two
     builds the same function object and make an equality test vacuous)."""
     inputs, outputs = list(model.value_vars), [model.logp()]
-    fn, values, _, _ = lifted._build(model, inputs, outputs, "model_inputs")
+    fn, values, *_ = lifted._build(model, inputs, outputs, "model_inputs")
     structs = tuple(jax.ShapeDtypeStruct(v.shape, v.dtype) for v in values)
     return jax.jit(lambda x, v: fn(x, v)).lower(lifted._abstract(model, inputs), structs).as_text()
 
