@@ -112,7 +112,7 @@ def block_max_rhat(pos_window):
 
 
 def chees_warmup_with_progress(
-    ld_fn,                      # logdensity function
+    ld_fn,                      # logdensity function, or a compiled.LogDensity (carries fn/names/values)
     rng_key,
     positions,                 # dict {"mu": (C,), "tau_log__": (C,), "theta": (C,J)}
     initial_step_size,

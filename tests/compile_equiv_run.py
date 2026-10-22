@@ -1,10 +1,11 @@
 """One sampler run for the F2b-1 equivalence test, in a fresh process, against any source tree.
 
-    python compile_equiv_run.py TREE MODEL OUT.npz [--chains C] [--warmup W] [--draws D] [--x64]
+    python compile_equiv_run.py TREE MODEL OUT.npz [--chains C] [--warmup W] [--draws D] [--seed S]
 
 TREE is a source tree that provides `pfcheeshmc/` and `tools/` (the checkout, or a `git archive` of an
 earlier commit). Writes the unconstrained draws, the sample statistics and `idata.attrs["config"]`.
-It must not import anything that exists only in the newer tree.
+It must not import anything that exists only in the newer tree. Everything runs in float64: PyTensor's
+JAX dispatch switches `jax_enable_x64` on at import (its floatX default is float64).
 """
 import argparse
 import json
@@ -21,17 +22,12 @@ ap.add_argument("--chains", type=int, default=8)
 ap.add_argument("--warmup", type=int, default=20)
 ap.add_argument("--draws", type=int, default=10)
 ap.add_argument("--seed", type=int, default=3)
-ap.add_argument("--x64", action="store_true")
 ap.add_argument("--chees", default="{}", help="extra chees_kwargs, JSON")
 ap.add_argument("--pathfinder", default="{}", help="pathfinder_kwargs, JSON")
 args = ap.parse_args()
 
 sys.path.insert(0, os.path.join(args.tree, "tools"))
 sys.path.insert(0, args.tree)
-
-import jax  # noqa: E402
-
-jax.config.update("jax_enable_x64", args.x64)
 
 import numpy as np  # noqa: E402
 import r1_bias  # noqa: E402

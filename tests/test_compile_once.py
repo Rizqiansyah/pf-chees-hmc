@@ -343,7 +343,7 @@ def _run_in_tree(tree, model, out, extra):
     env = dict(os.environ, PYTHONPATH=str(tree), CUDA_VISIBLE_DEVICES="", JAX_PLATFORMS="cpu",
                OMP_NUM_THREADS="2", PYTENSOR_FLAGS="blas__ldflags=-llapack -lblas -lcblas -lm")
     cmd = [sys.executable, str(pathlib.Path(__file__).with_name("compile_equiv_run.py")),
-           str(tree), model, str(out), "--x64", *extra]
+           str(tree), model, str(out), *extra]
     done = subprocess.run(cmd, env=env, capture_output=True, text=True)
     assert done.returncode == 0, done.stderr[-2000:]
     return np.load(out)
