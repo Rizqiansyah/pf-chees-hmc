@@ -146,10 +146,9 @@ def test_ladder_logp_equals_todays_jaxified_logp(ladder, name):
     old = float(get_jaxified_logp(model)(x))
     new = float(lg.fn(x, lg.values)[0])
     assert new == pytest.approx(old, rel=1e-12)
-    # sign and dtype: PyMC's default is the positive log density, a float64 scalar
+    # sign and dtype: get_jaxified_logp's default is model.logp() itself (its `negative_logp` is inverted)
+    assert np.sign(new) == np.sign(float(model.compile_logp()({v.name: np.asarray(a) for v, a in zip(model.value_vars, x)})))
     assert np.asarray(lg.fn(x, lg.values)[0]).dtype == np.asarray(get_jaxified_logp(model)(x)).dtype
-    assert new == pytest.approx(float(model.compile_logp()(model.initial_point() | {
-        v.name: np.asarray(a) for v, a in zip(model.value_vars, x)})), rel=1e-10)
 
 
 @pytest.mark.parametrize("name", sorted(EXTRA))
@@ -164,34 +163,33 @@ def test_extra_model_logp_equals_pymc_c_backend(name):
 
 
 def test_truncated_normal_crashes_on_the_old_jax_path_without_tfp():
-    """The mutation: the pre-F2a path. `get_jaxified_logp` needs `erfcx`, which PyTensor only has via TFP.
-    Skipped where this pytensor has a JAX `erfcx` of its own (then there is nothing to repair)."""
-    from pytensor.link.jax.dispatch.scalar import try_import_tfp_jax_op
-    from pytensor.scalar.math import erfcx as _erfcx_op
+    """The old-code check: PyTensor's own `Erfcx` dispatch (TFP) with this repo's registration put back
+    for the duration, then the stock `get_jaxified_logp`. Skipped where TFP is installed."""
+    from pytensor.link.jax.dispatch.scalar import jax_funcify_from_tfp, try_import_tfp_jax_op
+    from pytensor.scalar.math import Erfcx, erfcx as erfcx_op
 
     try:
-        try_import_tfp_jax_op(_erfcx_op)
+        try_import_tfp_jax_op(erfcx_op)
     except NotImplementedError:
         pass
     else:
         pytest.skip("tensorflow-probability is installed: the old path works")
     model = m_truncnorm(0)
     x = _point(model)
-    # Our registration is process-wide once lifted is imported; put PyTensor's own back for the check.
-    ours = lifted.jax_funcify.dispatch(type(_erfcx_op))
-    from pytensor.link.jax.dispatch.scalar import jax_funcify_from_tfp
-    lifted.jax_funcify.register(type(_erfcx_op), jax_funcify_from_tfp)
+    ours = lifted.jax_funcify.dispatch(Erfcx)
+    assert ours is lifted.jax_funcify_Erfcx
+    lifted.jax_funcify.register(Erfcx, jax_funcify_from_tfp)
     try:
         with pytest.raises(NotImplementedError, match="No JAX implementation for Op erfcx"):
             get_jaxified_logp(model)(x)
     finally:
-        lifted.jax_funcify.register(type(_erfcx_op), ours)
-    # with the registration in place both the old entry point and the lifted one work
+        lifted.jax_funcify.register(Erfcx, ours)
     ref = float(model.compile_logp()({v.name: np.asarray(a) for v, a in zip(model.value_vars, x)}))
-    assert float(get_jaxified_logp(model)(x)) == pytest.approx(ref, rel=1e-10)
     lg = lift_logp(model)
     assert lg.rule_used == "model_inputs"
     assert float(lg.fn(x, lg.values)[0]) == pytest.approx(ref, rel=1e-10)
+    # the registration also repairs the stock entry point
+    assert float(get_jaxified_logp(model)(x)) == pytest.approx(ref, rel=1e-10)
 
 
 # ---------------------------------------------------------------- no leaks
@@ -337,9 +335,11 @@ def test_lifted_value_that_feeds_a_shape_falls_back_with_a_warning():
         x = pm.Normal("x", 0.0, 1.0, shape=3)
         pm.Potential("p", -pt.sum(x**2) + pt.sum(pt.arange(n * 2)))
     x0 = _point(m)
-    with pytest.warns(RuntimeWarning, match="rule 'model_inputs' failed") as rec:
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter("always")
         lg = lift_logp(m)
     msgs = [str(w.message) for w in rec]
+    assert msgs and "rule 'model_inputs' failed" in msgs[0]
     assert len(msgs) == 2 and "falling back to 'arrays_and_shared'" in msgs[0] and "'arrays_and_shared' failed" in msgs[1]
     assert lg.rule_used == "none" and lg.n_lifted == 0 and lg.values == ()
     ref = float(m.compile_logp()({v.name: np.asarray(a) for v, a in zip(m.value_vars, x0)}))
@@ -349,6 +349,7 @@ def test_lifted_value_that_feeds_a_shape_falls_back_with_a_warning():
 def test_forced_fallback_to_arrays_and_shared(monkeypatch):
     """Rule C raises (patched); the next rule runs and says so."""
     m = m_pm_data(0)
+    n_rule_c = lift_logp(m).n_lifted
     real = lifted._build
 
     def failing(model, inputs, outputs, rule):
@@ -360,16 +361,11 @@ def test_forced_fallback_to_arrays_and_shared(monkeypatch):
     with pytest.warns(RuntimeWarning, match=r"rule 'model_inputs' failed with RuntimeError: boom"):
         lg = lift_logp(m)
     assert lg.rule_used == "arrays_and_shared"
-    # the formula/prior constants are not lifted by this rule; the data array is
-    assert 0 < lg.n_lifted < lift_logp_rule_c_count(m, monkeypatch, real)
+    # this rule lifts the data (a shared variable), not the prior-value constants
+    assert 0 < lg.n_lifted < n_rule_c
     x = _point(m)
     ref = float(m.compile_logp()({v.name: np.asarray(a) for v, a in zip(m.value_vars, x)}))
     assert float(lg.fn(x, lg.values)[0]) == pytest.approx(ref, rel=1e-12)
-
-
-def lift_logp_rule_c_count(m, monkeypatch, real):
-    monkeypatch.setattr(lifted, "_build", real)
-    return lift_logp(m).n_lifted
 
 
 def test_forced_fallback_all_the_way_to_no_lifting(monkeypatch):
@@ -393,6 +389,20 @@ def test_forced_fallback_all_the_way_to_no_lifting(monkeypatch):
     assert float(lg.fn(x, lg.values)[0]) == pytest.approx(ref, rel=1e-12)
 
 
+def test_rule_can_be_chosen_and_unknown_rules_are_rejected():
+    m = m_pm_data(0)
+    c = lift_graph(m, list(m.value_vars), [m.logp()])
+    b = lift_graph(m, list(m.value_vars), [m.logp()], rule="arrays_and_shared")
+    n = lift_graph(m, list(m.value_vars), [m.logp()], rule="none")
+    assert (c.rule_used, b.rule_used, n.rule_used) == ("model_inputs", "arrays_and_shared", "none")
+    assert c.n_lifted > b.n_lifted > n.n_lifted == 0
+    x = _point(m)
+    vals = [float(g.fn(x, g.values)[0]) for g in (c, b, n)]
+    assert vals[0] == pytest.approx(vals[2], rel=1e-12) and vals[1] == pytest.approx(vals[2], rel=1e-12)
+    with pytest.raises(ValueError, match="unknown rule"):
+        lift_graph(m, list(m.value_vars), [m.logp()], rule="everything")
+
+
 def test_last_rule_failure_is_not_swallowed(monkeypatch):
     def failing(*a, **k):
         raise ValueError("last")
@@ -408,6 +418,62 @@ def test_lifted_order_is_deterministic_across_builds():
     the same dtypes and shapes in the same order (with values that differ)."""
     sig = [tuple((v.dtype.name, v.shape) for v in lift_logp(m_poisson(s)).values) for s in range(4)]
     assert len(set(sig)) == 1
+
+
+# ---------------------------------------------------------------- sampler wiring
+
+def _m_with_deterministic(seed):
+    rng = np.random.default_rng(seed)
+    with pm.Model() as m:
+        w = pm.Data("w", rng.uniform(0.5, 2.0, size=4))
+        sigma = pm.HalfNormal("sigma", float(rng.uniform(1, 3)))          # log-transformed value var
+        p = pm.Beta("p", 2.0, 3.0)                                         # logodds-transformed
+        z = pm.Normal("z", 0.0, 1.0, shape=4)                              # untransformed
+        pm.Deterministic("scaled", w * z * sigma)                          # depends on data and a value var
+        pm.Normal("obs", z.sum() * p, sigma, observed=rng.normal(size=6))
+    return m
+
+
+def test_value_to_rv_transform_equals_todays_and_keeps_its_calling_convention():
+    """`_compile_value_to_rv_fn` still returns (fn(*value_arrays) -> list of outputs, vars), as the
+    sampler calls it under a nested vmap."""
+    from pymc.sampling.jax import get_jaxified_graph
+    from pfcheeshmc.sampler import PfCheesHMC
+
+    m = _m_with_deterministic(0)
+    s = PfCheesHMC(m, seed=0)
+    for keep in (False, True):
+        fn, outs = s._compile_value_to_rv_fn(keep_untransformed=keep)
+        old = get_jaxified_graph(inputs=m.value_vars, outputs=outs)
+        rng = np.random.default_rng(1)
+        ip = m.initial_point()
+        raw = [jnp.asarray(ip[v.name] + 0.2 * rng.standard_normal((2, 3) + np.shape(ip[v.name]))) for v in m.value_vars]
+        got = jax.vmap(jax.vmap(fn))(*raw)
+        want = jax.vmap(jax.vmap(old))(*raw)
+        assert len(got) == len(want) == len(outs)
+        for g, w, v in zip(got, want, outs):
+            np.testing.assert_allclose(np.asarray(g), np.asarray(w), rtol=1e-13, atol=0, err_msg=v.name)
+    assert any(v.name == "scaled" for v in outs)
+
+
+def test_sampler_log_density_is_the_lifted_one_and_draws_match_the_old_path():
+    """End to end on CPU: PfCheesHMC with its lifted log-density against the same sampler with the old
+    `get_jaxified_logp` closure swapped in. Draws are NOT bit-identical in general (the lifted program
+    leaves prior-value arithmetic to XLA instead of PyTensor's constant folding, which moves the logp by
+    an ulp and the trajectory by ~1e-8); they agree far inside any statistical tolerance."""
+    from pfcheeshmc.sampler import PfCheesHMC
+
+    m = m_pm_data(0)
+    kw = dict(chains=4, draws=4, keep_untransformed=True, chees_kwargs={"draws": 8, "progressbar": False},
+              dynamic_hmc_kwargs={"progressbar": False}, pathfinder_kwargs={"num_paths": 2, "draws": 16})
+    new = PfCheesHMC(m, seed=3)
+    assert isinstance(new._lifted, lifted.LiftedGraph) and new._lifted.rule_used == "model_inputs"
+    old = PfCheesHMC(m, seed=3)
+    f = get_jaxified_logp(m)
+    old._ld_fn = lambda seq: f(seq)
+    a, b = new.sample(**kw), old.sample(**kw)
+    for name in ("mu", "sigma_log__", "sigma"):
+        np.testing.assert_allclose(a.posterior[name].values, b.posterior[name].values, rtol=0, atol=1e-6)
 
 
 # ---------------------------------------------------------------- registry

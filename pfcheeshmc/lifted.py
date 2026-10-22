@@ -24,6 +24,7 @@ Importing this module also registers JAX's own ``erfcx`` for PyTensor's ``Erfcx`
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import warnings
 from dataclasses import dataclass
@@ -63,12 +64,18 @@ __all__ = ["LiftedGraph", "lift_graph", "lift_logp"]
 # [erfcinv(finfo.tiny), sqrt(log(finfo.max))]:
 #     float64  26.5432584 .. 26.6417476      float32  9.19455 .. 9.41928
 # (measured against `scipy.special.erfcx` on a 1e-5 grid; erfcx there is about 0.0212 and 0.0553).
+# Repro (jax 0.11.2, x64): `jax.lax.erfc(jnp.float64(26.6))` is 0.0 (SciPy: 1.09e-309), so
+# `jax.scipy.special.erfcx(jnp.float64(26.6))` is 0.0 (SciPy: 0.021195).
 # TODO: remove `_erfcx_guarded` and register `jax.scipy.special.erfcx` directly once JAX fixes this.
-# Bug report draft: results/f2/F2a/SUMMARY.md ("JAX bug report").
 
+@functools.cache
 def _band(dtype) -> tuple[float, float]:
-    """The (low, high) edges of the band where `jax.scipy.special.erfcx` returns 0, with a margin."""
-    fi = np.finfo(np.float64 if jnp.dtype(dtype) == jnp.float64 else np.float32)
+    """The (low, high) edges of the band where `jax.scipy.special.erfcx` returns 0, with a margin.
+
+    The edges are widened by 0.1% each side; the series is accurate far beyond them. Float16 and
+    bfloat16 are upcast to float32 inside JAX's erfcx, so they share the float32 band.
+    """
+    fi = np.finfo(np.float64 if np.dtype(dtype) == np.float64 else np.float32)
     lo = float(sps.erfcinv(fi.tiny))
     hi = float(np.sqrt(np.log(fi.max)))
     return lo * (1.0 - 1e-3), hi * (1.0 + 1e-3)
@@ -101,7 +108,7 @@ def _erfcx_guarded(x):
     x = jnp.asarray(x)
     if not jnp.issubdtype(x.dtype, jnp.inexact):
         x = x.astype(jnp.result_type(float))
-    lo, hi = _band(x.dtype)
+    lo, hi = _band(np.dtype(x.dtype))
     in_band = (x >= lo) & (x <= hi)
     x_jax = jnp.where(in_band, jnp.zeros_like(x), x)
     x_series = jnp.where(in_band, x, jnp.full_like(x, 0.5 * (lo + hi)))
@@ -276,6 +283,8 @@ def lift_graph(model, inputs, outputs, rule: str = "model_inputs") -> LiftedGrap
     names the rule and the exception and the next rule is tried; the last rule ("none", today's
     constants) lets its exception through.
     """
+    if rule not in RULES:
+        raise ValueError(f"unknown rule {rule!r}; expected one of {RULES}")
     inputs, outputs = list(inputs), list(outputs)
     chain = RULES[RULES.index(rule):]
     for i, name in enumerate(chain):
