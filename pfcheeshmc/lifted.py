@@ -407,10 +407,15 @@ def _struct(array):
 
 def _key(fn, input_specs, values) -> str:
     # `as_text()` omits source locations by default, so two builds of one model lower to equal text.
+    # `keep_unused`: the arguments a function does not read are still part of its calling convention. By
+    # default JAX drops them from the lowered module, so the identity transform of a model (one input, no
+    # value) and the initial point of a model with an array prior (no input, the prior as its one used
+    # value, next to others it does not read) lowered to the same text, hence the same key, and the registry
+    # handed one the other's function, which takes another number of arguments.
     def lifted(inputs, values):
         return fn(inputs, values)
 
-    text = jax.jit(lifted).lower(input_specs, tuple(_struct(v) for v in values)).as_text()
+    text = jax.jit(lifted, keep_unused=True).lower(input_specs, tuple(_struct(v) for v in values)).as_text()
     return hashlib.sha256(text.encode()).hexdigest()
 
 

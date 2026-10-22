@@ -293,6 +293,23 @@ def test_the_pytensor_counter_sees_the_fallback_it_is_meant_to_catch():
     assert pf.count >= 2, str(pf)
 
 
+def test_the_registry_never_hands_a_graph_the_function_of_another_with_other_arguments():
+    """The initial point of `Normal(array, array)` is its array prior, `main(mu) -> mu`; the transform of the same
+    model is the identity, `main(theta) -> theta`. With the unused arguments dropped from the lowered text the two
+    had one key, the registry gave the transform the initial point's function (which takes the prior values as
+    well), and the first `transform_draws` raised `TypeError: ... missing 1 required positional argument`."""
+    with pm.Model() as m:
+        theta = pm.Normal("theta", np.linspace(-1, 1, 10), np.linspace(0.5, 2, 10), shape=10)
+        pm.Normal("y", theta, np.linspace(1, 0.4, 10), observed=np.linspace(1, -1, 10))
+    init = lift_initial_point(m)
+    s = PfCheesHMC(m, seed=1)
+    transform, _ = s._lift_value_to_rv()
+    assert init.n_lifted > 0 and transform.n_lifted == 0 and init.key != transform.key
+    x = np.linspace(0, 1, 10)
+    assert np.array_equal(np.asarray(transform.fn((x,), transform.values)[0]), x)
+    assert np.array_equal(np.asarray(init.fn((), init.values)[0]), np.linspace(-1, 1, 10))
+
+
 def test_the_lifted_initial_point_is_one_function_for_one_structure():
     a, b, c = lift_initial_point(hier(1, 1)), lift_initial_point(hier(2, 3)), lift_initial_point(m_data())
     assert a.key == b.key and a.fn is b.fn and a.key != c.key
