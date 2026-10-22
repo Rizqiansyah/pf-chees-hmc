@@ -92,6 +92,15 @@ def resolve_pool_cap(pf_pool_cap, chains, d, imm_source="mc"):
     return cap
 
 
+def start_score_stride(total, chains):
+    """Stride of the scored subset of a ``total``-row Pathfinder pool: at most START_SCORE_PER_CHAIN * chains rows.
+
+    1 (the whole pool is scored) whenever ``total <= START_SCORE_PER_CHAIN * chains``, which includes the default
+    pool, ``max(4C, 4d^2)`` rows, for d <= sqrt(C). Rounded up, so ``ceil(total / stride)`` never exceeds the cap.
+    """
+    return max(-(-int(total) // (START_SCORE_PER_CHAIN * max(int(chains), 1))), 1)
+
+
 def _stratified_pool_idx(logp_subset, subset_idx, n_pick):
     """Equally spaced ranks by log-density, chosen from a scored subset of the draw pool.
 
@@ -758,8 +767,8 @@ class PfCheesHMC:
                 # default pool is max(4C, 4d^2) rows (122,500 evaluations at d=175, 1,000,000 at d=500).
                 # With a pool of at most 4C rows the stride is 1 and the whole pool is scored, chunked to
                 # keep the vmapped log-density activation at O(score_chunk) rows (a single 65,536-row vmap
-                # was the second R1 OOM, ~500 MiB at d=25). The stride rounds up, so the cap holds.
-                stride = max(-(-total // (START_SCORE_PER_CHAIN * max(chains, 1))), 1)
+                # was the second R1 OOM, ~500 MiB at d=25).
+                stride = start_score_stride(total, chains)
                 subset_idx = jnp.arange(0, total, stride)
                 def _score_pool(idx):
                     return compiled.score_pool(ld.fn, ld.names, ld.values, samples_flat, idx)
