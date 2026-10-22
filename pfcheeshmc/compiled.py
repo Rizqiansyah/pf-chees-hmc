@@ -14,33 +14,62 @@ instead one module-level function with
 so JAX's own jit cache does all the caching, and a second call with a new seed, new data or new prior
 values at the same shapes compiles nothing.
 
-`LogDensity` bundles the three pieces a site needs, and is itself the plain ``position -> scalar``
-callable the two loops still take (they close over ``values`` for now).
+`LogDensity` bundles the three pieces a site needs, and is also the plain ``position -> scalar`` callable.
+
+The two loops are programs of the same kind (`warmup_chunk`, `sampling_chunk`): one jitted *chunk* of
+``chunk`` steps, with a dynamic active count ``n``, that the host calls ``ceil(total / chunk)`` times
+(`run_chunks`). So the warmup length W and the number of draws D are loop bounds on the host, never
+shapes or constants of a program. Step ``j`` of a chunk is skipped (`lax.cond` on a scalar, outside the
+per-chain vmap: no model evaluation) when ``j >= n``, and the per-step key is
+``fold_in(stage_key, global_step_index)``, which does not depend on W, D or the chunk size.
 """
 from __future__ import annotations
 
+import functools
 from functools import partial
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 import blackjax as bj
 import jax
 import jax.numpy as jnp
+import numpy as np
+import optax
+from jax import lax
 from jax.flatten_util import ravel_pytree
 
 import blackjax.mcmc.dynamic_hmc as dynamic_hmc
 
+from . import chees as _chees_vendored
+
 __all__ = [
+    "HALTON_BITS",
     "LogDensity",
+    "HostStack",
+    "SAMPLE_CHUNK",
+    "SampledInfo",
+    "SampledState",
+    "TRANSFORM_CHUNK",
+    "WARMUP_CHUNK",
+    "WarmupScanInfo",
     "batch_init",
+    "chees_harmonic_acceptance",
+    "chees_harmonic_acceptance_np",
     "feasible_mask",
+    "halton_jitter",
+    "integration_steps",
     "pathfinder_draw",
     "pathfinder_fit",
+    "plain_log_density",
     "pool_gradients",
+    "run_chunks",
+    "sampling_chunk",
     "score_pool",
     "score_positions",
     "search_step_size",
     "transform_draws",
     "usable_mask",
+    "warmup_chunk",
+    "warmup_init",
 ]
 
 
@@ -186,3 +215,332 @@ def batch_init(fn, names, values, positions, random_generator_arg):
 def transform_draws(fn, values, raw):
     """``fn(value_arrays, values)`` over every (chain, draw): ``raw`` is a list of ``(C, D, ...)`` arrays."""
     return jax.vmap(jax.vmap(lambda *xs: fn(xs, values)))(*raw)
+
+
+# --------------------------------------------------------------------------------------------------
+# the two loops: one jitted chunk program each, driven from the host
+# --------------------------------------------------------------------------------------------------
+# Halton bit depth of the trajectory jitter. It used to be ceil(log2(W + 1000)), which made W a constant
+# of the warmup program. 30 gives the same value whenever i + 1 < 2**bits, and the old depth was always
+# above that for the steps a run takes; blackjax's `halton_sequence` needs max_bits below the integer
+# width (32 for int32, when x64 is off).
+HALTON_BITS = 30
+
+# Steps per chunk. A chunk program has a static length, so these are the loop bounds a run can change
+# for free: any W (D) is `ceil(W / WARMUP_CHUNK)` calls of ONE program, the last with a smaller active
+# count. They are read at call time (tests set them small to exercise the multi-chunk path).
+#
+# Why 50 (`tools/chunk_overhead.py`, CPU, 8 Schools, W=200, D=500): a chunk costs the host a dispatch and
+# the copy of its outputs, about 0.05-0.2 ms with one chunk kept in flight (0.3 ms without), whatever the
+# chunk length. At C=32, the cheapest realistic case (0.25 ms per step), a chunk of 50 steps is 12 ms of
+# compute, so the overhead is under 1.5%; at C=1,024 (8 ms per step) it is under 0.1%, and chunk lengths
+# from 5 to 500 are indistinguishable. Longer chunks buy nothing and cost more: the last chunk is padded
+# (its skipped rows are written as zeros and copied back), which is 50 rows of waste at most, and a chunk
+# is also the unit of progress-bar granularity.
+WARMUP_CHUNK = 50
+SAMPLE_CHUNK = 50
+TRANSFORM_CHUNK = 50        # draws per call of `transform_draws` (the last call is padded)
+
+
+class WarmupScanInfo(NamedTuple):
+    """The only per-step fields of the warmup scan that a consumer reads.
+
+    num_integration_steps -- exact gradient counts (A8: sum of steps, never an estimate)
+    is_divergent          -- divergence counters and the harmonic-acceptance mask
+    acceptance_rate       -- the ChEES step-size signal (harmonic mean over chains)
+    """
+
+    num_integration_steps: Any
+    is_divergent: Any
+    acceptance_rate: Any
+
+
+class SampledState(NamedTuple):
+    """The sampling scan's state output: only the leaves a consumer reads.
+
+    `position` feeds the posterior, `logdensity` feeds sample_stats `lp`.
+    `momentum` / `logdensity_grad` are not needed after the step and used to be
+    stacked for every (draw, chain) anyway.
+    """
+
+    position: Any
+    logdensity: Any
+
+
+class SampledInfo(NamedTuple):
+    """The sampling scan's info output: exactly the six sample_stats fields minus lp.
+
+    Field names match blackjax's HMCInfo so `_to_inference_data` reads them unchanged.
+    The dropped fields (momentum, proposal.*) duplicate the state leaves at ~2x their
+    volume -- the whole point of the projection.
+    """
+
+    is_divergent: Any
+    acceptance_rate: Any
+    is_accepted: Any
+    num_integration_steps: Any
+    energy: Any
+
+
+def chees_harmonic_acceptance(acc_vals, is_divergent):
+    """The acceptance ChEES actually adapts on: harmonic mean over the non-divergent chains.
+
+    Mirrors `blackjax.adaptation.chees_adaptation` (harmonic_mean, :358-363), including the
+    non-finite -> 0 guard. The arithmetic mean of per-trajectory acceptances is systematically
+    higher than this (Jensen), so displaying it hides exactly the heterogeneity the step-size
+    adaptation reacts to -- it already caused a wrong diagnosis in this project.
+    """
+    hm = 1.0 / jnp.mean(1.0 / acc_vals, where=~is_divergent)
+    return jnp.where(jnp.isfinite(hm), hm, 0.0)
+
+
+def chees_harmonic_acceptance_np(acc_vals, is_divergent) -> float:
+    """`chees_harmonic_acceptance` on the host (NumPy): what the progress bars read between chunks."""
+    acc, ok = np.asarray(acc_vals, dtype=np.float64), ~np.asarray(is_divergent, dtype=bool)
+    if not ok.any():
+        return 0.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        hm = 1.0 / np.mean(1.0 / acc[ok])
+    return float(hm) if np.isfinite(hm) else 0.0
+
+
+def _next_random_arg(i):
+    return i + 1
+
+
+def halton_jitter(i, jitter_amount):
+    """The trajectory-length jitter in (0, 1] for step index ``i`` (blackjax's Halton sequence)."""
+    return dynamic_hmc.halton_sequence(i, HALTON_BITS) * jitter_amount + (1.0 - jitter_amount)
+
+
+def integration_steps(random_generator_arg, trajectory_length_adjusted, jitter_amount=1.0):
+    """``ceil(jitter * L)`` leapfrog steps, ``L = T / eps`` the nominal count (the kernel's step-count rule)."""
+    return jnp.asarray(
+        jnp.ceil(halton_jitter(random_generator_arg, jitter_amount) * trajectory_length_adjusted),
+        dtype=int)
+
+
+_ADAPTER = ("optim", "target_accept", "decay_rate", "jitter_amount", "max_leapfrog_steps", "iterate",
+            "single_step_iters")
+
+
+def _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, iterate,
+             single_step_iters, t0=None):
+    """The vendored ChEES adapter ``(init, update)``. ``optim`` is an Adam learning rate (a stable static
+    argument: an optax object is a new value on every call) or an optax transformation."""
+    if not hasattr(optim, "init"):
+        optim = optax.adam(optim)
+    return _chees_vendored.base(
+        lambda i: halton_jitter(i, jitter_amount), _next_random_arg, optim, target_accept, decay_rate,
+        max_leapfrog_steps, iterate=iterate, t0=t0, single_step_iters=single_step_iters)
+
+
+def _strong(tree):
+    """Leaves as arrays of a definite dtype (no weak type): a carry that goes into a jitted chunk and
+    comes back out must have one abstract type, or the second chunk would be a second program."""
+    return jax.tree_util.tree_map(lambda x: jnp.asarray(x, dtype=jnp.result_type(x)), tree)
+
+
+def _like(new, old):
+    """``new`` with the dtypes of ``old``, leaf by leaf (the carry of a chunk keeps its type)."""
+    return jax.tree_util.tree_map(lambda a, b: jnp.asarray(a).astype(jnp.asarray(b).dtype), new, old)
+
+
+def _num_chains(tree) -> int:
+    return int(jax.tree_util.tree_leaves(tree)[0].shape[0])
+
+
+def _chunk_scan(step, carry, start, n, chunk):
+    """``chunk`` steps of ``step(carry, global_index) -> (carry, outputs)``, the first ``n`` of them real.
+
+    The predicate is a scalar outside any vmap, so XLA runs a real conditional: a skipped step costs no
+    model evaluation, passes the carry through, and writes zeros to the (host-discarded) outputs.
+    """
+    spec = jax.eval_shape(lambda c: step(c, start)[1], carry)
+    zeros = jax.tree_util.tree_map(lambda s: jnp.zeros(s.shape, s.dtype), spec)
+
+    def body(c, j):
+        return lax.cond(j < n, lambda c: step(c, start + j), lambda c: (c, zeros), c)
+
+    return lax.scan(body, carry, jnp.arange(chunk, dtype=jnp.int32))
+
+
+@partial(jax.jit, static_argnames=_STATIC + _ADAPTER + ("has_t0",))
+def warmup_init(fn, names, values, positions, initial_step_size, t0, *, optim, target_accept, decay_rate,
+                jitter_amount, max_leapfrog_steps, iterate, single_step_iters, has_t0):
+    """The warmup's start: HMC states for a dict of ``(chains, ...)`` positions, and the adapter's state.
+
+    ``initial_step_size`` and ``t0`` are values (dynamic); whether there is a ``t0`` is a setting.
+    """
+    ld = _logdensity(fn, names, values)
+    init_adapt, _ = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, iterate,
+                             single_step_iters, t0=t0 if has_t0 else None)
+    states = jax.vmap(lambda p: dynamic_hmc.init(p, ld, 0))(positions)
+    return _strong(states), _strong(init_adapt(0, initial_step_size))
+
+
+@partial(jax.jit, static_argnames=_STATIC + _ADAPTER + ("chunk", "stack_positions"))
+def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *, chunk, stack_positions,
+                 optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, iterate,
+                 single_step_iters):
+    """``chunk`` ChEES warmup steps (the first ``n`` real) from ``carry = (HMC states, adapter state)``.
+
+    Step ``j`` is global step ``start + j``: its key is ``fold_in(key, start + j)`` and its Halton jitter
+    index is the one carried in the state, so a run split into chunks of any size is the same run.
+    Returns ``(carry, ys)``, ``ys`` the per-step stack (``chunk`` rows; rows ``>= n`` are zeros):
+    ``(WarmupScanInfo, ChEESTrace)``, preceded by the positions when ``stack_positions`` (the stop rule
+    and the two-phase refresh read them; stacking them is the memory wall at C=1,024).
+    """
+    ld = _logdensity(fn, names, values)
+    _, update_adapt = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, iterate,
+                               single_step_iters)
+    kernel = dynamic_hmc.build_kernel(
+        next_random_arg_fn=_next_random_arg,
+        integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount))
+    imm = jnp.asarray(inverse_mass_matrix)
+    # ChEES whitens its trajectory-length criterion by 1/sqrt(imm), so it needs the diagonal of the
+    # inverse mass matrix (variances). The HMC kernel itself still gets the full dense metric.
+    imm_diag = jnp.diag(imm) if imm.ndim == 2 else imm
+    num_chains = _num_chains(carry[0].position)
+
+    def step(c, i):
+        states, astate = c
+        keys = jax.random.split(jax.random.fold_in(key, i), num_chains)
+        _step = partial(
+            kernel,
+            logdensity_fn=ld,
+            step_size=astate.step_size,
+            inverse_mass_matrix=imm,
+            # BlackJAX >=1.7: the trajectory-length adjustment is unpacked into
+            # integration_steps_fn at call time, not passed as a named kwarg.
+            integration_steps_params=(astate.trajectory_length / astate.step_size,),
+        )
+        new_states, info = jax.vmap(_step)(keys, states)
+
+        # accept field name can be acceptance_probability or acceptance_rate depending on BJ version
+        acc_vals = getattr(info, "acceptance_probability", None)
+        if acc_vals is None:
+            acc_vals = info.acceptance_rate
+
+        # Scan output projection: the only fields a downstream consumer reads. Everything else
+        # in HMCInfo (momentum, proposal.*) duplicates state leaves the scan does not need to
+        # keep, and was the warmup memory wall at large C (~14 GB at d=175, W=2,000, C=1,024).
+        proj = WarmupScanInfo(info.num_integration_steps, info.is_divergent, acc_vals)
+
+        # Update adaptation state (vendored adapter: state + scalar trace)
+        new_astate, trace = update_adapt(
+            astate,
+            info.proposal.position,
+            info.proposal.momentum,
+            states.position,
+            acc_vals,              # accepts vector of acceptances
+            info.is_divergent,
+            imm_diag,              # 1.7 requires the diagonal metric here
+        )
+        new_c = _like((new_states, new_astate), c)
+        if stack_positions:
+            return new_c, (new_states.position, proj, trace)
+        return new_c, (proj, trace)
+
+    return _chunk_scan(step, carry, start, n, chunk)
+
+
+@partial(jax.jit, static_argnames=_STATIC + ("chunk", "jitter_amount"))
+def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, traj_len_adj, key, start, n, *,
+                   chunk, jitter_amount):
+    """``chunk`` dynamic-HMC draws (the first ``n`` real) from ``state`` (a batch of `DynamicHMCState`).
+
+    The frozen step size, metric and trajectory-length adjustment are arguments of the kernel call, as
+    BlackJAX's dynamic kernel takes them (`blackjax/mcmc/dynamic_hmc.py:101-111`). Returns
+    ``(state, (SampledState, SampledInfo))``, the second the per-draw stack (rows ``>= n`` are zeros).
+    """
+    ld = _logdensity(fn, names, values)
+    kernel = dynamic_hmc.build_kernel(
+        next_random_arg_fn=_next_random_arg,
+        integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount))
+    imm = jnp.asarray(inverse_mass_matrix)
+    num_chains = _num_chains(state.position)
+
+    def step(s, i):
+        keys = jax.random.split(jax.random.fold_in(key, i), num_chains)
+        _step = partial(kernel, logdensity_fn=ld, step_size=step_size, inverse_mass_matrix=imm,
+                        integration_steps_params=(traj_len_adj,))
+        new_state, info = jax.vmap(_step)(keys, s)
+        # Projection: keep only what _to_inference_data reads (position + logdensity for the
+        # posterior/lp, and the five sample_stats fields). momentum, proposal.position,
+        # proposal.momentum and proposal.logdensity_grad duplicate state leaves and are the
+        # bulk of the scan volume.
+        return _like(new_state, s), (
+            SampledState(new_state.position, new_state.logdensity),
+            SampledInfo(info.is_divergent, info.acceptance_rate, info.is_accepted,
+                        info.num_integration_steps, info.energy))
+
+    return _chunk_scan(step, state, start, n, chunk)
+
+
+@functools.lru_cache(maxsize=64)
+def _plain_fn(ld_fn, names):
+    return lambda seq, values: [ld_fn(dict(zip(names, seq)))]
+
+
+def plain_log_density(ld_fn: Callable, names) -> LogDensity:
+    """A `LogDensity` for a plain ``position -> scalar`` callable, compiled in as a constant (as before).
+
+    The wrapper is cached per callable, so the same callable is one static argument for jit, not a new
+    program per call.
+    """
+    names = tuple(names)
+    try:
+        fn = _plain_fn(ld_fn, names)
+    except TypeError:                                   # an unhashable callable: one program per call
+        fn = lambda seq, values: [ld_fn(dict(zip(names, seq)))]       # noqa: E731
+    return LogDensity(fn, names, ())
+
+
+class HostStack:
+    """Per-step outputs of the chunks, gathered on the host (NumPy) into arrays of ``total`` rows.
+
+    A chunk returns ``chunk`` rows of which ``n`` are real. The rows are cut with NumPy slicing: a device
+    slice with a W- or D-dependent bound is one XLA compile per bound. ``keep_last=k`` keeps only the last
+    ``k`` steps (the refresh needs the last few positions, not all of them).
+    """
+
+    def __init__(self, total: int, keep_last: int | None = None):
+        self.total = int(total)
+        self.lo = 0 if keep_last is None else max(0, self.total - int(keep_last))
+        self._buf = None
+        self._treedef = None
+
+    def add(self, start: int, n: int, out) -> None:
+        leaves, treedef = jax.tree_util.tree_flatten(out)
+        host = [np.asarray(x) for x in leaves]
+        if self._buf is None:
+            self._treedef = treedef
+            self._buf = [np.empty((self.total - self.lo,) + x.shape[1:], x.dtype) for x in host]
+        a, b = max(start, self.lo), start + n
+        if b > a:
+            for buf, x in zip(self._buf, host):
+                buf[a - self.lo:b - self.lo] = x[a - start:b - start]
+
+    def result(self):
+        return jax.tree_util.tree_unflatten(self._treedef, self._buf)
+
+
+def run_chunks(call: Callable, carry, total: int, size: int, consume: Callable):
+    """Drive ``total`` steps as chunks of ``size``: ``call(carry, start, n) -> (carry, outputs)``.
+
+    ``consume(start, n, outputs)`` is handed each chunk's (device) outputs. One chunk is kept in flight:
+    chunk k+1 is dispatched (its carry is chunk k's device output, so there is nothing to wait for)
+    BEFORE chunk k's outputs are converted to NumPy, so the host transfer and the progress bar overlap
+    the next chunk's compute. Returns the final carry. ``total == 0`` runs one empty chunk, so the
+    output shapes are still known.
+    """
+    pending = None
+    for start in range(0, total, size) if total > 0 else (0,):
+        n = min(size, total - start)
+        carry, out = call(carry, start, n)
+        if pending is not None:
+            consume(*pending)
+        pending = (start, n, out)
+    consume(*pending)
+    return carry
