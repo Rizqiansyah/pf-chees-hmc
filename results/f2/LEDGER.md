@@ -52,3 +52,21 @@
 - 2026-10-23 04:01 — F2b-1 merged (ed67175). Lead suite:
   `315 passed, 13 warnings in 393.53s (0:06:33)`. SUMMARY is in `results/f2/F2b-1/`.
 - 2026-10-23 04:05 — F2b-2 task launched (checkout `~/pf/f2-b2` from c35fbba). Design: host-driven chunks with a dynamic count; per-step `fold_in` keys (stream change); no `jax.debug.callback`; per-step outputs gathered to NumPy; Halton fixed at 30 bits.
+- 2026-10-23 — F2b-2 (fast-tier; interrupted 04:30–08:40, then resumed).
+  - Loops run as host-driven chunk programs: dynamic count, no callbacks, `fold_in` keys.
+  - Under the default PRNG config `fold_in(key, i) == split(key, N)[i]`, so the default path's key
+    stream is unchanged. The stop-rule and refresh streams changed.
+  - A warm call compiles 0 programs, also on W and D changes. CPU warm wall:
+    - 8schools 4.39→0.99 s;
+    - gev 4.59→2.56 s;
+    - logit 5.21→3.72 s;
+    - radon 7.05→5.00 s.
+  - Pre-existing defect noted (not F2 scope): with a multi-block stop rule, `WarmupInfo` holds only
+    the last block, so gradient counts under-count.
+- 2026-10-23 09:23 — F2b-2 merged (a417002). Lead suite:
+  `361 passed, 41 warnings in 447.73s (0:07:27)`. SUMMARY is in `results/f2/F2b-2/`.
+- 2026-10-23 — `lift_logp` breakdown (CPU, `scratchpad/f2/lift_cost.py`): 0.13–0.45 s per call.
+  - `model.logp()`: 0.02–0.30 s.
+  - The JAX rewrite: 0.07–0.26 s.
+  - The rest: widening and the key lowering.
+  - A later memo (per model object, or a pre-rewrite signature) could save most of this.
