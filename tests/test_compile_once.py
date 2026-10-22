@@ -326,6 +326,23 @@ def test_a_shared_variable_baked_into_the_program_is_never_silently_stale():
     assert s._lifted.fn is first.fn and float(s.ld_fn(pos)) == pytest.approx(before, rel=1e-12)
 
 
+def test_is_stale_covers_exactly_what_is_baked_in():
+    from pfcheeshmc.lifted import lift_graph
+
+    m = hier(1, 1)
+    lifted_rule = lift_logp(m)                               # `se` is lifted: set_data is seen as a new value
+    baked = lift_graph(m, list(m.value_vars), [m.logp()], rule="none")    # today's behaviour: all baked in
+    assert lifted_rule.static_shared == () and [v.name for v, _ in baked.static_shared] == ["se"]
+    assert not lifted_rule.is_stale() and not baked.is_stale()
+    with m:
+        pm.set_data({"se": np.linspace(9.0, 16.0, 8)})
+    assert not lifted_rule.is_stale() and baked.is_stale()
+    assert any(not np.array_equal(a, b) for a, b in zip(lifted_rule.current_values(), lifted_rule.values))
+    with m:
+        pm.set_data({"se": baked.static_shared[0][1]})        # back to the baked-in value
+    assert not baked.is_stale()
+
+
 def test_sample_after_set_data_of_a_static_shared_variable_uses_the_new_value():
     m = _static_index_model(2)
     s = PfCheesHMC(m, seed=1)
