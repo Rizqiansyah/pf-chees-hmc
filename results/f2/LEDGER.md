@@ -85,3 +85,23 @@
     dispatches), warmup 0.46, sampling 0.23, transform 0.18, rest 0.31 s.
   - XLA:GPU's per-step `cond` shows no visible cost (8schools warmup takes 0.06 s).
 - 2026-10-23 09:35 — F2c+F2d task launched (`~/pf/f2-cd` from cdc4a55): JAX initial points (no `pm.init_nuts`/NUTS compile), start-scoring cap at 4C rows, one vmapped ε0 dispatch with a fixed probe mask, and 0 PyTensor compiles on a warm call.
+- 2026-10-23 — F2c+F2d (fast-tier). Merged with `--no-ff` (head e3694cd). Task suite:
+  `413 passed, 51 warnings in 494.93s`. SUMMARY is in `results/f2/F2cd/`.
+  - JAX initial points via PyMC's `make_initial_point_expression`, lifted. This replaces
+    `pm.init_nuts`, which built and discarded a NUTS step.
+  - A warm call makes 0 PyTensor compiles (was 3) and 0 XLA compiles.
+  - Start scoring capped at 4C rows. Radon scoring went from 122,500 to 4,084 rows; its dispersion
+    is unchanged.
+  - One vmapped ε0 dispatch, bit-identical.
+  - Draws are bit-identical to cdc4a55 on 8schools, gev and logit.
+  - CPU warm wall: 8schools 0.99→0.53 s, gev 2.62→1.47 s, logit 3.70→3.29 s.
+  - **Latent F2a bug fixed by the task:** `_key` lowered without `keep_unused`, so graphs differing
+    only in unused arguments shared a key and a registry `fn`. With equal arity that could have
+    produced silent wrong results.
+  - Pre-existing, not fixed: `1 < pm_chains < chains` raises a broadcast `ValueError` in
+    `_run_pathfinder`.
+- 2026-10-23 — Paused at the owner's request (system maintenance) after the F2c+F2d merge.
+  - Next is F2e: an opt-in on-disk cache, plus a lift memo. The memo is a pre-rewrite structural hash,
+    verified with `equal_computations` before reuse.
+  - Then F2f: GPU measurement of main vs f2 at the M4 shapes, the R1 bias gate, and CPU NUTS first
+    calls.
