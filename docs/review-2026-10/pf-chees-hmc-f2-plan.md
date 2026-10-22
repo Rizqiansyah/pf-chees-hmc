@@ -108,10 +108,29 @@ tuned to the benchmark models.
   - the helpers at `:458`, `:928`, `:1174` and `utils.py:200`;
   - the Pathfinder fit and draws, `:640` and `:662`;
   - the value→RV transform.
-- **Two tasks:**
-  - **F2b-1:** values as arguments plus the cache, with loop lengths still static. Done when a second
-    call with a new seed, data or priors compiles nothing.
-  - **F2b-2:** loop lengths (F2-3) and Pathfinder. W and D change nothing compiled.
+- **Mechanism.** Jitted functions are defined once at module level, with two kinds of arguments:
+  - **static:** the lifted `fn` (from F2a's registry, so an equal key gives the same object) and the
+    settings;
+  - **dynamic:** everything per-run.
+
+  JAX's own jit cache then does the caching. No hand-written cache dict, and no closures rebuilt per
+  call.
+- **Two tasks (re-split 2026-10-23):**
+  - **F2b-1: infrastructure plus every non-loop site.**
+    - Sites: the helpers, the ε search, the Pathfinder fit, draws and scoring, and the value→RV
+      transform.
+    - Adds a compile-counting test helper (`jax.monitoring` backend-compile events).
+    - Done when a second call with a new seed, data or priors compiles nothing outside the warmup
+      and sampling loops.
+  - **F2b-2: the warmup and sampling loops, plus F2-3.**
+    - The loops run as host-driven chunks of jitted steps with dynamic trip counts.
+    - The progress bar is updated from Python between chunks, so `jax.debug.callback` leaves the
+      compiled programs. Today a cached program would call the first call's bar, and a callback blocks
+      JAX's on-disk cache (F2e).
+    - Draws go into a buffer of static size `min(D, 1000)`, filled with a dynamic count. One program
+      serves every D at or above the cap; the remainder needs no extra program.
+    - Also covers the two-phase refresh (fixed 20-step position buffer) and the stop-rule path.
+    - Done when W and D change nothing compiled.
 - **Tests:**
   - zero XLA backend compiles on a second call with a new seed, new data or new priors (same shapes),
     a larger W, or a larger D. Count them with `jax.monitoring` compile events, not log handlers;
@@ -217,6 +236,6 @@ PyTensor's stability and specialisation rewrites. Those constants never change b
   - sums (gradients, divergences), which become running sums;
   - the refresh's last `min(W_A, 20)` positions, which become a fixed 20-step buffer.
 - The stop-rule path already runs in blocks; its block length stays static.
-- **Draws: compiled per distinct D up to a cap of 1,000.** Longer chains run as repeated cap-size calls
-  plus one remainder program. For example, D=10 compiles once; D=5,000 reuses the 1,000-draw program.
-  The cap only bounds per-call device memory.
+- **Draws: one program per distinct `min(D, 1000)`.** The buffer has that static size and is filled
+  with a dynamic count, so D=10 compiles once, and D=2,500 and D=5,000 both reuse the 1,000-draw
+  program with no remainder program (refined 2026-10-23). The cap only bounds per-call device memory.

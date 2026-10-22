@@ -17,3 +17,25 @@
 - 2026-10-22 — F2b is split into F2b-1 (values as arguments, plus the cache) and F2b-2 (loop
   lengths, plus Pathfinder). The value→RV transform is added to F2a/F2b. The F2f baseline is
   deferred to run back to back with the after-F2 measurement.
+- 2026-10-22/23 — F2a, round 1 (fast-tier task). Rule C is implemented in `pfcheeshmc/lifted.py`.
+  Accepted:
+  - `Shape`/`Shape_i`/`Output` added as value uses (otherwise `pm.Data` leaks);
+  - a wider erfcx band with a 9-term series;
+  - draws not bit-identical (ulp-level, from prior arithmetic moving out of constant folding).
+
+  Open issue raised: a lifted prior's dtype depends on the literal's value (PyTensor autocast), so
+  the key changes with the value.
+- 2026-10-23 — Lead probes (`scratchpad/f2/widen_probe2.py`, `uniform_overflow.py`).
+  - `clone_replace(rebuild_strict=False)` can widen literals; `graph_replace` cannot.
+  - Found: `pm.Uniform("u", -100, 100)` has logp NaN in PyMC 5.28.5 on both backends (int8
+    overflow).
+- 2026-10-23 — F2a, round 2. Widening is now rule "model_inputs", with fallback
+  "model_inputs_native_dtype". Folded one-element literals are matched by fingerprint. The Uniform
+  NaN is fixed on our path.
+- 2026-10-23 — F2a merged (ff, 14cd7cf). Task suite: `262 passed, 5 warnings in 380.69s (0:06:20)`.
+  SUMMARY is in `results/f2/F2a/`.
+- 2026-10-23 — F2b re-split.
+  - F2b-1 is the infrastructure (module-level jit with a static lifted `fn`) plus the non-loop sites.
+  - F2b-2 is the loops, as host-driven chunks with no `jax.debug.callback`: today a cached program
+    would call the first call's progress bar, and callbacks block the on-disk cache.
+  - Draw buffer sized `min(D, 1000)` with a dynamic fill count.
