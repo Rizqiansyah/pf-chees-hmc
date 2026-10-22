@@ -342,6 +342,9 @@ def _base_tree(tmp):
 def _run_in_tree(tree, model, out, extra):
     env = dict(os.environ, PYTHONPATH=str(tree), CUDA_VISIBLE_DEVICES="", JAX_PLATFORMS="cpu",
                OMP_NUM_THREADS="2", PYTENSOR_FLAGS="blas__ldflags=-llapack -lblas -lcblas -lm")
+    # The example notebooks the ladder models are built from set JAX_PLATFORM_NAME=gpu in os.environ
+    # when another test has executed one in this process; a CPU-only child must not inherit that.
+    env.pop("JAX_PLATFORM_NAME", None)
     cmd = [sys.executable, str(pathlib.Path(__file__).with_name("compile_equiv_run.py")),
            str(tree), model, str(out), *extra]
     done = subprocess.run(cmd, env=env, capture_output=True, text=True)
