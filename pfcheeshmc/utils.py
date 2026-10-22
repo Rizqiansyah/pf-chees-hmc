@@ -11,6 +11,7 @@ from tqdm.auto import tqdm
 import blackjax.mcmc.dynamic_hmc as dynamic_hmc
 
 from . import chees as _chees_vendored
+from . import compiled as _compiled
 
 
 class WarmupInfo(NamedTuple):
@@ -111,7 +112,7 @@ def block_max_rhat(pos_window):
 
 
 def chees_warmup_with_progress(
-    ld_fn,                      # logdensity function
+    ld_fn,                      # logdensity function, or a compiled.LogDensity (carries fn/names/values)
     rng_key,
     positions,                 # dict {"mu": (C,), "tau_log__": (C,), "theta": (C,J)}
     initial_step_size,
@@ -197,8 +198,13 @@ def chees_warmup_with_progress(
 
     # Batch-initialize states for all chains
     num_chains_local = next(iter(positions.values())).shape[0]
-    batch_init = jax.jit(jax.vmap(lambda p: dynamic_hmc.init(p, ld_fn, init_random_arg)))
-    init_states = batch_init(positions)
+    if isinstance(ld_fn, _compiled.LogDensity):
+        # Module-level program: static fn, dynamic values, so a second call compiles nothing.
+        init_states = _compiled.batch_init(
+            ld_fn.fn, ld_fn.names, ld_fn.values, positions, init_random_arg)
+    else:
+        batch_init = jax.jit(jax.vmap(lambda p: dynamic_hmc.init(p, ld_fn, init_random_arg)))
+        init_states = batch_init(positions)
     adaptation_state = init_adapt(init_random_arg, initial_step_size)
 
     # ChEES whitens its trajectory-length criterion by 1/sqrt(imm), so it needs

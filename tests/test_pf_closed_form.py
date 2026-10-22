@@ -42,6 +42,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
 import r1_bias as rb  # noqa: E402
 
 import pfcheeshmc.sampler as sampler_mod  # noqa: E402
+from pfcheeshmc import compiled  # noqa: E402
 from pfcheeshmc.sampler import PfCheesHMC, default_pool_cap, resolve_pool_cap  # noqa: E402
 
 # Shared with the run-1 G-ORDER file: the non-sorted-names fixtures and the mixing instrument.
@@ -65,18 +66,17 @@ def _fit(model_name):
     model = rb.build_model(model_name)
     s = PfCheesHMC(model, seed=1)
     box = {}
-    real = bj.vi.pathfinder.approximate
+    real = compiled.pathfinder_fit
 
     def spy(*a, **k):
-        out = real(*a, **k)
-        box["state"] = out[0]
+        box["state"] = out = real(*a, **k)
         return out
 
-    bj.vi.pathfinder.approximate = spy
+    compiled.pathfinder_fit = spy
     try:
         pos, imm = s._run_pathfinder(chains=8, draws=32, seed=1, imm_source="pf_closed", pm_tune=50)
     finally:
-        bj.vi.pathfinder.approximate = real
+        compiled.pathfinder_fit = real
     st = box["state"]
     draws, _ = bj.vi.pathfinder.sample(jax.random.key(0), st, 4)
     return s, st, np.asarray(imm), np.asarray(s._kernel_permutation(draws))
@@ -206,13 +206,13 @@ def _wide_model(d=40):
 
 def _spy_pool_rows(monkeypatch):
     seen = []
-    real = bj.vi.pathfinder.sample
+    real = compiled.pathfinder_draw
 
-    def spy(rng_key, state, num_samples=()):
+    def spy(sample, rng_key, state, num_samples):
         seen.append(int(num_samples))
-        return real(rng_key, state, num_samples)
+        return real(sample, rng_key, state, num_samples)
 
-    monkeypatch.setattr(bj.vi.pathfinder, "sample", spy)
+    monkeypatch.setattr(compiled, "pathfinder_draw", spy)
     return seen
 
 
@@ -256,18 +256,17 @@ def _starts_and_mu(model, **kw):
     """(starts as a flat (C, d) array in Pathfinder order, mu_pf from the captured fit, metric)."""
     s = PfCheesHMC(model, seed=3)
     box = {}
-    real = bj.vi.pathfinder.approximate
+    real = compiled.pathfinder_fit
 
     def spy(*a, **k):
-        out = real(*a, **k)
-        box["state"] = out[0]
+        box["state"] = out = real(*a, **k)
         return out
 
-    bj.vi.pathfinder.approximate = spy
+    compiled.pathfinder_fit = spy
     try:
         pos, imm = s._run_pathfinder(chains=16, draws=50, seed=3, pm_tune=50, **kw)
     finally:
-        bj.vi.pathfinder.approximate = real
+        compiled.pathfinder_fit = real
     st = box["state"]
     flat = np.stack([np.concatenate([np.ravel(np.asarray(pos[n])[c]) for n in s.rvs])
                      for c in range(16)])

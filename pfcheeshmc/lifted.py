@@ -170,6 +170,14 @@ class LiftedGraph:
         ``values``. It holds the structure, the static constants and the shapes/dtypes, not the values.
     n_lifted
         ``len(values)``.
+    sources
+        The model's own variables the values were read from (constants and shared variables), in the
+        order of ``values``; `current_values` re-reads the shared ones.
+    static_shared
+        ``(shared variable, snapshot)`` for every shared variable whose value is baked into ``fn`` as a
+        compile-time constant: the ones kept static (a client needs the value at trace time, e.g. a
+        ``pm.Data`` scalar that is a basic index) and, for ``rule_used == "none"``, all of them. The
+        snapshot is the value that was baked in. `is_stale` compares it with the variable's value now.
     kept_static
         One ``(client op name, dtype, shape)`` per candidate that was kept static because a client
         needs its value at trace time (the first such client is named).
@@ -183,6 +191,31 @@ class LiftedGraph:
     n_lifted: int
     kept_static: list
     rule_used: str
+    sources: tuple = ()
+    static_shared: tuple = ()
+
+    def current_values(self) -> tuple:
+        """``values`` as they are now. A ``pm.set_data`` since the build is seen; constants cannot change.
+
+        Same shapes and dtypes as ``values`` unless a shared variable was set to another shape; the
+        caller compares and, if they differ, lifts again (the structure, and so the key, has changed).
+        This does not see a shared variable that is baked in as a constant: see `is_stale`.
+        """
+        return tuple(
+            jnp.asarray(src.get_value(borrow=True)) if isinstance(src, SharedVariable) else value
+            for src, value in zip(self.sources, self.values)
+        )
+
+    def is_stale(self) -> bool:
+        """True if a shared variable baked into ``fn`` as a constant has another value (or shape, or
+        dtype) now. ``fn`` then computes with the old value and must be built again: the new value is
+        part of the program, so it gets its own key (and changing it back finds the registry entry)."""
+        for var, snapshot in self.static_shared:
+            now = np.asarray(var.get_value(borrow=True))
+            if now.dtype != snapshot.dtype or now.shape != snapshot.shape \
+                    or not np.array_equal(now, snapshot, equal_nan=True):
+                return True
+        return False
 
 
 # key -> the first `fn` built for it.
@@ -334,12 +367,21 @@ def _key(fn, input_specs, values) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def _snapshot(var) -> np.ndarray:
+    """A private copy of a shared variable's current value (what gets baked in as a constant)."""
+    return np.array(var.get_value(borrow=False))
+
+
 def _build(model, inputs, outputs, rule: str):
-    """One attempt with one rule: (fn, values, kept_static)."""
+    """One attempt with one rule: (fn, values, kept_static, sources, static_shared)."""
     if rule == "none":
         # Today's behaviour: shared variables and all constants are compile-time constants.
+        shared = tuple(
+            (v, _snapshot(v)) for v in ancestors(outputs)
+            if isinstance(v, SharedVariable) and not isinstance(v.type, RandomType)
+        )
         jitted = get_jaxified_graph(inputs=inputs, outputs=outputs)
-        return (lambda xs, values: jitted(*xs)), (), []
+        return (lambda xs, values: jitted(*xs)), (), [], (), shared
 
     replaced = {}
     if rule == "model_inputs":
@@ -359,10 +401,10 @@ def _build(model, inputs, outputs, rule: str):
 
     replacements = {var: var.type() for var in lifted}
     # A shared variable that stays static is still replaced by its current value, as PyMC does. The
-    # direct replacement (not `_replace_shared_variables`) is what lets the others stay symbolic.
-    replacements.update(
-        {var: pt.constant(var.get_value(borrow=True)) for var in kept if isinstance(var, SharedVariable)}
-    )
+    # direct replacement (not `_replace_shared_variables`) is what lets the others stay symbolic. The
+    # snapshot is what `LiftedGraph.is_stale` compares with, as `fn` has this value in it for good.
+    static_shared = tuple((var, _snapshot(var)) for var in kept if isinstance(var, SharedVariable))
+    replacements.update({var: pt.constant(snap) for var, snap in static_shared})
     new_outputs = graph_replace(list(outputs), replacements, strict=False)
     new_inputs = [*inputs, *(replacements[var] for var in lifted)]
     fgraph = FunctionGraph(inputs=new_inputs, outputs=new_outputs, clone=True)
@@ -373,7 +415,7 @@ def _build(model, inputs, outputs, rule: str):
         jnp.asarray(var.get_value(borrow=True) if isinstance(var, SharedVariable) else var.data)
         for var in lifted
     )
-    return (lambda xs, values: jitted(*xs, *values)), values, kept_static
+    return (lambda xs, values: jitted(*xs, *values)), values, kept_static, tuple(lifted), static_shared
 
 
 def lift_graph(model, inputs, outputs, rule: str = "model_inputs") -> LiftedGraph:
@@ -389,7 +431,7 @@ def lift_graph(model, inputs, outputs, rule: str = "model_inputs") -> LiftedGrap
     chain = RULES[RULES.index(rule):]
     for i, name in enumerate(chain):
         try:
-            fn, values, kept_static = _build(model, inputs, outputs, name)
+            fn, values, kept_static, sources, static_shared = _build(model, inputs, outputs, name)
             key = _key(fn, _abstract(model, inputs), values)
         except Exception as exc:
             if i == len(chain) - 1:
@@ -409,6 +451,8 @@ def lift_graph(model, inputs, outputs, rule: str = "model_inputs") -> LiftedGrap
             n_lifted=len(values),
             kept_static=kept_static,
             rule_used=name,
+            sources=sources,
+            static_shared=static_shared,
         )
 
 

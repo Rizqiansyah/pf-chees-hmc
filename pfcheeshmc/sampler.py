@@ -11,6 +11,8 @@ import arviz as az
 
 from tqdm.auto import tqdm
 from .utils import *
+from . import compiled
+from .compiled import LogDensity
 from .lifted import lift_graph, lift_logp
 from .ensemble_metric import (
     estimate_covariance, reseed_trajectory_length, whitened_lambda_max, positions_to_draws,
@@ -181,12 +183,45 @@ class PfCheesHMC:
         self._resolved = {}
 
         self.rvs = [rv.name for rv in model.value_vars]
-        # The log-density with the model's data and prior values as runtime arguments (F2a). Here the
-        # values are still closed over, so behaviour is as before; F2b threads `self._lifted.values`
-        # through as jit arguments.
-        self._lifted = lg = lift_logp(model)
-        self._ld_fn = lambda seq: lg.fn(seq, lg.values)[0]
+        # The log-density with the model's data and prior values as runtime arguments (F2a). The
+        # compiled sites (`pfcheeshmc.compiled`) take `fn` as a static and `_values` as a dynamic
+        # argument; `_ld_fn` is the same function with the values closed over, for eager use.
+        self._lifted = lift_logp(model)
+        self._values = self._lifted.values
+        self._ld_fn = self._default_ld_fn = lambda seq: self._lifted.fn(seq, self._values)[0]
+        self._override = None
         self._seed = seed
+
+    def _refresh_values(self):
+        """Re-read the lifted values, so a ``pm.set_data`` since the last call is seen.
+
+        Shapes and dtypes are part of the program, so if a shared variable was set to another shape the
+        log-density is lifted again (a new structure, hence a new key). So it is when a shared variable
+        that is baked into the program as a constant (kept static: a ``pm.Data`` that is a basic index,
+        a shape, ...) has another value: ``fn`` would silently go on computing with the old one.
+        """
+        lg = self._lifted
+        values = lg.current_values()
+        if lg.is_stale() or any(v.shape != o.shape or v.dtype != o.dtype for v, o in zip(values, lg.values)):
+            self._lifted = lg = lift_logp(self.model)
+            values = lg.values
+        self._values = values
+
+    def _logdensity(self) -> LogDensity:
+        """The log-density as the pieces the compiled sites take (see `pfcheeshmc.compiled`).
+
+        A sampler whose ``ld_fn`` or ``_ld_fn`` was replaced on the instance (tests do this) is
+        honoured by every site: the replacement is wrapped into a ``fn`` with no lifted values, so it is
+        compiled in as a constant, as before. The wrapper is kept per replacement so that it is one
+        static argument for jit, not a new one per call.
+        """
+        names = tuple(self.rvs)
+        replaced = (vars(self).get("ld_fn"), self._ld_fn)
+        if replaced[0] is None and replaced[1] is self._default_ld_fn:
+            return LogDensity(self._lifted.fn, names, self._values)
+        if self._override is None or any(a is not b for a, b in zip(self._override[0], replaced)):
+            self._override = (replaced, lambda seq, values: [self.ld_fn(dict(zip(names, seq)))])
+        return LogDensity(self._override[1], names, ())
 
     def ld_fn(self, position):
         """
@@ -456,13 +491,8 @@ class PfCheesHMC:
         logp costs 1.75 s on 8 Schools and 4.24 s on radon, which is Python dispatch, not compute.
         Chains that already pass never enter that loop.
         """
-        from jax.flatten_util import ravel_pytree
-
-        def _ok(x):
-            g = jax.grad(self.ld_fn)(x)
-            return jnp.isfinite(self.ld_fn(x)) & jnp.all(jnp.isfinite(ravel_pytree(g)[0]))
-
-        return jax.jit(jax.vmap(_ok))({n: init_stack[n] for n in self.rvs})
+        ld = self._logdensity()
+        return compiled.usable_mask(ld.fn, ld.names, ld.values, {n: init_stack[n] for n in self.rvs})
 
     def _ensure_finite_inits(
         self,
@@ -625,10 +655,11 @@ class PfCheesHMC:
         # loop was C device syncs (the C-dependent wall of the init path at large C), and
         # the argmax of the finite scores is exactly what it computed.
         n_inits = int(next(iter(init_stack.values())).shape[0])
+        ld = self._logdensity()
         lp_inits = jnp.empty(n_inits, dtype=jnp.float32)
         def _score_block(s0, s1):
             sub = {n: init_stack[n][s0:s1] for n in self.rvs}
-            return jax.vmap(lambda x: self.ld_fn(x))(sub)
+            return compiled.score_positions(ld.fn, ld.names, ld.values, sub)
         first = _score_block(0, min(score_chunk, n_inits))
         lp_inits = jnp.empty(n_inits, dtype=first.dtype)
         lp_inits = lp_inits.at[: first.shape[0]].set(first)
@@ -640,10 +671,9 @@ class PfCheesHMC:
         x0_pf = {n: init_stack[n][c_best] for n in self.rvs}
 
         # 3) Fit Pathfinder
-        pf_state, _ = bj.vi.pathfinder.approximate(
-            rng_key=key_pf,
-            initial_position=tuple(x0_pf[n] for n in self.rvs),
-            logdensity_fn=self.ld_fn,
+        pf_state = compiled.pathfinder_fit(
+            bj.vi.pathfinder.approximate, ld.fn, ld.names, ld.values,
+            key_pf, tuple(x0_pf[n] for n in self.rvs),
         )
 
         # 4) Draw the start pool, bounded by `pf_pool_cap` rows (see default_pool_cap for why the
@@ -662,7 +692,7 @@ class PfCheesHMC:
         total = chains * draws
         if cap is not None:
             total = min(total, cap)
-        samples_flat, _ = bj.vi.pathfinder.sample(key_samp, pf_state, total)
+        samples_flat = compiled.pathfinder_draw(bj.vi.pathfinder.sample, key_samp, pf_state, total)
         # samples_flat is the whole pool in flat (total, ...) order; the chunk axis is just
         # how Pathfinder emitted the draws, so any row may seed any chain. (The old code
         # reshaped to (chains, draws) and back; the round trip was a no-op kept for a reader.)
@@ -682,8 +712,7 @@ class PfCheesHMC:
                 stride = max(total // max(chains * 64, 1), 1)
                 subset_idx = jnp.arange(0, total, stride)
                 def _score_pool(idx):
-                    return jax.vmap(lambda i: self.ld_fn(
-                        jax.tree_util.tree_map(lambda x: x[i], samples_flat)))(idx)
+                    return compiled.score_pool(ld.fn, ld.names, ld.values, samples_flat, idx)
                 first = _score_pool(subset_idx[: min(score_chunk, subset_idx.shape[0])])
                 lp_sub = jnp.empty(subset_idx.shape, dtype=first.dtype)
                 lp_sub = lp_sub.at[: first.shape[0]].set(first)
@@ -787,9 +816,10 @@ class PfCheesHMC:
                 # gradients of the log-density at the Pathfinder draws, so subsample: cost is
                 # n_grad gradients, not `total`.
                 n_grad = int(min(total, kwargs.get("fisher_draws", 4096)))
-                _, unravel = ravel_pytree(jax.tree_util.tree_map(lambda x: x[0], samples_total))
                 gdraws = flat_mat[:n_grad]
-                ggrads = jax.vmap(lambda f: ravel_pytree(jax.grad(self.ld_fn)(unravel(f)))[0])(gdraws)
+                ggrads = compiled.pool_gradients(
+                    ld.fn, ld.names, ld.values,
+                    jax.tree_util.tree_map(lambda x: x[0], samples_total), gdraws)
                 lr = bj.adaptation.metric_estimators.fisher_score_low_rank(
                     gdraws, ggrads, int(kwargs.get("max_rank", 10)),
                     gamma=float(kwargs.get("fisher_gamma", 1e-5)),
@@ -917,7 +947,7 @@ class PfCheesHMC:
         float-limit stopping rule; raise the probe count if a model shows acceptance
         problems in the first ChEES iterations.
         """
-        ld_fn = self.ld_fn
+        ld = self._logdensity()
         num_probes = int(kwargs.get("eps0_probes", 32))
         seed = kwargs.get("seed", self.seed)
         self._resolved["step_size"] = {"eps0_probes": num_probes, "seed": int(seed)}
@@ -928,20 +958,16 @@ class PfCheesHMC:
 
         # A probe at a position with non-finite logp yields nan acceptance, which BlackJAX
         # turns into "halve forever" (step_size.py:239), dragging the median to the float floor.
-        is_feasible = jax.jit(jax.vmap(lambda p: jnp.isfinite(ld_fn(p))))
-        keep = [bool(k) for k in is_feasible({k: jnp.stack([p[k] for p in probes]) for k in probes[0]})]
+        feasible = compiled.feasible_mask(
+            ld.fn, ld.names, ld.values, {k: jnp.stack([p[k] for p in probes]) for k in probes[0]})
+        keep = [bool(k) for k in feasible]
         probes = [p for p, k in zip(probes, keep) if k]
         if not probes:
             return 1e-2  # nothing usable; ChEES dual averaging still runs
 
         def search(key, pos_i):
-            return bj.adaptation.step_size.find_reasonable_step_size(
-                key,
-                lambda eps: bj.hmc(ld_fn, eps, inverse_mass_matrix, num_integration_steps=1).step,
-                bj.hmc(ld_fn, 1e-2, inverse_mass_matrix, num_integration_steps=1).init(pos_i),
-                initial_step_size=1e-2,
-                target_accept=0.651,
-            )
+            return compiled.search_step_size(
+                ld.fn, ld.names, ld.values, inverse_mass_matrix, key, pos_i)
 
         # One trace, then one dispatch per probe. Per-probe rather than vmapped for cost
         # and clarity of failure modes, not correctness: `jax.vmap` over this search is also
@@ -949,9 +975,8 @@ class PfCheesHMC:
         # body and selecting the previous carry for finished elements, so converged probes
         # are frozen (verified in jax/_src/lax/control_flow/loops.py:2210-2224 and by
         # comparing per-probe values vmap vs serial: identical).
-        search_jit = jax.jit(search)
         keys = jax.random.split(jax.random.key(seed), len(probes))
-        eps_list = [float(search_jit(keys[i], probes[i])) for i in range(len(probes))]
+        eps_list = [float(search(keys[i], probes[i])) for i in range(len(probes))]
         eps_ok = [e for e in eps_list if jnp.isfinite(e) and e > 0.0]
         if not eps_ok:
             return 1e-2
@@ -1001,7 +1026,7 @@ class PfCheesHMC:
         # key stream's child. Stage numbers are part of the key now: 1 = warmup, 2 = sampling.
         key_warm = jax.random.fold_in(jax.random.key(kwargs["seed"]), 1)
         (chees_states, chees_parameters), chees_info = chees_warmup_with_progress(
-            self.ld_fn,
+            self._logdensity(),
             key_warm,
             pf_samples,            # dict: {"mu": (C,), "tau_log__": (C,), "theta": (C, J)}
             init_step_size,
@@ -1062,7 +1087,7 @@ class PfCheesHMC:
 
         # ---- Phase A: short fixed warmup on the Pathfinder metric, collect draws ----------
         (states_A, params_A), info_A = chees_warmup_with_progress(
-            self.ld_fn, keyA, pf_samples, eps_A, optim, W_A, imm_A,
+            self._logdensity(), keyA, pf_samples, eps_A, optim, W_A, imm_A,
             target_acceptance_rate=kwargs["target_accept"],
             max_leapfrog_steps=kwargs["max_leapfrog_steps"],
             progressbar=False, stop_rule=None,
@@ -1129,7 +1154,7 @@ class PfCheesHMC:
 
         # ---- Phase B: continue to the budget on the refreshed metric -----------------------
         (states_B, params_B), info_B = chees_warmup_with_progress(
-            self.ld_fn, keyB, pos_A, eps_B, optim, W_B, imm_B,
+            self._logdensity(), keyB, pos_A, eps_B, optim, W_B, imm_B,
             target_acceptance_rate=kwargs["target_accept"],
             max_leapfrog_steps=kwargs["max_leapfrog_steps"],
             progressbar=bool(kwargs.get("progressbar", True)), stop_rule=None,
@@ -1172,14 +1197,13 @@ class PfCheesHMC:
         un-ravelling a single row with the stack's un-ravel produced a malformed position and a
         non-scalar log-density (caught: "Gradient only defined for scalar-output functions").
         """
+        ld = self._logdensity()
         one = {n: pos_pool[n][0, 0] for n in pos_pool}
-        _, unravel_one = ravel_pytree(one)
-        grad_vmap = jax.jit(jax.vmap(
-            lambda f: ravel_pytree(jax.grad(self.ld_fn)(unravel_one(f)))[0]))
         chunk = int(kwargs.get("score_chunk", 1024))
         N = int(draws.shape[0])
-        return jnp.concatenate([grad_vmap(draws[i:i + chunk])
-                                for i in range(0, N, chunk)], axis=0)
+        return jnp.concatenate([
+            compiled.pool_gradients(ld.fn, ld.names, ld.values, one, draws[i:i + chunk])
+            for i in range(0, N, chunk)], axis=0)
     
     def _run_dynamic_hmc(self, chees_states, chees_parameters, inverse_mass_matrix, **kwargs):
         # Defaults
@@ -1194,7 +1218,7 @@ class PfCheesHMC:
                                       "num_draws": int(num_draws)}
 
         dyn = bj.mcmc.dynamic_hmc.as_top_level_api(
-            self.ld_fn,
+            self._logdensity(),
             step_size=chees_parameters["step_size"],
             inverse_mass_matrix=inverse_mass_matrix,
             next_random_arg_fn=chees_parameters["next_random_arg_fn"],
@@ -1207,8 +1231,10 @@ class PfCheesHMC:
             return jax.vmap(kernel_step)(keys, state)
 
         # ---------- discover real paths to fields (once, outside jit) ----------
+        # Only the structure and dtypes of the step's info are read, so trace the step abstractly:
+        # running one real step eagerly would compile its while/scan programs on every call.
         probe_keys = jax.random.split(jax.random.fold_in(rng, 3), num_chains)
-        _, info_probe = _vmapped_step(chees_states, probe_keys)  # one real step (we discard state)
+        _, info_probe = jax.eval_shape(_vmapped_step, chees_states, probe_keys)
 
         def _find_path(obj, want_bool=False, substr=""):
             """Find a tuple of attribute names whose leaf matches dtype/name criteria."""
@@ -1355,14 +1381,19 @@ class PfCheesHMC:
 
 
 
-    def _compile_value_to_rv_fn(self, *, keep_untransformed: bool = False, var_names=None):
+    def _lift_value_to_rv(self, *, keep_untransformed: bool = False, var_names=None):
+        """(`LiftedGraph` of value variables -> requested variables, the requested variables)."""
         model = modelcontext(self.model)
         if var_names is None:
             var_names = model.unobserved_value_vars
         vars_to_sample = list(
             get_default_varnames(var_names, include_transformed=keep_untransformed)
         )
-        lg = lift_graph(model, list(model.value_vars), vars_to_sample)
+        return lift_graph(model, list(model.value_vars), vars_to_sample), vars_to_sample
+
+    def _compile_value_to_rv_fn(self, *, keep_untransformed: bool = False, var_names=None):
+        lg, vars_to_sample = self._lift_value_to_rv(
+            keep_untransformed=keep_untransformed, var_names=var_names)
         return (lambda *xs: lg.fn(xs, lg.values)), vars_to_sample
 
     def _transform_value_samples_to_problem_space(
@@ -1376,10 +1407,8 @@ class PfCheesHMC:
         """
         Returns dict[rv_name] -> array with shape (chains, draws, *rv.shape) in problem space.
         """
-        # Compile the value->problem-space transformer
-        jax_fn, vars_to_sample = self._compile_value_to_rv_fn(
-            keep_untransformed=keep_untransformed
-        )
+        # Lift the value->problem-space transformer
+        lg, vars_to_sample = self._lift_value_to_rv(keep_untransformed=keep_untransformed)
 
         # Assemble raw_mcmc_samples just like PyMC does (list aligned to value_vars)
         raw_mcmc_samples = self._collect_raw_mcmc_samples(states_hist)
@@ -1387,9 +1416,10 @@ class PfCheesHMC:
         # Mirror PyMC’s postprocessing: nested vmap over (chains, draws)
         # (optionally you could reproduce their device placement/chunking too)
         if postprocessing_chunks is None:
-            result = jax.vmap(jax.vmap(jax_fn))(*raw_mcmc_samples)
+            result = compiled.transform_draws(lg.fn, lg.values, raw_mcmc_samples)
         else:
             from jax.experimental.maps import SerialLoop, xmap
+            jax_fn = lambda *xs: lg.fn(xs, lg.values)
             loop = xmap(
                 jax_fn,
                 in_axes=["chain", "samples", ...],
@@ -1546,6 +1576,7 @@ class PfCheesHMC:
         
 
         self._resolved = {}
+        self._refresh_values()
         pf_samples, inverse_mass_matrix = self._run_pathfinder(**pathfinder_kwargs)
         eps0 = self._run_step_size_tune(pf_samples, inverse_mass_matrix, **step_size_tune_kwargs)
         # Snapshot: the two-phase refresh re-searches eps through the same method, with the CHEES
