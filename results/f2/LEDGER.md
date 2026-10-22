@@ -33,9 +33,11 @@
   "model_inputs_native_dtype". Folded one-element literals are matched by fingerprint. The Uniform
   NaN is fixed on our path.
 - 2026-10-23 — F2a merged (ff, 14cd7cf). Task suite: `262 passed, 5 warnings in 380.69s (0:06:20)`.
-  SUMMARY is in `results/f2/F2a/`.
+  SUMMARY is in `results/f2/F2a/`. Lead suite on merged `f2`:
+  `262 passed, 4 warnings in 382.86s (0:06:22)`.
 - 2026-10-23 — F2b re-split.
   - F2b-1 is the infrastructure (module-level jit with a static lifted `fn`) plus the non-loop sites.
   - F2b-2 is the loops, as host-driven chunks with no `jax.debug.callback`: today a cached program
     would call the first call's progress bar, and callbacks block the on-disk cache.
   - Draw buffer sized `min(D, 1000)` with a dynamic fill count.
+- 2026-10-23 00:17 — F2b-1 task launched (checkout `~/pf/f2-b1`).
