@@ -41,3 +41,13 @@
     would call the first call's progress bar, and callbacks block the on-disk cache.
   - Draw buffer sized `min(D, 1000)` with a dynamic fill count.
 - 2026-10-23 00:17 — F2b-1 task launched (checkout `~/pf/f2-b1`).
+- 2026-10-23 — F2b-1 round 1: the task stopped at the time limit and was resumed at 03:40.
+  - Non-loop sites are module-level jits with a static `fn`. A warm second call now compiles only
+    the 2 loop scans (was 8).
+  - CPU warm wall: 8schools 6.07→4.27 s, radon 16.8→7.1 s (Pathfinder 8.9→1.1 s).
+  - Cold first call: 26–40 s → 13–19 s.
+- 2026-10-23 — F2b-1 round 2 (lead review). A kept-static (baked-in) shared variable went
+  silently stale after `pm.set_data` at the same shape. Fixed with `is_stale()`, so it lifts again;
+  mutation M11 reproduces the wrong answer.
+- 2026-10-23 04:01 — F2b-1 merged (ed67175). Lead suite:
+  `315 passed, 13 warnings in 393.53s (0:06:33)`. SUMMARY is in `results/f2/F2b-1/`.
