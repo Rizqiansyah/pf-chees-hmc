@@ -84,3 +84,4 @@
   - Breakdown of f2's warm radon call: init 0.66, pathfinder 0.40, eps0 0.65 (32 serial probe
     dispatches), warmup 0.46, sampling 0.23, transform 0.18, rest 0.31 s.
   - XLA:GPU's per-step `cond` shows no visible cost (8schools warmup takes 0.06 s).
+- 2026-10-23 09:35 — F2c+F2d task launched (`~/pf/f2-cd` from cdc4a55): JAX initial points (no `pm.init_nuts`/NUTS compile), start-scoring cap at 4C rows, one vmapped ε0 dispatch with a fixed probe mask, and 0 PyTensor compiles on a warm call.
