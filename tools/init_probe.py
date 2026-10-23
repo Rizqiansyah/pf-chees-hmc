@@ -11,7 +11,7 @@ Each call runs `sample_pf_chees_hmc` with 10 draws and 25 warmup draws (one seed
 methods of the init stage, how many times each ran, the XLA programs it compiled and its seconds. Call 1 is cold.
 `_find_finite_start` is nested in `_ensure_finite_inits`, and `_usable_mask` in both.
 
-    GEV, 64 chains, CPU:   _ensure_finite_inits   F2 head 087b54e  162 compiles 5.3 s cold, 0.12 s warm
+    GEV, 64 chains, CPU:   _ensure_finite_inits   F2 head 087b54e  162 compiles 5.3 s cold, 0.11 s warm
                                                   F2g               17 compiles 1.3 s cold, 0.00 s warm
 
 The on-disk compilation cache is off (`PFCHEESHMC_COMPILATION_CACHE=0` unless set), so cold means cold.
