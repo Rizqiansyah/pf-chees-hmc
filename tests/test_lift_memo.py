@@ -10,8 +10,15 @@ What a wrong answer here would silently corrupt:
     `pm.Data` has an unknown static size).
 The rewrite is counted by putting a counting stand-in for `pytensor.compile.mode` in `lifted`, which uses
 nothing of it but `mode.JAX.optimizer.rewrite`. Every test starts from an empty memo.
+
+Resource note: every XLA executable a process holds costs it dozens of memory mappings, and Linux allows
+65,530 per process (`vm.max_map_count`). The whole suite ends at about 61,000 on the F2 head before this
+module (counted from /proc/self/maps), so a module that compiles many programs aborts the process inside
+XLA ("Fatal Python error: Aborted" in `backend_compile_and_load`) several modules later. Here the functions
+are evaluated under one `jax.jit` each rather than op by op, only the sampler tests compile whole sets of
+programs, and the module drops its compiled programs when it is done (`release_compiled_programs`).
 """
-import contextlib
+import gc
 import pathlib
 import sys
 import types
@@ -48,6 +55,14 @@ SITES = ("logp", "initial_point", "transform")
 @pytest.fixture(autouse=True)
 def fresh_memo(monkeypatch):
     monkeypatch.setattr(lifted, "_MEMO", {})
+
+
+@pytest.fixture(scope="module", autouse=True)
+def release_compiled_programs():
+    """Free the executables of this module (and of the modules before it) when it is done: see the note above."""
+    yield
+    gc.collect()
+    jax.clear_caches()
 
 
 class Counts:
@@ -102,8 +117,13 @@ def site_args(model, site):
     return () if site == "initial_point" else point(model)
 
 
+def run(fn, args, values):
+    """``fn(args, values)`` as ONE jitted program (op by op, every primitive would be an executable of its own)."""
+    return [np.asarray(o) for o in jax.jit(fn)(args, values)]
+
+
 def evaluate(lg, model, site):
-    return [np.asarray(o) for o in lg.fn(site_args(model, site), lg.values)]
+    return run(lg.fn, site_args(model, site), lg.values)
 
 
 def build_without_memo(model, site, monkeypatch):
@@ -178,14 +198,14 @@ def test_ladder_model_rebuilt_with_new_values_makes_no_rewrite_at_any_site(name,
     # the values are the second model's own, not the first's...
     assert any(not np.array_equal(np.asarray(a), np.asarray(b))
                for a, b in zip(first["logp"].values, second["logp"].values))
-    # ...and the reused function computes the second model on them, exactly what a build for it computes
+    # ...and the reused function computes the second model on them, bit for bit what a build for it computes
     for site in SITES:
         fn, values = build_without_memo(second_model, site, monkeypatch)
-        want = [np.asarray(o) for o in fn(site_args(second_model, site), values)]
+        want = run(fn, site_args(second_model, site), values)
         got = evaluate(second[site], second_model, site)
         assert len(got) == len(want) > 0
         for g, w in zip(got, want):
-            np.testing.assert_allclose(g, w, rtol=1e-14, atol=0, err_msg=site)
+            np.testing.assert_array_equal(g, w, err_msg=site)
     # and the logp is PyMC's of the second model (float32 constant folding of PyMC's own graph: 1e-7)
     x = point(second_model)
     assert float(second["logp"].fn(x, second["logp"].values)[0]) == pytest.approx(pymc_logp(second_model, x), rel=1e-7)
@@ -548,17 +568,17 @@ def test_second_sampler_call_on_a_rebuilt_model_makes_no_rewrite(counts):
 
 @pytest.mark.parametrize("name", ["8schools", "logit_1000x25"])
 def test_draws_are_bit_identical_with_and_without_the_memo(name, monkeypatch):
-    """A sampler call on a memo hit and a call on a function built from scratch (memo AND registry empty) have
-    the same draws for a fixed seed, every array of the InferenceData."""
+    """A sampler call whose lifts are all memo hits and one whose lifts are all builds have the same draws for a
+    fixed seed, every array of the InferenceData: same function (the registry names the first for a key), same
+    values. (That a build from scratch computes the same numbers as the reused function is checked, bit for
+    bit, in the ladder test above.)"""
     kw = dict(draws=5, chains=16, progressbar=False, random_seed=3, chees_kwargs={"draws": 10})
     sample_pf_chees_hmc(rb.build_model(name), **kw)                          # fills the memo and the registry
-    hits = sum(len(v) for v in lifted._MEMO.values())
-    model = rb.build_model(name)
-    with_memo = sample_pf_chees_hmc(model, **kw)
-    assert sum(len(v) for v in lifted._MEMO.values()) == hits, "the second call must have been all hits"
+    filed = sum(len(v) for v in lifted._MEMO.values())
+    with_memo = sample_pf_chees_hmc(rb.build_model(name), **kw)
+    assert sum(len(v) for v in lifted._MEMO.values()) == filed, "the second call must have been all hits"
 
-    monkeypatch.setattr(lifted, "_MEMO", {})
-    monkeypatch.setattr(lifted, "_REGISTRY", {})
+    monkeypatch.setattr(lifted, "_recall", lambda inputs, outputs: (None, None))     # every lift builds
     without = sample_pf_chees_hmc(rb.build_model(name), **kw)
     for group in ("posterior", "sample_stats"):
         a, b = getattr(with_memo, group), getattr(without, group)
