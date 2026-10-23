@@ -631,6 +631,10 @@ class PfCheesHMC:
 
         pathfinder_kwargs you can pass:
         pm_init: "adapt_diag" | "jitter+adapt_diag" (default "adapt_diag")
+        pm_chains: int in [1, chains] (default 1): how many PyMC points are built. They are shared
+            cyclically, chain c taking point c mod pm_chains: 1 = every chain shares one point,
+            chains = one point per chain. The points are screened and repaired once each, before they
+            are shared
         pm_tune: int (default 500)
         pm_seed: int (default self.seed)
         init_source: "pf" | "adapt_diag" (default "pf")
@@ -657,7 +661,8 @@ class PfCheesHMC:
         # The points only seed Pathfinder (and serve as the init_source="adapt_diag"
         # fallback), so one point shared by all chains is enough; chain diversity comes
         # from the PF pool. Default 1 = the R1 fix; pass pm_chains=chains for the old
-        # per-chain behaviour.
+        # per-chain behaviour. Any count in between is shared cyclically: chain c takes
+        # point c mod pm_chains.
         pm_chains = int(kwargs.get("pm_chains", 1))
         if not 1 <= pm_chains <= chains:
             raise ValueError(f"pm_chains must be in [1, chains={chains}], got {pm_chains}")
@@ -690,32 +695,24 @@ class PfCheesHMC:
             pm_chains, init=pm_init, tune=pm_tune, random_seed=pm_seed
         )
 
-        # 1) Ensure every init is finite (handles xi=0 -> -inf cases). With a shared point the
-        #    check and any repair run once on the unique points, then the result is broadcast --
-        #    the same finite-gradient guard as before, without evaluating it C times on C
-        #    identical rows.
+        # 1) Ensure every init is finite (handles xi=0 -> -inf cases). The check and any repair run once on
+        #    the pm_chains PyMC points (each repaired row under its own key, split(key_fix, pm_chains)[row]),
+        #    never C times on C copies of them. Then the points are shared by the chains: chain c starts from
+        #    repaired row c mod pm_chains. That is every chain on row 0 when pm_chains = 1, and the identity
+        #    when pm_chains = chains.
+        init_stack = self._ensure_finite_inits(
+            init_stack, key_fix,
+            jitter_eps=pf_jitter_eps,
+            max_backtracks=pf_max_backtracks,
+            max_restarts=pf_max_restarts,
+            center=pf_center,
+            restart_radius=pf_restart_radius,
+        )
         if pm_chains < chains:
-            init_stack = self._ensure_finite_inits(
-                init_stack, key_fix,   # split inside, into pm_chains subkeys
-                jitter_eps=pf_jitter_eps,
-                max_backtracks=pf_max_backtracks,
-                max_restarts=pf_max_restarts,
-                center=pf_center,
-                restart_radius=pf_restart_radius,
-            )
-            init_stack = {
-                n: jnp.broadcast_to(a, (chains,) + a.shape[1:])
-                for n, a in init_stack.items()
-            }
-        else:
-            init_stack = self._ensure_finite_inits(
-                init_stack, key_fix,
-                jitter_eps=pf_jitter_eps,
-                max_backtracks=pf_max_backtracks,
-                max_restarts=pf_max_restarts,
-                center=pf_center,
-                restart_radius=pf_restart_radius,
-            )
+            # gathered on the host and put on the device: a handful of rows, and no XLA program is compiled
+            # to copy them (the old broadcast_to compiled one; jnp.asarray compiles one per shape)
+            rows = np.arange(chains) % pm_chains
+            init_stack = {n: jax.device_put(np.take(np.asarray(a), rows, axis=0)) for n, a in init_stack.items()}
 
         # 2) Choose a single finite seed for PF optimizer: the chain with highest logp.
         # One vmapped, chunked scoring pass instead of one eager call per chain: the old
@@ -807,10 +804,11 @@ class PfCheesHMC:
                 pick_global = jnp.repeat(pick_global[:K], chains // K)
             pf_inits_tree = jax.tree_util.tree_map(lambda x: x[pick_global], samples_flat)
         elif init_source == "adapt_diag":
-            # use the repaired adapt_diag starts as chain inits. With a shared base point
-            # (pm_chains < chains) add a tiny per-chain relative jitter so the option does not
-            # degenerate to C identical starts -- identical starts read R-hat 1.000 while
-            # stuck, which no diagnostic flags. The base point is guard-validated; a 1e-3
+            # use the repaired adapt_diag starts as chain inits. With shared base points
+            # (pm_chains < chains: chain c sits on repaired row c mod pm_chains, so several chains
+            # share one) add a tiny per-chain relative jitter so the option does not degenerate to
+            # chains that start on the same point -- identical starts read R-hat 1.000 while
+            # stuck, which no diagnostic flags. The base points are guard-validated; a 1e-3
             # relative move of a finite-gradient point stays finite in practice.
             pf_inits_tree = init_stack
             if pm_chains < chains:
@@ -1736,7 +1734,10 @@ def sample_pf_chees_hmc(
         Return the posterior in unconstrained (value-var) space as well. Needed by the R1 bias
         harness (WP3), which compares moments against a NUTS reference in unconstrained space.
     pathfinder_kwargs, step_size_tune_kwargs, chees_kwargs, dynamic_hmc_kwargs : dict | None
-        Forwarded to `PfCheesHMC.sample(...)`.
+        Forwarded to `PfCheesHMC.sample(...)`. ``pathfinder_kwargs["pm_chains"]`` (default 1, at most
+        ``chains``) is how many PyMC start points are built; they are shared cyclically, chain c taking
+        point ``c % pm_chains``, so 1 shares one point among all the chains and ``chains`` gives each its
+        own. The other Pathfinder keys are listed in `PfCheesHMC._run_pathfinder`.
 
     Returns
     -------
