@@ -1,4 +1,4 @@
-# F2 — resume note (written 2026-10-23, before a context compaction; updated 22:45 after F2e and F2f)
+# F2 — resume note (written 2026-10-23, before a context compaction; updated 2026-10-23 22:45 after F2e and F2f, 2026-10-24 02:50 after F2g)
 
 ## Programme in one paragraph
 F2 makes a sampler call compile nothing new when only seed, data values, prior values, W or D change.
@@ -36,6 +36,20 @@ The owner wants **universal** improvements (any PyMC model), not benchmark tunin
   - optional F2g: a jitted start-repair check, which removes GEV's 156 eager compiles;
   - a `tests/conftest.py` teardown for the memory-mapping cliff;
   - should the disk cache stay opt-in?
+
+## Update 2026-10-24 02:50
+- The owner said "Yes to all" (2026-10-23): `f2` was merged into local `main` (19f0503, tree = 97b6569), and
+  F2g ran.
+- F2g is merged into `f2` (51e15cf), with `results/f2/F2g/SUMMARY.md`. The suite passes:
+  `496 passed, 62 warnings in 649.33s`.
+  - jitted start-repair check: GEV's cold init is 8.98→2.47 s on the GPU, and its warm init 0.21→0.03 s;
+  - `tests/conftest.py` teardown: peak mappings 15.7k;
+  - the disk cache is on by default in `${XDG_CACHE_HOME:-~/.cache}/pfcheeshmc/jax`, with opt-out
+    `PFCHEESHMC_COMPILATION_CACHE=0`. Timing tools default to off.
+- Waiting on the owner:
+  - merge `f2` (with F2g) → `main` again? The earlier approval does not carry over.
+  - Accept no size cap on the default directory (task's DEVIATION 1)?
+  - Fix the `1 < pm_chains < chains` broadcast bug (small task)?
 
 ## Next steps (as written before F2e; steps 1–2 are now done)
 1. **F2e: one fast-tier task**, in a checkout at `~/pf/f2-e` on branch `f2-e`. Git refs cannot nest
@@ -88,7 +102,7 @@ The owner wants **universal** improvements (any PyMC model), not benchmark tunin
   - W_A < 20 changes the refresh pool shape and compiles once;
   - a scalar `initval` change compiles one tiny program;
   - equal-valued prior literals merged by PyMC give a new program when they diverge.
-- **UNVERIFIED:** float32; the GPU timing of `jittered_initial_points` and the vmapped ε0; memory at
-  C=1024, d=175.
+- **UNVERIFIED:** float32; the GPU timing of `jittered_initial_points`. (The vmapped ε0 and memory at
+  C=1024, d=175 were closed in F2f.)
 - **Tooling gotcha:** `JAX_PLATFORM_NAME=gpu` leaks from the example notebooks into `os.environ` when a
   ladder model is built. CPU subprocesses must drop it.

@@ -2,15 +2,18 @@
 
     python compilation_cache_run.py TREE VIA CACHE_DIR DATA_SEED OUT.npz
 
-VIA is how the cache is switched on: ``helper`` (``pfcheeshmc.enable_compilation_cache(CACHE_DIR)``), or
-``none`` (the parent has put whatever it wants into the environment; this process touches nothing). The
+VIA is how the cache is switched on: ``helper`` (``pfcheeshmc.enable_compilation_cache(CACHE_DIR)``),
+``none`` (the parent has put whatever it wants into the environment; this process touches nothing: with the
+opt-out unset, the sampler call itself switches the default cache on, in the HOME or XDG_CACHE_HOME the parent
+chose), or ``early`` (as ``none``, after compiling a few plain JAX programs, before any sampler call). The
 model is ``tests/seeded_models.hier(DATA_SEED, DATA_SEED)``: other data AND other prior values at the same
 shapes for another seed. Prints one JSON line: the JAX monitoring events this call produced, and the number
-of files in CACHE_DIR before and after. The draws of ``mu`` and ``tau`` go to OUT.npz.
+of files in CACHE_DIR before and after, its mode, and the JAX cache settings after the call. The draws of ``mu`` and ``tau`` go to OUT.npz.
 """
 import collections
 import json
 import os
+import stat
 import sys
 
 tree, via, cache_dir, seed, out = sys.argv[1:6]
@@ -31,6 +34,10 @@ from seeded_models import hier  # noqa: E402
 
 if via == "helper":
     pfcheeshmc.enable_compilation_cache(cache_dir)
+elif via == "early":
+    import jax.numpy as jnp
+    for k in (2.0, 3.0, 4.0):
+        jax.jit(lambda x, k=k: x * k + 1.0)(jnp.arange(3.0)).block_until_ready()
 
 
 def n_files():
@@ -42,10 +49,14 @@ idata = pfcheeshmc.sample_pf_chees_hmc(
     hier(int(seed), int(seed)), draws=5, chains=16, random_seed=1, progressbar=False, chees_kwargs={"draws": 10})
 np.savez(out, mu=idata.posterior["mu"].values, tau=idata.posterior["tau"].values)
 
+SETTINGS = ("jax_compilation_cache_dir", "jax_persistent_cache_min_compile_time_secs",
+            "jax_persistent_cache_min_entry_size_bytes", "jax_compilation_cache_max_size", "jax_enable_compilation_cache")
 short = lambda name: name.rsplit("/", 1)[-1]  # noqa: E731
 print(json.dumps({
     "events": {short(k): v for k, v in events.items()},
     "seconds": {short(k): round(v, 3) for k, v in seconds.items()},
     "files_before": before,
     "files_after": n_files(),
+    "mode": stat.S_IMODE(os.stat(cache_dir).st_mode) if os.path.isdir(cache_dir) else None,
+    "settings": {k: jax.config.values[k] for k in SETTINGS},
 }))

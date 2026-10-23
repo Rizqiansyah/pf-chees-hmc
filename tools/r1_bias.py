@@ -22,6 +22,13 @@ Usage (timed cells must be under the GPU lock):
       --pf-draws 1 --init-pick iid --superchains 8 --timed \
       --out results/runs/WP3__selftest.jsonl
 
+On-disk cache: OFF, so that `cold` rows are cold. The library switches a default compilation cache on in
+`~/.cache/pfcheeshmc/jax` at its first `sample_pf_chees_hmc` call (F2g); a cold cell that read it would be warm and
+its `wall_s` would be wrong. This module sets `PFCHEESHMC_COMPILATION_CACHE=0` unless the environment already has a
+value, so `PFCHEESHMC_COMPILATION_CACHE=1` (with HOME or XDG_CACHE_HOME at a scratch directory) measures the default
+cache, and JAX's own `JAX_COMPILATION_CACHE_DIR` is respected by the library and then used. The `[banner]` line
+prints both variables; a row does not.
+
 G-R1 (plan §6): pass = b2_max < 0.01 on every seed with C*D >= 2,000. b2_max has its own Monte-Carlo
 floor, max_f (mcse_f^2 / var_ref_f) * 2 ln(2d), which is printed with every cell: a cell whose floor
 is above 0.005 is NOT RESOLVABLE, not a pass.
@@ -63,6 +70,7 @@ import time
 SCHEMA_R2 = "pf-r2/v1"      # pf-r1/v1 + `effective`, `pooled`, `step` (and the two refresh scalars)
 
 os.environ.setdefault("PYTENSOR_FLAGS", "blas__ldflags=-llapack -lblas -lcblas -lm")
+os.environ.setdefault("PFCHEESHMC_COMPILATION_CACHE", "0")      # rep 0 is a COLD cell: see "On-disk cache" in the docstring
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)

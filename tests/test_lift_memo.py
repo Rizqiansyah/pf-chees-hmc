@@ -12,13 +12,10 @@ The rewrite is counted by putting a counting stand-in for `pytensor.compile.mode
 nothing of it but `mode.JAX.optimizer.rewrite`. Every test starts from an empty memo.
 
 Resource note: every XLA executable a process holds costs it dozens of memory mappings, and Linux allows
-65,530 per process (`vm.max_map_count`). The whole suite ends at about 61,000 on the F2 head before this
-module (counted from /proc/self/maps), so a module that compiles many programs aborts the process inside
-XLA ("Fatal Python error: Aborted" in `backend_compile_and_load`) several modules later. Here the functions
-are evaluated under one `jax.jit` each rather than op by op, only the sampler tests compile whole sets of
-programs, and the module drops its compiled programs when it is done (`release_compiled_programs`).
+65,530 per process (`vm.max_map_count`). Here the functions are evaluated under one `jax.jit` each rather than
+op by op, and only the sampler tests compile whole sets of programs. The compiled programs are released when
+the module is done, by `tests/conftest.py` for every module.
 """
-import gc
 import pathlib
 import sys
 import types
@@ -55,14 +52,6 @@ SITES = ("logp", "initial_point", "transform")
 @pytest.fixture(autouse=True)
 def fresh_memo(monkeypatch):
     monkeypatch.setattr(lifted, "_MEMO", {})
-
-
-@pytest.fixture(scope="module", autouse=True)
-def release_compiled_programs():
-    """Free the executables of this module (and of the modules before it) when it is done: see the note above."""
-    yield
-    gc.collect()
-    jax.clear_caches()
 
 
 class Counts:

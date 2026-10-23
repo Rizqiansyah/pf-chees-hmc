@@ -162,7 +162,7 @@ tuned to the benchmark models.
   - check finiteness with the F2a log-density.
 - Tests: the start distribution matches PyMC's (statistical test), and the Pathfinder fit is unchanged.
 
-### F2e — opt-in on-disk compile cache
+### F2e — opt-in on-disk compile cache (made on by default in F2g, 2026-10-23)
 - Once keys are structure-only, compiled programs are reused across Python sessions.
 - It is a config switch, documented and off by default.
 
@@ -177,6 +177,29 @@ tuned to the benchmark models.
 - **CPU NUTS first call** (fresh process, PyTensor cache cold vs warm), for the fair comparison when
   data or priors change every run.
 - **Output:** R2-T4 redone for two workflows: "new data/priors every run" and "repeat runs".
+
+### F2g — after F2f (owner's go 2026-10-23: "Yes to all"; done 2026-10-24, merged into `f2` at 51e15cf, `results/f2/F2g/SUMMARY.md`)
+Three items from the F2f report (`results/f2/F2f/REPORT.md`, Findings), done in one task.
+1. **Jitted start-repair check (universal).**
+   - **Today:** `_find_finite_start` (`sampler.py:350`) decides "usable" with an eager `self.ld_fn(pos)`
+     and `jax.grad(self.ld_fn)(pos)`.
+   - **Who pays:** any model whose shared start has a non-finite log-density or gradient. GEV's start is
+     at xi = 0, where the gradient is NaN by design.
+   - **Cost:** 156 one-off primitive compiles on a cold call (about 9 s on the GPU), and op-by-op
+     dispatch on every warm call (0.21 of GEV's 0.55 s).
+   - **Change:** decide it with `compiled.usable_mask` on a one-row stack (`self._logdensity()`, so an
+     instance override of `ld_fn` is still honoured). The decision and the returned point are
+     unchanged, so the draws are too.
+2. **`tests/conftest.py` teardown.** The one-process suite came within 4.5k of `vm.max_map_count` at
+   f6108ac. Add the F2e module-scoped teardown (`gc.collect(); jax.clear_caches()`) for every module.
+3. **On-disk compilation cache on by default** (supersedes F2e's "off by default").
+   - **Default directory:** under the user's cache directory, the analogue of PyTensor's compiledir,
+     which is also on by default.
+   - **Never override a user's own JAX cache setting.**
+   - **Opt-out:** one documented switch.
+   - **No import-time side effects.** The README states the global effect on JAX settings.
+   - **Tests run with it off,** except the tests of the default itself, which run in fresh
+     subprocesses.
 
 ## Projection to verify in F2f (from the M4 stage regression; quiet host)
 
