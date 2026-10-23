@@ -316,8 +316,8 @@ def _recall(inputs, outputs):
 
     A candidate with the same `_signature` is used only if PyTensor's ``equal_computations`` agrees, with the
     inputs matched by position: same ops (``Op.__eq__``, by ``__props__``), same wiring, same types, and
-    constants equal in dtype, shape and value. So a hash collision, or a difference the signature misses,
-    only costs a build. Never raises: a graph that cannot be summarised or compared (``RecursionError`` on a
+    constants equal by ``Constant.equals`` (type and value; it calls 0.0 and -0.0 equal, which the signature,
+    comparing bytes, does not). So a hash collision, or a difference the signature misses, only costs a build. Never raises: a graph that cannot be summarised or compared (``RecursionError`` on a
     very deep one) is a miss, with ``slot`` None when it cannot be filed either.
     """
     try:
