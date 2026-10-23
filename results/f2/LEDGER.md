@@ -189,3 +189,9 @@
   - **Default cache with new data, fresh process:** 3.6, 6.2, 4.9 and 9.6 s, with every request a hit.
     It equals the explicit helper (F2f: 3.7, 7.4, 4.8, 9.8). GEV is still 0.3 s behind CPU NUTS's 5.9 s.
   - **Directory:** 2.9–3.7 MB, mode 700, plus JAX's GPU autotune subdirectory.
+- 2026-10-24 — Owner's answers to the F2g report:
+  - **Merge `f2` → local `main`: yes.** Merged with `--no-ff` (780c3dc). Its tree equals `f2`'s 80f0916;
+    since the suite-tested 51e15cf only docs and results changed. Not pushed; `origin/main` is still
+    ecd9ba1.
+  - **No size cap** on the default cache directory: accepted.
+  - **Fix `1 < pm_chains < chains`:** yes, as a small task, F2h (plan section added).

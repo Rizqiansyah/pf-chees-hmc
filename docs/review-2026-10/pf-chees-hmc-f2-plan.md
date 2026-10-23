@@ -201,6 +201,29 @@ Three items from the F2f report (`results/f2/F2f/REPORT.md`, Findings), done in 
    - **Tests run with it off,** except the tests of the default itself, which run in fresh
      subprocesses.
 
+### F2h — `1 < pm_chains < chains` (pre-existing bug; owner's go 2026-10-24)
+- **Today:** `_run_pathfinder` (`sampler.py:697–709`) repairs the `(pm_chains, ...)` stack from
+  `_pymc_adapt_diag_start` and then `jnp.broadcast_to`s it to `(chains, ...)`. That is right only for one
+  row, so any `1 < pm_chains < chains` raises `Incompatible types for broadcasting`. It fails on `main`
+  before F2 as well.
+- **Meaning to implement:** `pm_chains` PyMC points are shared by the chains, so chain c takes repaired row
+  `c mod pm_chains`. That covers the two cases that work today: `pm_chains = 1`, where every chain takes
+  row 0, and `pm_chains = chains`, the identity.
+  - One code path for both branches if the draws stay bit-identical; otherwise keep the two.
+- **Check the rest of the init path for the same one-row assumption:**
+  - the `init_source="adapt_diag"` jitter;
+  - the start pick ("the chain with highest logp");
+  - the `pm_chains` entries in the config and stats;
+  - anything else that reads `init_stack`.
+- **Tests:**
+  - **Must fail today:** a small model, end to end, with `1 < pm_chains < chains`, chains not a multiple
+    of `pm_chains`, and both `init_source` values. Assert the cyclic assignment.
+  - **Bit-identical draws** for a fixed seed at `pm_chains = 1` and `pm_chains = chains`, against
+    `git archive` 80f0916, in the pattern of `tests/test_start_repair.py`.
+- **Docs:** the `pm_chains` docstring, and the README where it mentions `pm_chains`.
+- **Files:** `pfcheeshmc/sampler.py`, a new `tests/test_pm_chains.py` (with a child runner if needed), and
+  the README.
+
 ## Projection to verify in F2f (from the M4 stage regression; quiet host)
 
 | model | warm call today (quiet, M4) | after F2b (projected) | CPU NUTS (M5) |
