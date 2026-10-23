@@ -195,3 +195,4 @@
     ecd9ba1.
   - **No size cap** on the default cache directory: accepted.
   - **Fix `1 < pm_chains < chains`:** yes, as a small task, F2h (plan section added).
+- 2026-10-24 — F2h task launched (`~/pf/f2-h` from 2605245). It fixes the cyclic `pm_chains` assignment, audits the init path for the same one-row assumption, adds a test that fails today, and checks draws stay bit-identical at `pm_chains` = 1 and = chains against 80f0916.
