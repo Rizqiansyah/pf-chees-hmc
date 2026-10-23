@@ -280,6 +280,15 @@ Three items from the F2f report (`results/f2/F2f/REPORT.md`, Findings), done in 
   `jax_enable_x64 = (floatX == "float64")` at import (`pytensor/link/jax/dispatch/basic.py:21`).
 - **The switch is PyMC's own:** `PYTENSOR_FLAGS=floatX=float32`. There is no new sampler option
   (library-first).
+- **Lead smoke test** (2026-10-24, CPU, 64 chains):
+  - all four ladder models fail under `floatX=float32` in `compiled.pathfinder_fit` with
+    `TypeError: cond branches must have equal output types but they differ`;
+  - the error is raised in optax's line search (`optax/_src/linesearch.py:1677 _value_and_grad`), inside
+    BlackJAX's `lbfgs_one_step`;
+  - pre-F2 `main` (232ae58) fails the same way, so float32 has never run.
+  - Script: `scratchpad/f2k/f32_smoke.py`, copied to `results/f2/probes/f32_smoke.py`.
+  - Find the dtype that differs, and fix it on our side if it can be. If the defect is upstream, write a
+    minimal repro and use the narrowest local workaround.
 - **Task (CPU):**
   - Run the four ladder models end to end under `floatX=float32`, then fix what breaks: hard-coded
     float64 or int64, the erfcx band at float32, PRNG or dtype mismatches, the start repair, Pathfinder,
