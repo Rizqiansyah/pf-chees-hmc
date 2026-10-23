@@ -1,0 +1,250 @@
+[
+ {
+  "call": 1,
+  "wall": 31.596773750148714,
+  "compiles": 112,
+  "compile_s": 27.439247608184814,
+  "pytensor_functions": 0,
+  "stage": {
+   "init": [
+    0.6683901520445943,
+    7,
+    0
+   ],
+   "pathfinder": [
+    17.333554094890133,
+    78,
+    0
+   ],
+   "eps0": [
+    3.250952365109697,
+    1,
+    0
+   ],
+   "warmup": [
+    7.535606347024441,
+    7,
+    0
+   ],
+   "sampling": [
+    1.882423467002809,
+    3,
+    0
+   ],
+   "transform": [
+    0.05277075618505478,
+    1,
+    0
+   ],
+   "rest": [
+    0.8730765678919852,
+    15,
+    0
+   ]
+  },
+  "names": [
+   "jit(_argmax)",
+   "jit(_broadcast_arrays)",
+   "jit(_broadcast_arrays)",
+   "jit(_einsum)",
+   "jit(_mean)",
+   "jit(_power)",
+   "jit(_squeeze)",
+   "jit(_threefry_fold_in)",
+   "jit(_threefry_seed)",
+   "jit(_threefry_split)",
+   "jit(_threefry_split)",
+   "jit(_threefry_split)",
+   "jit(_where)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(argsort)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(ceil)",
+   "jit(concatenate)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(dynamic_slice)",
+   "jit(dynamic_slice)",
+   "jit(dynamic_slice)",
+   "jit(empty)",
+   "jit(empty)",
+   "jit(empty)",
+   "jit(equal)",
+   "jit(exp)",
+   "jit(floor_divide)",
+   "jit(floor_divide)",
+   "jit(gather)",
+   "jit(gather)",
+   "jit(gather)",
+   "jit(gather)",
+   "jit(gather)",
+   "jit(initial_point)",
+   "jit(iota)",
+   "jit(iota)",
+   "jit(iota)",
+   "jit(iota)",
+   "jit(iota)",
+   "jit(iota)",
+   "jit(isfinite)",
+   "jit(isfinite)",
+   "jit(less)",
+   "jit(less)",
+   "jit(less)",
+   "jit(less)",
+   "jit(matmul)",
+   "jit(mul)",
+   "jit(multiply)",
+   "jit(multiply)",
+   "jit(multiply)",
+   "jit(multiply)",
+   "jit(pathfinder_draw)",
+   "jit(pathfinder_fit)",
+   "jit(remainder)",
+   "jit(sampling_chunk)",
+   "jit(scatter)",
+   "jit(scatter)",
+   "jit(score_pool)",
+   "jit(score_positions)",
+   "jit(search_step_sizes)",
+   "jit(select_n)",
+   "jit(select_n)",
+   "jit(select_n)",
+   "jit(select_n)",
+   "jit(split)",
+   "jit(squeeze)",
+   "jit(squeeze)",
+   "jit(squeeze)",
+   "jit(stack)",
+   "jit(stage)",
+   "jit(stage)",
+   "jit(stage)",
+   "jit(stage)",
+   "jit(subtract)",
+   "jit(subtract)",
+   "jit(transform_draws)",
+   "jit(transpose)",
+   "jit(true_divide)",
+   "jit(true_divide)",
+   "jit(unstack)",
+   "jit(unstack)",
+   "jit(usable_mask)",
+   "jit(warmup_chunk)",
+   "jit(warmup_init)"
+  ]
+ },
+ {
+  "call": 2,
+  "wall": 1.4675679649226367,
+  "compiles": 0,
+  "compile_s": 0.0,
+  "pytensor_functions": 0,
+  "stage": {
+   "init": [
+    0.009394078981131315,
+    0,
+    0
+   ],
+   "pathfinder": [
+    0.06878743600100279,
+    0,
+    0
+   ],
+   "eps0": [
+    0.006291640922427177,
+    0,
+    0
+   ],
+   "warmup": [
+    1.1079775758553296,
+    0,
+    0
+   ],
+   "sampling": [
+    0.20326450699940324,
+    0,
+    0
+   ],
+   "transform": [
+    0.017276482889428735,
+    0,
+    0
+   ],
+   "rest": [
+    0.05457624327391386,
+    0,
+    0
+   ]
+  },
+  "names": []
+ },
+ {
+  "call": 3,
+  "wall": 1.3965817529242486,
+  "compiles": 0,
+  "compile_s": 0.0,
+  "pytensor_functions": 0,
+  "stage": {
+   "init": [
+    0.009134009014815092,
+    0,
+    0
+   ],
+   "pathfinder": [
+    0.06629183585755527,
+    0,
+    0
+   ],
+   "eps0": [
+    0.005677327048033476,
+    0,
+    0
+   ],
+   "warmup": [
+    1.0643661068752408,
+    0,
+    0
+   ],
+   "sampling": [
+    0.18238330399617553,
+    0,
+    0
+   ],
+   "transform": [
+    0.015177244087681174,
+    0,
+    0
+   ],
+   "rest": [
+    0.05355192604474723,
+    0,
+    0
+   ]
+  },
+  "names": []
+ }
+]

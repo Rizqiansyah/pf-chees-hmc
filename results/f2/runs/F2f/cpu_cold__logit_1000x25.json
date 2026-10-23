@@ -1,0 +1,33 @@
+{
+ "model": "logit_1000x25",
+ "tune": 200,
+ "draws": 250,
+ "pytensor_flags": "compiledir=/home/akbar/pf-runs/f2f/ptc_cold_logit_1000x25,blas__ldflags=-llapack -lblas -lcblas -lm",
+ "rows": [
+  {
+   "call": "first",
+   "wall": 18.03005608008243,
+   "load1": 3.78466796875
+  },
+  {
+   "call": "repeat",
+   "wall": 9.104357315925881,
+   "load1": 7.84765625
+  },
+  {
+   "call": "rebuilt",
+   "wall": 9.991121079074219,
+   "load1": 11.5546875
+  },
+  {
+   "call": "new_data_551799",
+   "wall": 9.987478525843471,
+   "load1": 14.26611328125
+  },
+  {
+   "call": "new_data_551800",
+   "wall": 9.647522514918819,
+   "load1": 16.6982421875
+  }
+ ]
+}

@@ -19,6 +19,7 @@ import pytest
 import blackjax as bj
 import optax
 import pfcheeshmc
+from pfcheeshmc import compiled
 from pfcheeshmc.sampler import PfCheesHMC
 from pfcheeshmc.utils import WarmupInfo, WarmupScanInfo, chees_warmup_with_progress
 
@@ -30,15 +31,15 @@ def _tiny_model():
 
 
 def _recorded_pool_sizes(monkeypatch):
-    """Wrap bj.vi.pathfinder.sample to record every pool size requested."""
+    """Wrap compiled.pathfinder_draw (the jitted bj.vi.pathfinder.sample) to record every pool size."""
     seen = []
-    real = bj.vi.pathfinder.sample
+    real = compiled.pathfinder_draw
 
-    def spy(rng_key, state, num_samples=()):
+    def spy(sample, rng_key, state, num_samples):
         seen.append(int(num_samples))
-        return real(rng_key, state, num_samples)
+        return real(sample, rng_key, state, num_samples)
 
-    monkeypatch.setattr(bj.vi.pathfinder, "sample", spy)
+    monkeypatch.setattr(compiled, "pathfinder_draw", spy)
     return seen
 
 
@@ -112,13 +113,15 @@ def test_best_chain_scoring_picks_the_manual_argmax(monkeypatch):
     model = _tiny_model()
     s = PfCheesHMC(model, seed=5)
     captured = {}
-    real_approx = bj.vi.pathfinder.approximate
+    real_fit = compiled.pathfinder_fit
 
-    def spy(rng_key, logdensity_fn, initial_position, **kw):
+    # The fit is one jitted program (compiled.pathfinder_fit); BlackJAX's `approximate` runs inside it
+    # on tracers, so the concrete start is read at the call that hands it over.
+    def spy(approximate, fn, names, values, key, initial_position):
         captured["init"] = np.asarray(initial_position)
-        return real_approx(rng_key, logdensity_fn, initial_position, **kw)
+        return real_fit(approximate, fn, names, values, key, initial_position)
 
-    monkeypatch.setattr(bj.vi.pathfinder, "approximate", spy)
+    monkeypatch.setattr(compiled, "pathfinder_fit", spy)
     # pm_chains=8 keeps eight DISTINCT points so the argmax is non-trivial;
     # the manual reproduction below must then see exactly the same point cloud.
     s._run_pathfinder(chains=8, draws=60, seed=5, score_chunk=3, pm_chains=8)

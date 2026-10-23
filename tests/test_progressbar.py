@@ -2,14 +2,15 @@
 
 Two reasons this is not cosmetic:
 
-1. Both progress bars are driven by `jax.debug.callback` inside the warmup and sampling scans.
-   A jaxpr containing a host callback cannot be written to JAX's on-disk compilation cache, so
-   leaving the bar on costs every fresh process a full recompile of those two scans.
-2. With the bar off the callback is removed at *trace* time, not skipped at run time, so the
-   per-step host round-trip is gone from the compiled code entirely.
+1. The bars are updated by the host between the chunks of the warmup and sampling loops, from each chunk's
+   own outputs. No `jax.debug.callback` is traced into either program: a jaxpr containing a host callback
+   cannot be written to JAX's on-disk compilation cache, and a cached program would call the FIRST call's
+   bar. (tests/test_chunked_loops.py checks the jaxprs and the bar values; tests/test_compile_once.py checks
+   that on and off run the same programs.)
+2. With the bar off nothing is created or printed, not even a hidden bar.
 
 Tests assert the user-visible contract holds both ways, and that the bars really are absent when
-asked -- a flag that silently leaves a callback in the graph would pass a results-only test.
+asked -- a flag that silently left a bar on would pass a results-only test.
 """
 import arviz as az
 import pymc as pm
