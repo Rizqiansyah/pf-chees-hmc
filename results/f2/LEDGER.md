@@ -157,3 +157,8 @@
   - **Finding, pre-existing:** GEV's init repairs its xi = 0 start through `_find_finite_start`, with
     an eager `ld_fn` and `grad`. That is 156 one-off compiles (about 9 s cold on the GPU) and 0.21 s of
     every warm call. The fix is `compiled.usable_mask` on a one-row stack; proposed as F2g.
+- 2026-10-23 — The owner said "Yes to all" to the four questions in the F2f report.
+  - **Merged `f2` → local `main` with `--no-ff`** (19f0503). Its tree equals `f2`'s 97b6569. Not
+    pushed; `origin/main` is still ecd9ba1.
+  - **F2g** is added to the plan: a jitted start-repair check, a conftest teardown, and the disk
+    cache on by default.
