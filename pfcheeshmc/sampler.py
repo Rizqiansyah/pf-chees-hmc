@@ -14,6 +14,7 @@ from tqdm.auto import tqdm
 from .utils import *
 from . import compiled
 from .compiled import LogDensity
+from .compilation_cache import ensure_default_compilation_cache
 from .lifted import lift_graph, lift_initial_point, lift_logp
 from .ensemble_metric import (
     estimate_covariance, reseed_trajectory_length, whitened_lambda_max, positions_to_draws,
@@ -380,11 +381,19 @@ class PfCheesHMC:
             C^1 at xi = 0 -- PyTensor's own autodiff returns NaN for the xi derivative on the
             same graph -- so this is not a JAX-backend quirk to work around, and Pathfinder's
             L-BFGS fit must not start from a NaN gradient.
+
+            Decided by `_usable_mask` on a one-row stack, the same jitted program that screened the starts
+            (F2g): evaluated eagerly the log-density and its gradient compiled one XLA program per primitive
+            (156 of them for GEV, 4.4 s on CPU) and dispatched them op by op on every call.
             """
-            if not bool(jnp.isfinite(self.ld_fn(pos))):
-                return False
-            grads = jax.grad(self.ld_fn)(pos)
-            return bool(jnp.all(jnp.isfinite(ravel_pytree(grads)[0])))
+            try:
+                one_row = {n: np.asarray(x)[None] for n, x in zip(self.rvs, compiled._position_sequence(pos, self.rvs))}
+                return bool(self._usable_mask(one_row)[0])
+            except Exception:             # a check that cannot be jitted must not cost us the run: decide it eagerly
+                if not bool(jnp.isfinite(self.ld_fn(pos))):
+                    return False
+                grads = jax.grad(self.ld_fn)(pos)
+                return bool(jnp.all(jnp.isfinite(ravel_pytree(grads)[0])))
 
         def _interp(a, b, t):
             return jax.tree_util.tree_map(lambda ai, bi: bi + t * (ai - bi), a, b)
@@ -545,9 +554,10 @@ class PfCheesHMC:
     def _usable_mask(self, init_stack):
         """One jitted, vmapped check for finite log-density AND finite gradient, all chains at once.
 
-        The repair loop below is per-chain and eager: 32 separate calls into the compiled jaxed
-        logp costs 1.75 s on 8 Schools and 4.24 s on radon, which is Python dispatch, not compute.
-        Chains that already pass never enter that loop.
+        The per-chain repair is eager Python: 32 separate calls into the compiled jaxed logp cost 1.75 s on
+        8 Schools and 4.24 s on radon, which is Python dispatch, not compute. Chains that already pass never
+        enter it, and the repair decides each candidate with this same program on a one-row stack (F2g), so
+        that no log-density or gradient is evaluated op by op.
         """
         ld = self._logdensity()
         return compiled.usable_mask(ld.fn, ld.names, ld.values, {n: init_stack[n] for n in self.rvs})
@@ -565,26 +575,25 @@ class PfCheesHMC:
     ):
         """
         For a dict{name: (chains, ...)} ensure every chain's point has a finite log-density and a
-        finite gradient. Applies _find_finite_start per-chain if needed.
-        Returns a dict{name: (chains, ...)} ready for Pathfinder.
+        finite gradient. Applies _find_finite_start to the rows that fail, each under its own key
+        (``split(key, chains)[c]`` for row c). Returns a dict{name: (chains, ...)} ready for Pathfinder;
+        when every row passes it is the arrays that came in.
 
         Note on jitter: points that already pass are returned untouched. Previously every chain was
         jittered by ~1e-8 relative, even when its start was fine. Same distribution, different
         realisation.
         """
         chains = next(iter(init_stack.values())).shape[0]
-        keys = jax.random.split(key, chains)
-        fixed = {n: [] for n in self.rvs}
         try:
-            usable = self._usable_mask(init_stack)
+            usable = np.asarray(self._usable_mask(init_stack))        # the one host read of the whole check
         except Exception:                     # a batched check that cannot run must not cost us the run
-            usable = jnp.zeros(chains, dtype=bool)
+            usable = np.zeros(chains, dtype=bool)
+        if usable.all():
+            return {n: jnp.asarray(init_stack[n]) for n in self.rvs}
 
-        for c in range(chains):
-            if bool(usable[c]):
-                for n in self.rvs:
-                    fixed[n].append(init_stack[n][c])
-                continue
+        keys = jax.random.split(key, chains)
+        repaired = {n: np.array(init_stack[n]) for n in self.rvs}      # a host copy: no program is compiled to put rows back
+        for c in map(int, np.flatnonzero(~usable)):
             x0 = {n: init_stack[n][c] for n in self.rvs}
             try:
                 x0_safe = self._find_finite_start(
@@ -607,9 +616,9 @@ class PfCheesHMC:
                     restart_radius=restart_radius,
                 )
             for n in self.rvs:
-                fixed[n].append(x0_safe[n])
+                repaired[n][c] = np.asarray(x0_safe[n])
 
-        return {n: jnp.stack(fixed[n], axis=0) for n in self.rvs}
+        return {n: jnp.asarray(repaired[n]) for n in self.rvs}
 
     def _run_pathfinder(self, **kwargs) -> Tuple[dict, jnp.ndarray]:
         """
@@ -1733,6 +1742,10 @@ def sample_pf_chees_hmc(
     -------
     arviz.InferenceData
     """
+    # Keep the compiled programs on disk for the next Python process, unless the user opted out or set a JAX cache of
+    # their own (README, "Keeping the compiled programs between Python processes"); does nothing after the first call.
+    ensure_default_compilation_cache()
+
     m = modelcontext(model)  # supports both inside/outside context usage
 
     sampler = PfCheesHMC(m, seed=random_seed)
