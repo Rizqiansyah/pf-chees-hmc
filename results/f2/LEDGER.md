@@ -162,3 +162,8 @@
     pushed; `origin/main` is still ecd9ba1.
   - **F2g** is added to the plan: a jitted start-repair check, a conftest teardown, and the disk
     cache on by default.
+- 2026-10-23 23:00 — F2g task launched (`~/pf/f2-g` from 087b54e):
+  - a jitted start-repair check, with no per-row loop;
+  - a `tests/conftest.py` teardown;
+  - the disk cache on by default, never overriding the user, with an opt-out, no import-time effect,
+    and the timing tools off by default.
