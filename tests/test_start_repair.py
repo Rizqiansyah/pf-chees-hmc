@@ -135,7 +135,7 @@ def test_gev_rows_on_the_singularity_are_repaired_and_the_others_are_not(cases):
 
 # ------------------------------------------------------------------------ the same draws
 # pm_chains = chains: four identical starts on the singularity, each repaired under its own key. (1 < pm_chains <
-# chains fails on the F2 head too, at the broadcast of the pm_chains rows to chains rows in `_run_pathfinder`.)
+# chains failed on 087b54e too, and is tested in `tests/test_pm_chains.py` since F2h.)
 DRAW_CASES = {"gev": [], "gev+pm_chains=C": ["--chains", "4", "--pathfinder", json.dumps({"pm_chains": 4})]}
 
 
