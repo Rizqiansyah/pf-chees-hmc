@@ -196,3 +196,13 @@
   - **No size cap** on the default cache directory: accepted.
   - **Fix `1 < pm_chains < chains`:** yes, as a small task, F2h (plan section added).
 - 2026-10-24 — F2h task launched (`~/pf/f2-h` from 2605245). It fixes the cyclic `pm_chains` assignment, audits the init path for the same one-row assumption, adds a test that fails today, and checks draws stay bit-identical at `pm_chains` = 1 and = chains against 80f0916.
+- 2026-10-24 — The owner said to work autonomously: "Do not ask. Work autonomously. ... If you have to
+  ask, ask now." Their answers to the batch of questions asked up front:
+  - **F2h → local `main`:** merge without asking once the review and the suite pass. Never push.
+  - **Follow-ups after F2h**, one task at a time, in this order:
+    - F2i: memoise `_widen_model_inputs`;
+    - F2j: a cheaper test teardown, clearing only when the mapping count is high;
+    - F2k: a float32 probe, measuring speed and R1 bias.
+
+    Measure and fix, but no default flips: any default change stays the owner's.
+  - **Upstream bugs** (PyMC Uniform int8, JAX erfcx): leave them drafted. Do not file them.
