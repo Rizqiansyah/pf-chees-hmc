@@ -709,9 +709,10 @@ class PfCheesHMC:
             restart_radius=pf_restart_radius,
         )
         if pm_chains < chains:
-            # gathered on the host: a handful of rows, and no XLA program is compiled to copy them
+            # gathered on the host and put on the device: a handful of rows, and no XLA program is compiled
+            # to copy them (the old broadcast_to compiled one; jnp.asarray compiles one per shape)
             rows = np.arange(chains) % pm_chains
-            init_stack = {n: jnp.asarray(np.asarray(a)[rows]) for n, a in init_stack.items()}
+            init_stack = {n: jax.device_put(np.take(np.asarray(a), rows, axis=0)) for n, a in init_stack.items()}
 
         # 2) Choose a single finite seed for PF optimizer: the chain with highest logp.
         # One vmapped, chunked scoring pass instead of one eager call per chain: the old
