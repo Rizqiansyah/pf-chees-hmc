@@ -14,6 +14,7 @@ from tqdm.auto import tqdm
 from .utils import *
 from . import compiled
 from .compiled import LogDensity
+from .compilation_cache import ensure_default_compilation_cache
 from .lifted import lift_graph, lift_initial_point, lift_logp
 from .ensemble_metric import (
     estimate_covariance, reseed_trajectory_length, whitened_lambda_max, positions_to_draws,
@@ -1741,6 +1742,10 @@ def sample_pf_chees_hmc(
     -------
     arviz.InferenceData
     """
+    # Keep the compiled programs on disk for the next Python process, unless the user opted out or set a JAX cache of
+    # their own (README, "Keeping the compiled programs between Python processes"); does nothing after the first call.
+    ensure_default_compilation_cache()
+
     m = modelcontext(model)  # supports both inside/outside context usage
 
     sampler = PfCheesHMC(m, seed=random_seed)

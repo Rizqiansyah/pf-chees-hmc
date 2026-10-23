@@ -38,6 +38,9 @@ for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXP
 # 'invalid token "packages/pf-chees-hmc/.pixi/envs/default/lib"' for any model that compiles a Dot.
 # Overriding the flags without the rpath fixes it; numpy still supplies BLAS at runtime.
 os.environ.setdefault("PYTENSOR_FLAGS", "blas__ldflags=-llapack -lblas -lcblas -lm")
+# Cold and warm rows must differ by what the process has compiled, not by a disk cache: the library's default
+# on-disk compilation cache (F2g) is off here unless the environment says otherwise.
+os.environ.setdefault("PFCHEESHMC_COMPILATION_CACHE", "0")
 
 import arviz as az
 import numpy as np

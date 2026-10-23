@@ -8,9 +8,18 @@ TREE is the source tree to measure: this checkout, or a `git archive` of an earl
 `pfcheeshmc/` and `tools/r1_bias.py`). MODEL is a ladder name, or `hier`: the seeded 8-Schools-shaped model
 of `tests/seeded_models.py`, rebuilt with NEW data and prior values on every call. Call 1 is cold; calls 2..
 are warm, with a new seed each. `--new-data S` gives each ladder call new observed data at the same shapes
-(the "new data every run" workflow). `--cache-dir DIR` switches the on-disk compilation cache on
-(`pfcheeshmc.enable_compilation_cache`; TREE must have it): run the same command twice for call 1 with the
-cache cold, then warm, in a fresh process each time.
+(the "new data every run" workflow).
+
+The on-disk compilation cache is OFF unless asked, so that call 1 is cold: the library switches a default cache
+on in `~/.cache/pfcheeshmc/jax` at its first call (F2g), and a "cold" call that read it would be a warm one. The
+tool sets `PFCHEESHMC_COMPILATION_CACHE=0` unless the environment already has a value. Asking for it:
+  `--cache-dir DIR`                     `pfcheeshmc.enable_compilation_cache(DIR)` (TREE must have it): run the same
+                                        command twice for call 1 with the cache cold, then warm, in a fresh process
+                                        each time;
+  `PFCHEESHMC_COMPILATION_CACHE=1`      the library's default cache (set HOME or XDG_CACHE_HOME to a scratch
+                                        directory to start it empty);
+  `JAX_COMPILATION_CACHE_DIR` (+ the two thresholds)  JAX's own settings, which the library then leaves alone.
+The cache in use is printed in the header line; with one, each call reports its hits and writes.
 
 Timing is `time.perf_counter` around the PfCheesHMC stage methods, blocking on their output (the same
 instrumentation as `tools/r1_bias.instrument`, without the GPU lock `--timed` requires). Stages:
@@ -32,6 +41,7 @@ import sys
 import time
 
 os.environ.setdefault("PYTENSOR_FLAGS", "blas__ldflags=-llapack -lblas -lcblas -lm")
+os.environ.setdefault("PFCHEESHMC_COMPILATION_CACHE", "0")          # cold means cold: see the docstring
 
 ap = argparse.ArgumentParser()
 ap.add_argument("tree")
@@ -62,11 +72,17 @@ from compile_counter import count_compiles, count_pytensor_functions  # noqa: E4
 from seeded_models import hier  # noqa: E402
 
 CACHE_EVENTS = collections.Counter()   # a cache hit is still a "backend compile" event: these tell them apart
+import jax.monitoring  # noqa: E402
+jax.monitoring.register_event_listener(lambda event, **kw: CACHE_EVENTS.update([event.rsplit("/", 1)[-1]]))
 if args.cache_dir:
-    import jax.monitoring
     import pfcheeshmc
-    jax.monitoring.register_event_listener(lambda event, **kw: CACHE_EVENTS.update([event.rsplit("/", 1)[-1]]))
     pfcheeshmc.enable_compilation_cache(args.cache_dir)
+CACHE_OFF = os.environ.get("PFCHEESHMC_COMPILATION_CACHE", "").strip().lower() in ("0", "false", "no", "off")
+print("disk cache:", args.cache_dir and f"--cache-dir {args.cache_dir}"
+      or (jax.config.jax_compilation_cache_dir and f"JAX_COMPILATION_CACHE_DIR={jax.config.jax_compilation_cache_dir} "
+          "(your environment: calls are not cold)")
+      or ("off" if CACHE_OFF else "the library's default (~/.cache/pfcheeshmc/jax, or XDG_CACHE_HOME), from call 1"),
+      flush=True)
 
 METHODS = {
     "_pymc_adapt_diag_start": "init", "_ensure_finite_inits": "init2", "_run_pathfinder": "pathfinder+init",
@@ -133,7 +149,7 @@ for call in range(1, args.calls + 1):
     results.append({"call": call, "wall": wall, "compiles": total.count, "compile_s": total.seconds,
                     "pytensor_functions": total_pt.count, "stage": stage, "names": sorted(total.names)})
     cache = (f"  disk cache: {CACHE_EVENTS['cache_hits']} hits, {CACHE_EVENTS['cache_misses']} written"
-             if args.cache_dir else "")
+             if jax.config.jax_compilation_cache_dir else "")
     CACHE_EVENTS.clear()
     print(f"call {call}: wall {wall:6.2f}s  compiles {total.count} ({total.seconds:.2f}s of compile)  "
           f"pytensor functions {total_pt.count}{cache}")

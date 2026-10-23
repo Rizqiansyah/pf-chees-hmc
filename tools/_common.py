@@ -163,6 +163,8 @@ def banner(model=None, cold=None, wp=None, arm=None):
         "device": devices(),
         "xla_flags": xla_flags(),
         "gpu_lock": os.environ.get("PF_GPU_LOCK") == "1",
+        # a "cold" run that reads an on-disk compilation cache is a warm one (the library's default cache, F2g)
+        "compilation_cache": {k: os.environ.get(k) for k in ("PFCHEESHMC_COMPILATION_CACHE", "JAX_COMPILATION_CACHE_DIR")},
         "cold": cold,
         "model": model,
         "wp": wp,

@@ -1,2 +1,2 @@
 from .sampler import sample_pf_chees_hmc
-from .compilation_cache import enable_compilation_cache
+from .compilation_cache import default_compilation_cache_dir, enable_compilation_cache
