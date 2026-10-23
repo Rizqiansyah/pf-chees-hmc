@@ -1,0 +1,33 @@
+{
+ "model": "8schools",
+ "tune": 200,
+ "draws": 250,
+ "pytensor_flags": "compiledir=/home/akbar/pf-runs/f2f/ptc_cold_8schools,blas__ldflags=-llapack -lblas -lcblas -lm",
+ "rows": [
+  {
+   "call": "first",
+   "wall": 13.060650609899312,
+   "load1": 1.236328125
+  },
+  {
+   "call": "repeat",
+   "wall": 3.467187794158235,
+   "load1": 1.74462890625
+  },
+  {
+   "call": "rebuilt",
+   "wall": 3.358844205038622,
+   "load1": 1.74462890625
+  },
+  {
+   "call": "new_data_551791",
+   "wall": 3.35276289912872,
+   "load1": 1.6845703125
+  },
+  {
+   "call": "new_data_551792",
+   "wall": 3.5029929222073406,
+   "load1": 2.4306640625
+  }
+ ]
+}

@@ -137,3 +137,23 @@
   - `f2f_cpu.sh` and `cpu_nuts_calls.py`: CPU NUTS per-call walls, PyTensor cache cold and warm;
   - `new_data.py`: any model's observed data permuted, the same shapes;
   - `tools/warm_stages.py --new-data S`.
+- 2026-10-23 22:00–22:41 — F2f, lead, quiet host (load 1–4 from our own jobs; GPU used only by
+  us). Report: `results/f2/F2f/REPORT.md`.
+  - **GPU warm call, main → f2:** 8schools 6.03→0.23 s, gev 10.21→0.55 s, logit 8.17→1.43 s,
+    radon 20.9→4.8–7.4 s. New data every call costs the same and compiles 0.
+  - **R1 gate on f2:** passes 4/4, 3/3 seeds each.
+    - 8schools, gev and logit rows are identical to run 2's M4 rows (b², ε, L, gradients).
+    - Radon's b² is lower: 0.0025–0.0032 against 0.0034–0.0047.
+  - **R2-T4 redone, GPU f2 vs 32-core CPU NUTS at equal accuracy (repeat runs or new data in one
+    process):** 15×, 9.4×, 6.8× and 2.5–3.8×. Run 2 had 0.56×, 0.51×, 1.10× and 0.77×.
+  - **First call in a new process:**
+    - f2 with the disk cache and new data: 3.7, 7.4, 4.8 and 9.8 s;
+    - CPU NUTS with its default warm C cache: 4.2, 5.9, 10.0 and 18.9 s;
+    - f2 without the disk cache: 17–43 s, mostly the Pathfinder compile.
+  - **CPU NUTS does not recompile for new data in one process.** The run-2 addendum's premise was
+    wrong on this point.
+  - **Harness `wall_s` includes scoring** (`az.rhat` and `score_ensemble`): about 4 s on radon. Run 2's
+    T4 GPU walls carried it too. T4 now uses `warm_stages` walls.
+  - **Finding, pre-existing:** GEV's init repairs its xi = 0 start through `_find_finite_start`, with
+    an eager `ld_fn` and `grad`. That is 156 one-off compiles (about 9 s cold on the GPU) and 0.21 s of
+    every warm call. The fix is `compiled.usable_mask` on a one-row stack; proposed as F2g.

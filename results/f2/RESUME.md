@@ -1,4 +1,4 @@
-# F2 — resume note (written 2026-10-23, before a context compaction)
+# F2 — resume note (written 2026-10-23, before a context compaction; updated 22:45 after F2e and F2f)
 
 ## Programme in one paragraph
 F2 makes a sampler call compile nothing new when only seed, data values, prior values, W or D change.
@@ -27,7 +27,17 @@ The owner wants **universal** improvements (any PyMC model), not benchmark tunin
 - **GPU smoke** (pre-F2c/d, W=25, `results/f2/runs/smoke_*`): warm 8schools 6.2→0.8 s, radon 16.4→2.9 s.
   Cold calls roughly halved.
 
-## Next steps
+## Update 2026-10-23 22:45
+- F2e is merged (89e0682). The suite passes: `453 passed, 60 warnings in 523.25s`.
+- F2f is done: `results/f2/F2f/REPORT.md`. The R1 gate passes 4/4. GPU f2 beats CPU NUTS by 15×,
+  9.4×, 6.8× and 2.5–3.8×.
+- Waiting on the owner:
+  - merge `f2` → `main`?
+  - optional F2g: a jitted start-repair check, which removes GEV's 156 eager compiles;
+  - a `tests/conftest.py` teardown for the memory-mapping cliff;
+  - should the disk cache stay opt-in?
+
+## Next steps (as written before F2e; steps 1–2 are now done)
 1. **F2e: one fast-tier task**, in a checkout at `~/pf/f2-e` on branch `f2-e`. Git refs cannot nest
    `f2/x` under `f2`.
    - **(a) Opt-in on-disk JAX compilation cache.**
