@@ -1734,7 +1734,10 @@ def sample_pf_chees_hmc(
         Return the posterior in unconstrained (value-var) space as well. Needed by the R1 bias
         harness (WP3), which compares moments against a NUTS reference in unconstrained space.
     pathfinder_kwargs, step_size_tune_kwargs, chees_kwargs, dynamic_hmc_kwargs : dict | None
-        Forwarded to `PfCheesHMC.sample(...)`.
+        Forwarded to `PfCheesHMC.sample(...)`. ``pathfinder_kwargs["pm_chains"]`` (default 1, at most
+        ``chains``) is how many PyMC start points are built; they are shared cyclically, chain c taking
+        point ``c % pm_chains``, so 1 shares one point among all the chains and ``chains`` gives each its
+        own. The other Pathfinder keys are listed in `PfCheesHMC._run_pathfinder`.
 
     Returns
     -------
