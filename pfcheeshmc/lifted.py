@@ -252,9 +252,12 @@ class _Memo:
 
 # (JAX context, `_signature`) -> the memos with that signature. Equal signatures are not proof of equal graphs,
 # so each candidate is verified with `equal_computations` before it is used (`_recall`) and a bucket may hold
-# several. A plain module dict, like `_REGISTRY` and not bounded either: an entry is a graph with its data
-# replaced by placeholders (a few kB; the 1000 x 25 design matrix of the logit model is not in it) and its
-# function, one per model structure and input shape, as the registry holds one function per key.
+# several. A plain module dict, like `_REGISTRY` and not bounded either. An entry is a graph with its data
+# replaced by placeholders (the 1000 x 25 design matrix of the logit model is not in it): 80-350 kB for each
+# of the three lifts of the four ladder models (tracemalloc), against the 0.5-8.9 MB per model that the
+# functions of the registry already retain. Both grow with the number of distinct model structures only (a
+# handful in a process), so bounding the memo alone would not bound the process, and an evicted structure
+# would pay the rewrite again on its next rebuild.
 _MEMO: dict[tuple, list[_Memo]] = {}
 
 
