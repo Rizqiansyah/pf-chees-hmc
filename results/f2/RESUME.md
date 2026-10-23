@@ -1,0 +1,84 @@
+# F2 — resume note (written 2026-10-23, before a context compaction)
+
+## Programme in one paragraph
+F2 makes a sampler call compile nothing new when only seed, data values, prior values, W or D change.
+It is the per-call recompilation fix behind run 2's finding: GPU was slower than 32-core CPU NUTS on
+3 of 4 models because of fixed per-call overhead. The plan is `docs/review-2026-10/pf-chees-hmc-f2-plan.md`.
+The owner wants **universal** improvements (any PyMC model), not benchmark tuning, and least maintenance.
+
+## Where things stand
+- **Branch:** `f2` (local only). Head fd98faa at the time of writing; it had a clean suite:
+  `413 passed, 51 warnings in 494.25s`.
+- **Merges:**
+  - `main` is 232ae58, untouched; `origin/main` is ecd9ba1.
+  - **Never push.**
+  - Merge `f2` → `main` only when the owner says so.
+- **Done and merged:**
+
+  | WP | what it did |
+  |---|---|
+  | F2a | `pfcheeshmc/lifted.py`: rule C lifting (model inputs before the rewrite), dtype widening, erfcx guard, registry keyed on `keep_unused` HLO |
+  | F2b-1 | `pfcheeshmc/compiled.py`: module-level jits with a static `fn`; stale-static guard |
+  | F2b-2 | loops as host-driven chunk programs with a dynamic count; no `jax.debug.callback`; `fold_in` keys |
+  | F2c+F2d | JAX initial points; start scoring capped at 4C; one-dispatch ε0 |
+
+  Each has a SUMMARY in `results/f2/<WP>/`. The running record is `results/f2/LEDGER.md`.
+- **Status:** a warm call makes 0 XLA and 0 PyTensor compiles (tests: `tests/test_compile_once.py`).
+- **GPU smoke** (pre-F2c/d, W=25, `results/f2/runs/smoke_*`): warm 8schools 6.2→0.8 s, radon 16.4→2.9 s.
+  Cold calls roughly halved.
+
+## Next steps
+1. **F2e: one fast-tier task**, in a checkout at `~/pf/f2-e` on branch `f2-e`. Git refs cannot nest
+   `f2/x` under `f2`.
+   - **(a) Opt-in on-disk JAX compilation cache.**
+     - A documented switch, off by default: `jax_compilation_cache_dir`, plus min compile time 0 and min
+       entry size -1.
+     - Test with two fresh processes, the second with new data or priors at the same shapes: it hits the
+       cache.
+     - Add a README section.
+   - **(b) Lift memo for the "rest" stage**, which costs 0.14–0.46 s per call (`lift_logp` plus the
+     transform lift; breakdown in the LEDGER).
+     - Use a structural hash of the PRE-rewrite lifted graph (op `__props__`/hash, types, static
+       constant bytes) to skip the rewrite, funcify and key lowering.
+     - Before reusing a hit, verify it with `pytensor.graph.basic.equal_computations`, so a hash
+       collision can never return a wrong `fn`.
+     - Tests: hit, miss, a forced collision rejected, and values in the right order.
+2. **F2f: lead, GPU, quiet host.** Check `uptime` and `nvidia-smi`; another user, ccaprani,
+   sometimes loads the box.
+   - **Tool:** `tools/warm_stages.py TREE MODEL C D W --calls 3`, under `tools/gpu_run.sh`. For TREE use
+     a `git archive 232ae58` for `main`, or the `f2` tree.
+   - **Shapes:** the M4 shapes, C=1024, D=10, each model at its smallest passing W: 8schools 25, gev 25,
+     logit 50, radon 300. Run cold and warm, per stage.
+   - **R1 bias gate:** run it on f2 for the 4 models at those W, with the run-2 driver and harness
+     (`results/r2/drivers/run_step.sh`, `tools/r1_bias.py`), compared with run-2's M2a/M4 rows.
+     - Needed because radon's start picks changed (F2c), the refresh and stop-rule streams changed
+       (F2b-2), and draws moved by up to about 2e-10.
+   - **CPU NUTS first call** in a fresh process, with the PyTensor cache cold and warm
+     (`tools/t3_cpu_nuts.py`).
+   - **Report:** redo R2-T4 for the "new data/priors every run" and "repeat runs" workflows, plus a
+     short report to the owner.
+3. **Then** ask the owner about merging `f2` → `main`.
+
+## Workflow rules (owner's)
+- Tasks are sequential, one at a time: fast-tier subtasks, CPU only, rules in `results/f2/TASK-RULES.md`.
+- The lead reviews, merges with `git merge --no-ff`, runs the full suite on `f2`, writes the
+  SUMMARY from the task report (tasks cannot write report files), and updates the LEDGER.
+- When a task stops at the time limit, resume it with session message after the reset. Do not restart it.
+- GPU work goes only through `tools/gpu_run.sh`, the flock lock, and only by the lead.
+- Library-first. Every rule is stated in graph/PyMC terms, never special-cased to the ladder models.
+
+## Known issues (not fixed; F2 scope or not)
+- **Upstream, not filed:**
+  - PyMC 5.28.5 `pm.Uniform(-100, 100)` gives logp NaN (int8 overflow); fixed on our path;
+  - JAX `erfcx` returns 0 on [26.54, 26.64]; a bug draft is in `results/f2/F2a/SUMMARY.md`.
+- **Pre-existing:**
+  - `1 < pm_chains < chains` raises a broadcast `ValueError` in `_run_pathfinder`;
+  - a multi-block stop rule keeps only the last block's `WarmupInfo`, so gradients are under-counted.
+- **Accepted limits:**
+  - W_A < 20 changes the refresh pool shape and compiles once;
+  - a scalar `initval` change compiles one tiny program;
+  - equal-valued prior literals merged by PyMC give a new program when they diverge.
+- **UNVERIFIED:** float32; the GPU timing of `jittered_initial_points` and the vmapped ε0; memory at
+  C=1024, d=175.
+- **Tooling gotcha:** `JAX_PLATFORM_NAME=gpu` leaks from the example notebooks into `os.environ` when a
+  ladder model is built. CPU subprocesses must drop it.
