@@ -224,6 +224,83 @@ Three items from the F2f report (`results/f2/F2f/REPORT.md`, Findings), done in 
 - **Files:** `pfcheeshmc/sampler.py`, a new `tests/test_pm_chains.py` (with a child runner if needed), and
   the README.
 
+### F2i — memoise the widening (owner's go 2026-10-24, autonomous run)
+- **Today:** on a model rebuilt around new data or priors, `_widen_model_inputs` is the largest lift cost
+  that is ours. `tools/lift_cost.py . MODEL --reps 4`, CPU, builds 2–4, summed over the three sites:
+
+  | model | widen | total lift |
+  |---|---|---|
+  | 8schools | 0.03 s | 0.07 s |
+  | gev | 0.02 s | 0.11 s |
+  | logit | 0.02 s | 0.05 s |
+  | radon | 0.06 s | 0.14 s |
+
+  On the GPU, 8schools' warm call with new data is 0.22 s, so the widening is about 13% of it.
+- **Where the time goes** (lead's cProfile, `_widen_model_inputs` on `model.logp()`):
+  - radon: 42 ms, 12 constants replaced;
+  - 8schools: 17 ms;
+  - about 65% `clone_replace(rebuild_strict=False)`, which calls `rebuild_collect_shared` twice;
+  - about 30% `constant_fold` of the `_built_from_literals` parameters.
+- **Goal:** on a rebuilt model whose structure equals one already lifted, skip the full-graph
+  `clone_replace`, and the `constant_fold` where possible. The hit must be verified as strictly as the
+  F2e memo: `equal_computations`, or something proven equivalent. A miss or an error must fall back to
+  today's path.
+- **Two designs to weigh; the task picks and justifies:**
+  - (a) A memo keyed on the pre-widen graph, with the replaceable constants abstracted by position and
+    type.
+  - (b) Reorder: lift first, recall the F2e memo on the lifted graph with narrow-typed placeholders, and
+    widen only on a miss. On a hit, the values are the lifted constants cast to the memo's input dtypes.
+- **Must stay true:**
+  - bit-identical draws;
+  - the same `key` and `fn` for every model `tests/test_lift_memo.py` covers;
+  - every F2a widening test passes unchanged;
+  - nothing about a model's data or prior values is kept in the memo.
+- **Stop rule (least maintenance):** if the saving on builds 2–4 is under 0.01 s per call on every model,
+  or the change needs more than about 80 lines of library code, report the numbers and the design, and
+  leave the code unmerged.
+
+### F2j — cheaper test teardown (owner's go 2026-10-24)
+- **Today:** `tests/conftest.py` releases compiled programs after every module. Peak mappings are 15.7k,
+  and the suite takes 13% longer (+73 s).
+- **Change:** release only when this process's mapping count is above a threshold. Read the count from
+  `/proc/self/maps`, and the limit from `/proc/sys/vm/max_map_count`.
+  - Choose a threshold with margin for the largest module's own growth, measured with the F2g task's
+    `mapcount_plugin.py` approach.
+  - Where `/proc` is not readable (not Linux), release after every module, as today.
+- **Acceptance:**
+  - the suite's peak count stays under half of `vm.max_map_count`;
+  - the time recovers most of the 73 s;
+  - no test changes outcome;
+  - the threshold and its measurement go in the docstring.
+- **Files:** `tests/conftest.py`, and the README's Testing line.
+
+### F2k — float32 probe (owner's go 2026-10-24: measure and fix, no default flip)
+- **Why:** the RTX A2000, like most consumer and workstation GPUs, runs float64 at 1/32 of the float32
+  rate. Every F2 measurement is float64: PyTensor's JAX dispatch sets
+  `jax_enable_x64 = (floatX == "float64")` at import (`pytensor/link/jax/dispatch/basic.py:21`).
+- **The switch is PyMC's own:** `PYTENSOR_FLAGS=floatX=float32`. There is no new sampler option
+  (library-first).
+- **Task (CPU):**
+  - Run the four ladder models end to end under `floatX=float32`, then fix what breaks: hard-coded
+    float64 or int64, the erfcx band at float32, PRNG or dtype mismatches, the start repair, Pathfinder,
+    ChEES.
+  - Keep the float64 path bit-identical (tested).
+  - Add a float32 test module that runs in a child process. The env var must be set before PyTensor is
+    imported.
+  - Report, per model:
+    - whether the run finishes;
+    - finite draws;
+    - divergences;
+    - b²_max against the run-2 reference at CPU-feasible shapes, using `tools/r1_bias.py` if it works
+      under float32. Any float64 assumption there gets fixed too.
+- **Lead (GPU):**
+  - the M4 shapes under float32: warm and cold walls per stage, with `tools/warm_stages.py`;
+  - the R1 gate rows, seeds 1–3, with `tools/r1_bias.py` through the F2f driver pattern.
+
+  Compare with F2f and F2g.
+- **Report only.** A default change, such as recommending float32 for the GPU in the README, is the
+  owner's call.
+
 ## Projection to verify in F2f (from the M4 stage regression; quiet host)
 
 | model | warm call today (quiet, M4) | after F2b (projected) | CPU NUTS (M5) |
