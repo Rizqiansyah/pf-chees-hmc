@@ -27,6 +27,11 @@ The lowered StableHLO of the result then holds no data and no prior values: its 
 structure-only key, and a registry maps that key to the first function built for it so that
 structurally identical models share one function object (and with it JAX's in-memory caches).
 
+A rebuilt model (new data for the same model) has the same graph up to the values it lifts, so `_build` also
+remembers the functions it made: the graph after lifting and before PyTensor's JAX rewrite is summarised by
+`_signature`, and a structurally equal graph (checked with PyTensor's `equal_computations`) reuses the earlier
+function, key included, instead of rewriting, funcifying and lowering again (see `_MEMO`).
+
 `lift_initial_point` lifts PyMC's own initial-point graph (`initial_point_expression`) the same way, so the
 chains' start needs no PyTensor function either; `_abstract` reads the unknown static shapes of a model with
 ``dims=`` off the folded shapes of that graph instead of compiling ``model.initial_point()``.
@@ -37,8 +42,9 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import itertools
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
 import jax
@@ -53,6 +59,7 @@ from pymc.pytensorf import constant_fold
 from pymc.sampling.jax import get_jaxified_graph
 from pytensor.compile import mode
 from pytensor.compile.sharedvalue import SharedVariable
+from pytensor.graph.basic import Constant, equal_computations
 from pytensor.graph.fg import FunctionGraph, Output
 from pytensor.graph.replace import clone_replace, graph_replace
 from pytensor.graph.traversal import ancestors, toposort
@@ -166,7 +173,7 @@ class LiftedGraph:
     fn
         ``fn(inputs, values)`` -> list of outputs, like ``jax_funcify(fgraph)`` but with the lifted
         model inputs as the second argument. Pure and JAX-traceable. Objects with equal ``key`` share
-        one ``fn`` (module registry).
+        one ``fn`` (module registry), and so do the lifts of equal graphs at other argument shapes (`_MEMO`).
     values
         The current lifted values (data, prior values, shared variables) as a tuple of ``jnp`` arrays,
         in the order ``fn`` expects. Empty for ``rule_used == "none"``.
@@ -225,6 +232,112 @@ class LiftedGraph:
 
 # key -> the first `fn` built for it.
 _REGISTRY: dict[str, Callable] = {}
+
+
+@dataclass
+class _Memo:
+    """One function `_build` made: the graph it was made from (after lifting, before PyTensor's JAX rewrite;
+    the rewrite works on a clone, so this one is as lifted), the function, and its keys.
+
+    ``keys`` maps the shapes and dtypes of the arguments (`_spec_ids`) to the key of ``fn`` at them. The
+    graph alone does not fix the key: the unknown static dims of the inputs are read off the current model
+    (`_abstract`), and a shared variable may have been set to another shape.
+    """
+
+    inputs: list
+    outputs: list
+    fn: Callable
+    keys: dict = field(default_factory=dict)
+
+
+# (JAX context, `_signature`) -> the memos with that signature. Equal signatures are not proof of equal graphs,
+# so each candidate is verified with `equal_computations` before it is used (`_recall`) and a bucket may hold
+# several. A plain module dict, like `_REGISTRY` and not bounded either. An entry is a graph with its data
+# replaced by placeholders (the 1000 x 25 design matrix of the logit model is not in it): 80-350 kB for each
+# of the three lifts of the four ladder models (tracemalloc), against the 0.5-8.9 MB per model that the
+# functions of the registry already retain. Both grow with the number of distinct model structures only (a
+# handful in a process), so bounding the memo alone would not bound the process, and an evicted structure
+# would pay the rewrite again on its next rebuild.
+_MEMO: dict[tuple, list[_Memo]] = {}
+
+
+def _context() -> tuple:
+    """What a function depends on besides its graph: ``jax_funcify`` makes the constants arrays of the
+    default float width at the time, so ``jax_enable_x64`` is part of the function."""
+    return (bool(jax.config.jax_enable_x64),)
+
+
+def _signature(inputs, outputs) -> int:
+    """A hash of the structure of the graph from ``inputs`` to ``outputs``; equal structures hash equal.
+
+    What goes in: the nodes in toposort order, each as its op (hashed by its type and ``__props__``), the
+    wiring of its inputs and the types of its outputs; the types of the inputs; and each constant by value
+    (type and bytes, so another static constant is another signature). The inputs, which are the lifted
+    placeholders and the model's own variables, enter by position and type only: they carry no value, and a
+    rebuilt model has other objects. Nothing depends on ``id`` or on set order.
+
+    It only proposes a candidate; `_recall` decides. Raises if the graph holds something it cannot
+    summarise: a free variable that is not an input, or an object array.
+    """
+    ids = {v: i for i, v in enumerate(inputs)}
+    count = itertools.count(len(ids))
+    consts = {}   # constants by value: a constant shared by two uses and two equal ones summarise alike
+    records = []
+
+    def ref(var):
+        i = ids.get(var)
+        if i is None:
+            if not isinstance(var, Constant):
+                raise ValueError(f"{var!r} is neither an input nor a constant")
+            if isinstance(var, TensorConstant):
+                data = np.asarray(var.data)
+                if data.dtype.kind == "O":
+                    raise ValueError("object constant")
+                tag = (var.type, data.tobytes())
+            else:
+                tag = (var.type, var.data)
+            i = consts.get(tag)
+            if i is None:
+                i = consts[tag] = next(count)
+                records.append(tag)
+            ids[var] = i
+        return i
+
+    for node in toposort(outputs, blockers=inputs):
+        refs = tuple(ref(v) for v in node.inputs)
+        for out in node.outputs:
+            ids[out] = next(count)
+        records.append((node.op, refs, tuple(out.type for out in node.outputs)))
+    return hash((tuple(v.type for v in inputs), tuple(records), tuple(ref(o) for o in outputs)))
+
+
+def _recall(inputs, outputs):
+    """``(slot, memo)``: the memo of an equal graph or None, and the list a new memo of this graph goes in.
+
+    A candidate with the same `_signature` is used only if PyTensor's ``equal_computations`` agrees, with the
+    inputs matched by position: same ops (``Op.__eq__``, by ``__props__``), same wiring, same types, and
+    constants equal by ``Constant.equals`` (type and value; it calls 0.0 and -0.0 equal, which the signature,
+    comparing bytes, does not). So a hash collision, or a difference the signature misses, only costs a build. Never raises: a graph that cannot be summarised or compared (``RecursionError`` on a
+    very deep one) is a miss, with ``slot`` None when it cannot be filed either.
+    """
+    try:
+        sig = _signature(inputs, outputs)
+    except Exception:
+        return None, None
+    slot = _MEMO.setdefault((_context(), sig), [])
+    for memo in slot:
+        try:
+            if equal_computations(outputs, memo.outputs, in_xs=inputs, in_ys=memo.inputs):
+                return slot, memo
+        except Exception:
+            continue
+    return slot, None
+
+
+def _spec_ids(input_specs, values) -> tuple:
+    """The shapes and dtypes of the arguments of a lifted function, as a hashable."""
+    return (tuple((tuple(s.shape), np.dtype(s.dtype).str) for s in input_specs),
+            tuple((tuple(v.shape), np.dtype(v.dtype).str) for v in values))
 
 
 def _first_bad_client(fg: FunctionGraph, var) -> str | None:
@@ -425,7 +538,9 @@ def _snapshot(var) -> np.ndarray:
 
 
 def _build(model, inputs, outputs, rule: str):
-    """One attempt with one rule: (fn, values, kept_static, sources, static_shared)."""
+    """One attempt with one rule: (fn, values, kept_static, sources, static_shared, memo).
+
+    ``memo`` (a `_Memo`, None for the "none" rule) is where `lift_graph` keeps the key of ``fn``."""
     if rule == "none":
         # Today's behaviour: shared variables and all constants are compile-time constants.
         shared = tuple(
@@ -433,7 +548,7 @@ def _build(model, inputs, outputs, rule: str):
             if isinstance(v, SharedVariable) and not isinstance(v.type, RandomType)
         )
         jitted = get_jaxified_graph(inputs=inputs, outputs=outputs)
-        return (lambda xs, values: jitted(*xs)), (), [], (), shared
+        return (lambda xs, values: jitted(*xs)), (), [], (), shared, None
 
     replaced = {}
     if rule == "model_inputs":
@@ -459,15 +574,23 @@ def _build(model, inputs, outputs, rule: str):
     replacements.update({var: pt.constant(snap) for var, snap in static_shared})
     new_outputs = graph_replace(list(outputs), replacements, strict=False)
     new_inputs = [*inputs, *(replacements[var] for var in lifted)]
-    fgraph = FunctionGraph(inputs=new_inputs, outputs=new_outputs, clone=True)
-    mode.JAX.optimizer.rewrite(fgraph)
-    jitted = jax_funcify(fgraph)
+    # The rewrite, the funcify and (in `lift_graph`) the lowering depend on this graph alone, and a model
+    # rebuilt around new data and prior values has an equal one: reuse what was made for it. Everything that
+    # is the current model's own (the values, their sources, the static snapshots) is still read from it.
+    slot, memo = _recall(new_inputs, new_outputs)
+    if memo is None:
+        fgraph = FunctionGraph(inputs=new_inputs, outputs=new_outputs, clone=True)
+        mode.JAX.optimizer.rewrite(fgraph)
+        jitted = jax_funcify(fgraph)
+        memo = _Memo(new_inputs, new_outputs, lambda xs, values: jitted(*xs, *values))
+        if slot is not None:
+            slot.append(memo)
 
     values = tuple(
         jnp.asarray(var.get_value(borrow=True) if isinstance(var, SharedVariable) else var.data)
         for var in lifted
     )
-    return (lambda xs, values: jitted(*xs, *values)), values, kept_static, tuple(lifted), static_shared
+    return memo.fn, values, kept_static, tuple(lifted), static_shared, memo
 
 
 def lift_graph(model, inputs, outputs, rule: str = "model_inputs") -> LiftedGraph:
@@ -476,6 +599,10 @@ def lift_graph(model, inputs, outputs, rule: str = "model_inputs") -> LiftedGrap
     ``rule`` is the first rule to try (`RULES`). When building or lowering with a rule raises, a warning
     names the rule and the exception and the next rule is tried; the last rule ("none", today's
     constants) lets its exception through.
+
+    A graph equal to one lifted before (a model rebuilt around other data or prior values) is not rewritten,
+    funcified or lowered again (`_MEMO`); ``values``, ``sources``, ``kept_static`` and ``static_shared`` are
+    always read from ``model`` as it is now.
     """
     if rule not in RULES:
         raise ValueError(f"unknown rule {rule!r}; expected one of {RULES}")
@@ -483,8 +610,14 @@ def lift_graph(model, inputs, outputs, rule: str = "model_inputs") -> LiftedGrap
     chain = RULES[RULES.index(rule):]
     for i, name in enumerate(chain):
         try:
-            fn, values, kept_static, sources, static_shared = _build(model, inputs, outputs, name)
-            key = _key(fn, _abstract(model, inputs), values)
+            fn, values, kept_static, sources, static_shared, memo = _build(model, inputs, outputs, name)
+            specs = _abstract(model, inputs)
+            spec_ids = _spec_ids(specs, values)
+            key = memo.keys.get(spec_ids) if memo is not None else None
+            if key is None:
+                key = _key(fn, specs, values)
+                if memo is not None:
+                    memo.keys[spec_ids] = key
         except Exception as exc:
             if i == len(chain) - 1:
                 raise

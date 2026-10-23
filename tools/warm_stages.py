@@ -2,12 +2,14 @@
 """F2b: per-stage wall time, XLA compiles and PyTensor functions of repeated `sample_pf_chees_hmc` calls (CPU or GPU).
 
     python tools/warm_stages.py TREE MODEL CHAINS DRAWS WARMUP [--calls 3] [--json OUT]
-                                [--progressbar] [--chees JSON] [--pathfinder JSON]
+                                [--progressbar] [--chees JSON] [--pathfinder JSON] [--cache-dir DIR]
 
 TREE is the source tree to measure: this checkout, or a `git archive` of an earlier commit (it provides
 `pfcheeshmc/` and `tools/r1_bias.py`). MODEL is a ladder name, or `hier`: the seeded 8-Schools-shaped model
 of `tests/seeded_models.py`, rebuilt with NEW data and prior values on every call. Call 1 is cold; calls 2..
-are warm, with a new seed each.
+are warm, with a new seed each. `--cache-dir DIR` switches the on-disk compilation cache on
+(`pfcheeshmc.enable_compilation_cache`; TREE must have it): run the same command twice for call 1 with the
+cache cold, then warm, in a fresh process each time.
 
 Timing is `time.perf_counter` around the PfCheesHMC stage methods, blocking on their output (the same
 instrumentation as `tools/r1_bias.instrument`, without the GPU lock `--timed` requires). Stages:
@@ -41,6 +43,7 @@ ap.add_argument("--json")
 ap.add_argument("--progressbar", action="store_true")
 ap.add_argument("--chees", default="{}", help="extra chees_kwargs, JSON")
 ap.add_argument("--pathfinder", default="{}", help="pathfinder_kwargs, JSON")
+ap.add_argument("--cache-dir", help="enable the on-disk compilation cache in this directory")
 args = ap.parse_args()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -53,6 +56,13 @@ import pfcheeshmc.sampler as sm  # noqa: E402
 import r1_bias  # noqa: E402
 from compile_counter import count_compiles, count_pytensor_functions  # noqa: E402
 from seeded_models import hier  # noqa: E402
+
+CACHE_EVENTS = collections.Counter()   # a cache hit is still a "backend compile" event: these tell them apart
+if args.cache_dir:
+    import jax.monitoring
+    import pfcheeshmc
+    jax.monitoring.register_event_listener(lambda event, **kw: CACHE_EVENTS.update([event.rsplit("/", 1)[-1]]))
+    pfcheeshmc.enable_compilation_cache(args.cache_dir)
 
 METHODS = {
     "_pymc_adapt_diag_start": "init", "_ensure_finite_inits": "init2", "_run_pathfinder": "pathfinder+init",
@@ -111,8 +121,11 @@ for call in range(1, args.calls + 1):
                      total_pt.count - sum(v[2] for v in stage.values()))
     results.append({"call": call, "wall": wall, "compiles": total.count, "compile_s": total.seconds,
                     "pytensor_functions": total_pt.count, "stage": stage, "names": sorted(total.names)})
+    cache = (f"  disk cache: {CACHE_EVENTS['cache_hits']} hits, {CACHE_EVENTS['cache_misses']} written"
+             if args.cache_dir else "")
+    CACHE_EVENTS.clear()
     print(f"call {call}: wall {wall:6.2f}s  compiles {total.count} ({total.seconds:.2f}s of compile)  "
-          f"pytensor functions {total_pt.count}")
+          f"pytensor functions {total_pt.count}{cache}")
     for k, (s, n, p) in stage.items():
         print(f"    {k:11s} {s:7.2f}s  compiles {n}  pytensor {p}")
     if call > 1:
