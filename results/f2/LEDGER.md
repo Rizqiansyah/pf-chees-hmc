@@ -100,6 +100,7 @@
     produced silent wrong results.
   - Pre-existing, not fixed: `1 < pm_chains < chains` raises a broadcast `ValueError` in
     `_run_pathfinder`.
+- 2026-10-23 — Lead suite on merged `f2` (9cd4c1f): `413 passed, 51 warnings in 494.25s (0:08:14)`.
 - 2026-10-23 — Paused at the owner's request (system maintenance) after the F2c+F2d merge.
   - Next is F2e: an opt-in on-disk cache, plus a lift memo. The memo is a pre-rewrite structural hash,
     verified with `equal_computations` before reuse.
