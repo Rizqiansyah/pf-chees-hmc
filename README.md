@@ -73,11 +73,20 @@ Pass `random_seed`: if it is omitted the seed defaults to the current date, so t
 
 **How that compares to `pm.sample` on the same machine.** Best CPU configuration we could build on a 32-core box was 32 chains of NUTS: 37,494 ESS/s on 8 Schools and 6,733 on the GEV example. So the GPU is about 3.6x and 2.6x at 128 chains, and only ~1.2x at 32. For a small one-shot job CPU still finishes sooner (9.5 s versus 15.0 s), and its cold start is far lower — the GPU advantage is samples per second, not time-to-first-answer on tiny models. **pf-r1 caveat:** every GPU number in this comparison is on the shipped metric arm, which fails the project's own R̂ ≤ 1.01 bar on GEV (LEDGER `c2993cf`; orientation retraction `a03dc0f`); the direction of the device recommendation may move per model once the corrected arm lands, and the equal-draw walls are re-measurement pending.
 
-**First run in a process is slower than later runs.** On the 8 Schools example at 32 chains: 48.3 s cold, 39.8 s cold with a persistent compile cache, 22 s warm in the same process. Setting `JAX_COMPILATION_CACHE_DIR` to a writable directory recovered 8.5 s of the 26 s compile cost at no cost to results (2.5 MB cache); the rest is JAX tracing, which that cache does not cover. Quote cold or warm, not both interchangeably.
+**Compile once per model structure.** A call compiles its XLA programs the first time it meets a model structure, set of array shapes, chain count and sampler settings, and nothing after that in the same Python process. A new seed, new data values, new prior values, a longer or shorter warmup (`chees_kwargs={"draws": ...}`) or another number of draws, all at the same shapes, compile nothing: data, priors, the metric, the step size and the trajectory length are runtime arguments of the compiled programs, not constants inside them (`tests/test_compile_once.py` counts 0 XLA compiles and 0 PyTensor function compiles on a second call). Rebuilding the model object for each dataset is fine: a rebuilt model is recognised as the same structure, which costs 0.05-0.14 s per call on the four example models instead of 0.16-0.54 s (`tools/lift_cost.py`). A new array shape (more observations, more groups), another chain count or another model structure compiles once. Measured on CPU (JAX CPU backend, 32-core host), 1,024 chains, 10 draws, 25 warmup, with `pixi run python tools/warm_stages.py . MODEL 1024 10 25 --calls 3`: the first call in a process, then the mean of calls 2-3 with a new seed each:
+
+| model | first call | calls 2-3 |
+|---|---|---|
+| 8 Schools | 13.5 s | 0.39 s |
+| GEV | 17.8 s | 1.0 s |
+| logistic 1000x25 | 11.9 s | 3.2 s |
+| radon non-centered | 16.9 s | 4.6 s |
+
+Most of the first call is XLA compilation, and most of the later calls is the sampler's own work; radon's later calls depend on the trajectory length ChEES settles on for that seed (3.6-5.5 s). GPU figures for the same shapes are pending the F2f measurement. Quote first-call or later-call timings, not both interchangeably.
 
 **Optional metric upgrade:** `pathfinder_kwargs={"imm_source": "fisher_lowrank"}` builds the metric from Pathfinder draws and their gradients (BlackJAX's Fisher score, low-rank) instead of the draw covariance. It is not a default, because it is not uniformly better — measured at 32 GPU chains, 2,000 draws: **1.22×** on 8 Schools, **1.96×** on logistic 1000x25, and **0.19×** on radon non-centered, with R-hat unchanged on the healthy models. The tell is `num_integration_steps` in `sample_stats`: if the realised trajectory length jumps from tens of steps to hundreds, the metric is wrong for the model and you are paying for it. `lbfgs_lowrank` reuses the L-BFGS factors Pathfinder already fitted at no extra cost. **pf-r1 caveat:** that A/B compared arms that never shared a metric orientation — `mc` feeds M⁻¹ while the low-rank arms feed ≈Σ into the same kernel slot (LEDGER `9f892b2`) — from a baseline on the orientation the 2×2 fixture shows failing (LEDGER `a03dc0f`, confirmed on GEV at `c2993cf`); the ratios and the step-jump tell are re-measurement pending on one explicit convention. The option itself stands; the numbers do not.
 
-**Turn the progress bars off in scripts:** `sample_pf_chees_hmc(..., progressbar=False)` removes the host callbacks from the compiled warmup and sampling scans. It is quieter and skips a per-step host round trip; it does **not** change compile cost — measured, a warm compile cache saves 6-7 s with the bars on or off, at ~640 XLA compiles either way.
+**Turn the progress bars off in scripts:** `sample_pf_chees_hmc(..., progressbar=False)` silences the bars, which is what you want in scripts and logs. The bars are drawn by the host between chunks of the compiled warmup and sampling loops, not from inside them, so on or off the compiled programs are the same and the flag does not change compile cost (`tests/test_compile_once.py`, `tests/test_progressbar.py`).
 
 **Warmup length: 2,000 is enough for these models; 10,000 was not.** Measured on both examples (2000 draws, 32 chains, warm median of 5 seeds, RTX A2000):
 
@@ -97,6 +106,34 @@ Do not go as low as 1,000: on GEV the frozen trajectory length collapsed to 6.2 
 Stage-specific options are forwarded as dicts: `pathfinder_kwargs`, `step_size_tune_kwargs`, `chees_kwargs`, `dynamic_hmc_kwargs`.
 
 For use with GPU sampling, see also the `examples/` folder.
+
+## Keeping the compiled programs between Python processes (opt-in)
+
+Compile-once holds inside one Python process. The first call in a new process compiles every program again, 10.6 s of a 13.5 s first call for 8 Schools at 1,024 chains on CPU. JAX can keep the compiled programs in a directory and read them back in the next process. This is **off by default**:
+
+```
+import pfcheeshmc
+pfcheeshmc.enable_compilation_cache("/some/writable/dir")   # once, before the first sampler call
+```
+
+The helper sets three JAX settings and nothing else: `jax_compilation_cache_dir`, `jax_persistent_cache_min_compile_time_secs = 0` and `jax_persistent_cache_min_entry_size_bytes = -1` (no minimum size, and no platform override of it). If you would rather not call anything, JAX's own environment variables do exactly the same, so set all three: `JAX_COMPILATION_CACHE_DIR=/some/writable/dir JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0 JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES=-1`. The directory alone is not enough: JAX writes a program only if it took at least 1 s to compile, and nearly all of this sampler's programs take less (8 Schools at 1,024 chains: 3 of 134 programs reach 1 s, so the directory alone gives 8.2 s for the warm first call against 3.4 s with all three settings, `JAX_COMPILATION_CACHE_DIR` alone on `tools/warm_stages.py . 8schools 1024 10 25 --calls 1`).
+
+Measured on CPU, one first call in a fresh process, 1,024 chains, 10 draws, 25 warmup (`tools/warm_stages.py . MODEL 1024 10 25 --calls 1 --cache-dir DIR`, run three times: without `--cache-dir`, then twice with a new empty `DIR`):
+
+| model | no cache | cache cold (writes it) | cache warm | cache size |
+|---|---|---|---|---|
+| 8 Schools | 13.5 s | 14.0 s | 3.4 s | 1.5 MB, 133 files |
+| radon non-centered | 16.9 s | 17.6 s | 9.5 s | 1.8 MB, 138 files |
+
+XLA compile time in the warm run is 0.6 s (8 Schools) and 1.0 s (radon) instead of 10.6 s and 8.6 s. Radon's warm call is dominated by running the warmup and the sampler (4.0 s and 1.7 s for this seed), not by compiling. GPU figures are pending the F2f measurement; no GPU number is claimed here.
+
+What it covers, and what it does not:
+
+- **Covered:** the XLA compilation of every program of a sampler call (the warmup and sampling loops, the Pathfinder fit, the step-size search, the log-density, the transform). The cached programs hold no data and no prior values, so a **new dataset or new priors at the same shapes use the cache of the old ones**; a new shape, chain count or model structure writes new entries. A fresh-process test pins this (`tests/test_compilation_cache.py`): the second process rebuilds the model with new data and priors, and every one of its compile requests but one (see *Order* below) is a cache hit.
+- **Not covered:** JAX still traces each function and lowers it to StableHLO in every new process (about 2 s for 8 Schools), and PyMC and PyTensor still build their graphs (0.05-0.14 s per call). The warm 8 Schools call above is 3.4 s for these reasons and for running the sampler.
+- **Safe to delete:** the directory only holds copies. Delete it at any time (or after upgrading JAX, a GPU driver or the device count: entries are keyed by the lowered program, the jaxlib version, the backend, the devices and the XLA flags, so a change misses and compiles again rather than misbehaving). It grows by one entry per distinct program; there is no limit unless you set JAX's `jax_compilation_cache_max_size`.
+- **Trust:** a JAX compilation cache is trusted code. Use a directory only you can write to, and do not share it with users you do not trust.
+- **Order:** call the helper before the first sampler call. One 0.04 s program is compiled while the packages are imported, before any call can set the directory; the environment variables, set before the process starts, cache it too.
 
 # Output
 

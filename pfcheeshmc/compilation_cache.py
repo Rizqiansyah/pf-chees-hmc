@@ -11,9 +11,9 @@ and read them back in the next process. It is off unless a directory is set. The
 
 The two thresholds are what the helper adds. JAX writes a program only if it took at least 1 s to compile
 (``jax_persistent_cache_min_compile_time_secs``), and nearly every program of a sampler call takes less:
-8 Schools makes 135 compile requests in a first call and only 2 of them reach 1 s, so the directory alone
-recovers about a third of the compile time while the three settings recover almost all of it
-(see the README, "Compile once").
+8 Schools at 1,024 chains makes 134 compile requests in a first call and only 3 of them reach 1 s, so the
+directory alone takes a fresh process's first call from 13.6 s to 8.2 s, while all three settings take it to
+3.4 s (CPU; see the README, "Keeping the compiled programs between Python processes").
 """
 from __future__ import annotations
 
@@ -42,8 +42,8 @@ def enable_compilation_cache(path: str | os.PathLike) -> None:
 
     What it covers: the XLA compilation of every program of the sampler (the three loops, the Pathfinder fit, the
     step-size search, the log-density, ...), on CPU and GPU. What it does not: JAX still traces each function and
-    lowers it to StableHLO in every new process (about 2 s for a small model), and PyMC/PyTensor still build their
-    graphs (about 0.1-0.4 s per call); neither is cached.
+    lowers it to StableHLO in every new process (about 2 s for 8 Schools), and PyMC/PyTensor still build their
+    graphs (0.05-0.14 s per call on the example models); neither is cached.
 
     The entries are keyed by the lowered program, the jaxlib version, the backend and its devices, and the XLA
     flags, so a different JAX, GPU or device count misses instead of misbehaving. Entries hold no data and no prior

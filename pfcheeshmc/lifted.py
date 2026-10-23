@@ -173,7 +173,7 @@ class LiftedGraph:
     fn
         ``fn(inputs, values)`` -> list of outputs, like ``jax_funcify(fgraph)`` but with the lifted
         model inputs as the second argument. Pure and JAX-traceable. Objects with equal ``key`` share
-        one ``fn`` (module registry).
+        one ``fn`` (module registry), and so do the lifts of equal graphs at other argument shapes (`_MEMO`).
     values
         The current lifted values (data, prior values, shared variables) as a tuple of ``jnp`` arrays,
         in the order ``fn`` expects. Empty for ``rule_used == "none"``.
@@ -596,6 +596,10 @@ def lift_graph(model, inputs, outputs, rule: str = "model_inputs") -> LiftedGrap
     ``rule`` is the first rule to try (`RULES`). When building or lowering with a rule raises, a warning
     names the rule and the exception and the next rule is tried; the last rule ("none", today's
     constants) lets its exception through.
+
+    A graph equal to one lifted before (a model rebuilt around other data or prior values) is not rewritten,
+    funcified or lowered again (`_MEMO`); ``values``, ``sources``, ``kept_static`` and ``static_shared`` are
+    always read from ``model`` as it is now.
     """
     if rule not in RULES:
         raise ValueError(f"unknown rule {rule!r}; expected one of {RULES}")
