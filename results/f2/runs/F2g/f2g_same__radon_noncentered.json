@@ -1,0 +1,273 @@
+[
+ {
+  "call": 1,
+  "wall": 44.54107384989038,
+  "compiles": 135,
+  "compile_s": 33.47514867782593,
+  "pytensor_functions": 0,
+  "stage": {
+   "init": [
+    0.6159691629000008,
+    4,
+    0
+   ],
+   "pathfinder": [
+    17.756176859140396,
+    103,
+    0
+   ],
+   "eps0": [
+    5.379554995102808,
+    1,
+    0
+   ],
+   "warmup": [
+    16.73694184492342,
+    7,
+    0
+   ],
+   "sampling": [
+    2.6516491370275617,
+    3,
+    0
+   ],
+   "transform": [
+    0.3286305661313236,
+    1,
+    0
+   ],
+   "rest": [
+    1.0721512846648693,
+    16,
+    0
+   ]
+  },
+  "names": [
+   "jit(_argmax)",
+   "jit(_broadcast_arrays)",
+   "jit(_broadcast_arrays)",
+   "jit(_einsum)",
+   "jit(_mean)",
+   "jit(_power)",
+   "jit(_squeeze)",
+   "jit(_squeeze)",
+   "jit(_threefry_fold_in)",
+   "jit(_threefry_seed)",
+   "jit(_threefry_split)",
+   "jit(_threefry_split)",
+   "jit(_where)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(add)",
+   "jit(argsort)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(broadcast_in_dim)",
+   "jit(ceil)",
+   "jit(concatenate)",
+   "jit(concatenate)",
+   "jit(concatenate)",
+   "jit(concatenate)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(convert_element_type)",
+   "jit(dynamic_slice)",
+   "jit(dynamic_slice)",
+   "jit(dynamic_slice)",
+   "jit(dynamic_slice)",
+   "jit(dynamic_slice)",
+   "jit(dynamic_slice)",
+   "jit(empty)",
+   "jit(empty)",
+   "jit(empty)",
+   "jit(equal)",
+   "jit(exp)",
+   "jit(floor_divide)",
+   "jit(floor_divide)",
+   "jit(gather)",
+   "jit(gather)",
+   "jit(gather)",
+   "jit(gather)",
+   "jit(gather)",
+   "jit(gather)",
+   "jit(gather)",
+   "jit(initial_point)",
+   "jit(iota)",
+   "jit(iota)",
+   "jit(iota)",
+   "jit(iota)",
+   "jit(iota)",
+   "jit(iota)",
+   "jit(iota)",
+   "jit(isfinite)",
+   "jit(isfinite)",
+   "jit(less)",
+   "jit(less)",
+   "jit(less)",
+   "jit(less)",
+   "jit(less)",
+   "jit(matmul)",
+   "jit(mul)",
+   "jit(multiply)",
+   "jit(multiply)",
+   "jit(multiply)",
+   "jit(multiply)",
+   "jit(pathfinder_draw)",
+   "jit(pathfinder_fit)",
+   "jit(remainder)",
+   "jit(reshape)",
+   "jit(reshape)",
+   "jit(reshape)",
+   "jit(reshape)",
+   "jit(sampling_chunk)",
+   "jit(scatter)",
+   "jit(scatter)",
+   "jit(scatter)",
+   "jit(score_pool)",
+   "jit(score_pool)",
+   "jit(score_positions)",
+   "jit(search_step_sizes)",
+   "jit(select_n)",
+   "jit(select_n)",
+   "jit(select_n)",
+   "jit(select_n)",
+   "jit(select_n)",
+   "jit(split)",
+   "jit(squeeze)",
+   "jit(squeeze)",
+   "jit(squeeze)",
+   "jit(squeeze)",
+   "jit(stage)",
+   "jit(stage)",
+   "jit(stage)",
+   "jit(stage)",
+   "jit(stage)",
+   "jit(subtract)",
+   "jit(subtract)",
+   "jit(transform_draws)",
+   "jit(transpose)",
+   "jit(true_divide)",
+   "jit(true_divide)",
+   "jit(unstack)",
+   "jit(unstack)",
+   "jit(usable_mask)",
+   "jit(warmup_chunk)",
+   "jit(warmup_init)"
+  ]
+ },
+ {
+  "call": 2,
+  "wall": 7.356798148015514,
+  "compiles": 0,
+  "compile_s": 0.0,
+  "pytensor_functions": 0,
+  "stage": {
+   "init": [
+    0.031568704871460795,
+    0,
+    0
+   ],
+   "pathfinder": [
+    0.25459472206421196,
+    0,
+    0
+   ],
+   "eps0": [
+    0.020109976874664426,
+    0,
+    0
+   ],
+   "warmup": [
+    6.413315305951983,
+    0,
+    0
+   ],
+   "sampling": [
+    0.32863848307169974,
+    0,
+    0
+   ],
+   "transform": [
+    0.17087291809730232,
+    0,
+    0
+   ],
+   "rest": [
+    0.13769803708419204,
+    0,
+    0
+   ]
+  },
+  "names": []
+ },
+ {
+  "call": 3,
+  "wall": 5.443133797030896,
+  "compiles": 0,
+  "compile_s": 0.0,
+  "pytensor_functions": 0,
+  "stage": {
+   "init": [
+    0.029304982163012028,
+    0,
+    0
+   ],
+   "pathfinder": [
+    0.24968425487168133,
+    0,
+    0
+   ],
+   "eps0": [
+    0.020155339036136866,
+    0,
+    0
+   ],
+   "warmup": [
+    4.600104250013828,
+    0,
+    0
+   ],
+   "sampling": [
+    0.24570197006687522,
+    0,
+    0
+   ],
+   "transform": [
+    0.16277833096683025,
+    0,
+    0
+   ],
+   "rest": [
+    0.13540466991253197,
+    0,
+    0
+   ]
+  },
+  "names": []
+ }
+]

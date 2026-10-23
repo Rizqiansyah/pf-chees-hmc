@@ -54,7 +54,7 @@ pixi run python tests/test_inference_data.py
 
 A few seconds, CPU only, no MCMC. It pins the `sample_stats` contract in `# Output` below.
 
-The whole suite runs in one process (`pytest tests`, about 9.5 minutes on CPU). `tests/conftest.py` releases the compiled programs after each test module (a process may hold at most `vm.max_map_count`, 65,530 by default, memory mappings, and every compiled XLA program takes dozens) and switches the default compilation cache off for the session (see "Keeping the compiled programs between Python processes").
+The whole suite runs in one process (`pytest tests`, about 11 minutes on CPU). `tests/conftest.py` releases the compiled programs after each test module (a process may hold at most `vm.max_map_count`, 65,530 by default, memory mappings, and every compiled XLA program takes dozens) and switches the default compilation cache off for the session (see "Keeping the compiled programs between Python processes").
 
 # Use
 See the `examples/` folder for some examples. In short
@@ -127,7 +127,7 @@ Measured on CPU, one first call in a fresh process, 1,024 chains, 10 draws, 25 w
 | 8 Schools | 13.5 s | 14.0 s | 3.4 s | 1.5 MB, 133 files |
 | radon non-centered | 16.9 s | 17.6 s | 9.5 s | 1.8 MB, 138 files |
 
-XLA compile time in the warm run is 0.6 s (8 Schools) and 1.0 s (radon) instead of 10.6 s and 8.6 s. Radon's warm call is dominated by running the warmup and the sampler (4.0 s and 1.7 s for this seed), not by compiling. The default cache gives the same: 8 Schools, one fresh process after another with an empty `XDG_CACHE_HOME=DIR PFCHEESHMC_COMPILATION_CACHE=1 tools/warm_stages.py . 8schools 1024 10 25 --calls 1` (the tool turns the default off unless the variable is set), 13.8 s for the first (130 compile requests, 129 written, 1.3 MB), 3.4 s for the second (130 of 130 hits), and 3.5 s for a process with new observed data at the same shapes (`--new-data`, 130 of 130 hits). GPU figures are pending the F2f measurement; no GPU number is claimed here.
+XLA compile time in the warm run is 0.6 s (8 Schools) and 1.0 s (radon) instead of 10.6 s and 8.6 s. Radon's warm call is dominated by running the warmup and the sampler (4.0 s and 1.7 s for this seed), not by compiling. The default cache gives the same: 8 Schools, one fresh process after another with an empty `XDG_CACHE_HOME=DIR PFCHEESHMC_COMPILATION_CACHE=1 tools/warm_stages.py . 8schools 1024 10 25 --calls 1` (the tool turns the default off unless the variable is set), 13.8 s for the first (130 compile requests, 129 written, 1.3 MB), 3.4 s for the second (130 of 130 hits), and 3.5 s for a process with new observed data at the same shapes (`--new-data`, 130 of 130 hits). On the GPU (RTX A2000, 1,024 chains, 10 draws, each model at its smallest passing warmup: 25, 25, 50 and 300), a fresh process with new observed data and the default directory warm makes its first call in 3.6 s (8 Schools), 6.2 s (GEV), 4.9 s (logit, 1,000 x 25) and 9.6 s (radon non-centered), every compile request a hit, against 17.0-44.5 s without the cache (`results/f2/F2g/SUMMARY.md`; the explicit helper gives the same, F2f).
 
 What it covers, and what it does not:
 

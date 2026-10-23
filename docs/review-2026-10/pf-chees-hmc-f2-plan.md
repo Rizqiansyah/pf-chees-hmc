@@ -178,7 +178,7 @@ tuned to the benchmark models.
   data or priors change every run.
 - **Output:** R2-T4 redone for two workflows: "new data/priors every run" and "repeat runs".
 
-### F2g — after F2f (owner's go 2026-10-23: "Yes to all")
+### F2g — after F2f (owner's go 2026-10-23: "Yes to all"; done 2026-10-24, merged into `f2` at 51e15cf, `results/f2/F2g/SUMMARY.md`)
 Three items from the F2f report (`results/f2/F2f/REPORT.md`, Findings), done in one task.
 1. **Jitted start-repair check (universal).**
    - **Today:** `_find_finite_start` (`sampler.py:350`) decides "usable" with an eager `self.ld_fn(pos)`

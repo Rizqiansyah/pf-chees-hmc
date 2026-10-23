@@ -167,3 +167,25 @@
   - a `tests/conftest.py` teardown;
   - the disk cache on by default, never overriding the user, with an opt-out, no import-time effect,
     and the timing tools off by default.
+- 2026-10-24 02:10 — F2g task finished (head commit time) (fast-tier; it stopped once at the time limit before its first commit and
+  was resumed). Merged with `--no-ff` (51e15cf; task head eec7b17). Task suite:
+  `496 passed, 62 warnings in 656.82s`. SUMMARY is in `results/f2/F2g/`.
+  - **Start repair:** `_is_usable` decides with `_usable_mask` on a one-row host stack, and
+    `_ensure_finite_inits` repairs only the failing rows. Draws are bit-identical to 087b54e. CPU GEV
+    cold init: 5.45 s / 164 compiles → 1.43 s / 19.
+  - **`tests/conftest.py`:** a teardown for every module. Peak mappings 37.8k → 15.7k; the suite takes
+    13% longer.
+  - **Disk cache on by default:** `${XDG_CACHE_HOME:-~/.cache}/pfcheeshmc/jax`, mode 0700.
+    - Never overrides a user's JAX cache setting.
+    - Opt-out `PFCHEESHMC_COMPILATION_CACHE=0`; no import-time effect.
+    - The timing tools default to off.
+  - **DEVIATION:** no size cap. With a cap, JAX's LRU scans every entry on every write (33 µs per file);
+    I confirmed the scan in `jax/_src/lru_cache.py`. Owner to confirm.
+- 2026-10-24 02:35 — Lead suite on merged `f2` (51e15cf):
+  `496 passed, 62 warnings in 649.33s (0:10:49)`. The real `~/.cache/pfcheeshmc` was not created.
+- 2026-10-24 02:35–02:41 — GPU re-check (`results/f2/drivers/f2g_gpu.sh`; load 3–6).
+  - **GEV first call:** 34.0 → 27.2 s; init 8.98 → 2.47 s; warm init 0.21 → 0.03 s. The other models
+    are unchanged within noise.
+  - **Default cache with new data, fresh process:** 3.6, 6.2, 4.9 and 9.6 s, with every request a hit.
+    It equals the explicit helper (F2f: 3.7, 7.4, 4.8, 9.8). GEV is still 0.3 s behind CPU NUTS's 5.9 s.
+  - **Directory:** 2.9–3.7 MB, mode 700, plus JAX's GPU autotune subdirectory.
