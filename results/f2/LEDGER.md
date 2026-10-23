@@ -106,3 +106,15 @@
     verified with `equal_computations` before reuse.
   - Then F2f: GPU measurement of main vs f2 at the M4 shapes, the R1 bias gate, and CPU NUTS first
     calls.
+- 2026-10-23 20:15 — Resumed after the compaction. Per-call lift cost on fresh model objects (CPU,
+  `scratchpad/f2e/lift_cost2.py`; the three lifts are logp, initial point and transform, summed):
+  - rewrite: 0.10–0.35 s;
+  - key lowering: 0.02–0.07 s;
+  - widening: 0.02–0.06 s;
+  - `model.logp()`: 0.02–0.05 s;
+  - funcify: ≤ 0.02 s.
+  `tools/warm_stages.py` builds a new model object on every call, so a per-model memo would not help
+  it. The pre-rewrite memo skips the rewrite, the funcify and the key lowering.
+- 2026-10-23 20:20 — F2e task launched (`~/pf/f2-e` from f6108ac): an opt-in on-disk JAX
+  compilation cache, and a lift memo (pre-rewrite structural hash, verified with
+  `equal_computations`).
