@@ -1,0 +1,4 @@
+default --models 8schools --chains 1024 --draws 10 --warmups 25 --seeds 1,2,3 --repeat 2 --arm f2f:default --wp F2 --step F2f
+default --models gev --chains 1024 --draws 10 --warmups 25 --seeds 1,2,3 --repeat 2 --arm f2f:default --wp F2 --step F2f
+default --models logit_1000x25 --chains 1024 --draws 10 --warmups 50 --seeds 1,2,3 --repeat 2 --arm f2f:default --wp F2 --step F2f
+default --models radon_noncentered --chains 1024 --draws 10 --warmups 300 --seeds 1,2,3 --repeat 2 --arm f2f:default --wp F2 --step F2f

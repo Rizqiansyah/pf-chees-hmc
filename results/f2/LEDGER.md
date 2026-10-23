@@ -118,3 +118,22 @@
 - 2026-10-23 20:20 — F2e task launched (`~/pf/f2-e` from f6108ac): an opt-in on-disk JAX
   compilation cache, and a lift memo (pre-rewrite structural hash, verified with
   `equal_computations`).
+- 2026-10-23 21:45 — F2e (fast-tier, one round). Merged with `--no-ff` (89e0682; task head 13ed9f0). Task suite:
+  `453 passed, 60 warnings in 520.15s`. SUMMARY is in `results/f2/F2e/`.
+  - **Lift memo:** pre-rewrite signature; every hit verified with `equal_computations`. The three lifts
+    of a call on a rebuilt model went from 0.16–0.54 s to 0.05–0.14 s.
+  - **CPU warm wall:** 8schools 0.51→0.39 s, gev 1.43→1.01 s, logit 3.27→3.19 s, radon 4.90→4.58 s.
+  - **Disk cache:** `pfcheeshmc.enable_compilation_cache(path)`, opt-in and documented in the README. A
+    fresh process with new data and priors gets 134 of 135 requests from the cache. First call on CPU:
+    8schools 13.5→3.4 s, radon 16.9→9.5 s.
+  - **Suite fragility:** at f6108ac the one-process suite ends at 61,028 memory mappings against
+    `vm.max_map_count` 65,530. F2e's test module releases compiled programs, so the suite now ends at
+    about 37,900. A `tests/conftest.py` teardown is the durable fix (not done).
+- 2026-10-23 21:59 — Lead suite on merged `f2` (89e0682):
+  `453 passed, 60 warnings in 523.25s (0:08:43)`.
+- 2026-10-23 — F2f drivers added in `results/f2/drivers/`:
+  - `f2f_gpu.sh`: `main` vs `f2`, same data and new data, disk cache cold and warm;
+  - `run_step.sh` with `F2f_gate.cmds`: the R1 gate on the M4 default rows;
+  - `f2f_cpu.sh` and `cpu_nuts_calls.py`: CPU NUTS per-call walls, PyTensor cache cold and warm;
+  - `new_data.py`: any model's observed data permuted, the same shapes;
+  - `tools/warm_stages.py --new-data S`.

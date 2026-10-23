@@ -7,7 +7,8 @@
 TREE is the source tree to measure: this checkout, or a `git archive` of an earlier commit (it provides
 `pfcheeshmc/` and `tools/r1_bias.py`). MODEL is a ladder name, or `hier`: the seeded 8-Schools-shaped model
 of `tests/seeded_models.py`, rebuilt with NEW data and prior values on every call. Call 1 is cold; calls 2..
-are warm, with a new seed each. `--cache-dir DIR` switches the on-disk compilation cache on
+are warm, with a new seed each. `--new-data S` gives each ladder call new observed data at the same shapes
+(the "new data every run" workflow). `--cache-dir DIR` switches the on-disk compilation cache on
 (`pfcheeshmc.enable_compilation_cache`; TREE must have it): run the same command twice for call 1 with the
 cache cold, then warm, in a fresh process each time.
 
@@ -44,6 +45,9 @@ ap.add_argument("--progressbar", action="store_true")
 ap.add_argument("--chees", default="{}", help="extra chees_kwargs, JSON")
 ap.add_argument("--pathfinder", default="{}", help="pathfinder_kwargs, JSON")
 ap.add_argument("--cache-dir", help="enable the on-disk compilation cache in this directory")
+ap.add_argument("--new-data", type=int, default=None, metavar="S",
+                help="call k samples the model with new observed data at the same shapes (permutation seed S+k); "
+                     "every call is a clone, so all share one structure (results/f2/drivers/new_data.py)")
 args = ap.parse_args()
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -96,7 +100,14 @@ for method, label in METHODS.items():
 
 
 def build(call):
-    return hier(100 + call, 200 + call) if args.model == "hier" else r1_bias.build_model(args.model)
+    if args.model == "hier":
+        return hier(100 + call, 200 + call)
+    model = r1_bias.build_model(args.model)
+    if args.new_data is None:
+        return model
+    sys.path.insert(0, os.path.join(HERE, "..", "results", "f2", "drivers"))
+    from new_data import with_new_data
+    return with_new_data(model, args.new_data + call)
 
 
 results = []
