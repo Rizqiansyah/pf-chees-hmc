@@ -32,18 +32,10 @@ class WarmupInfo(NamedTuple):
         reproduction reads. harmonic_acceptance is the quantity ChEES adapts
         the step size on (harmonic mean over non-divergent chains), not the
         arithmetic mean the progress bar used to show.
-    positions
-        The stacked warmup positions, a dict keyed by variable with each leaf
-        (steps, C, ...), or None. With stop_rule=None this is the full history;
-        when a stop rule fired it holds only the final block. Added by WP4 so
-        the two-phase metric refresh can build its ensemble from phase-A draws
-        without re-running the warmup. Additive field with a default: consumers
-        that only read .info / .trace are unaffected.
     """
 
     info: Any
     trace: Any
-    positions: Any = None
 
 
 __all__ = [
@@ -107,16 +99,6 @@ def chees_warmup_with_progress(
                              #     Measured net negative on all four ladder models (block
                              #     boundaries cost 6.7-9.0 s, more than any warmup saving);
                              #     kept opt-in for instrumentation, see docs/ladder-results.md
-    iterate="ma",              # "ma" = installed BlackJAX behaviour (default); "raw" =
-                             #     paper-faithful Adam on the raw log-T iterate, moving
-                             #     average used only at the freeze. pfcheeshmc/chees.py.
-    stack_positions=False,    # True = also stack warmup positions (WP4's two-phase metric
-                             #     refresh reads phase-A draws from them). Off by default:
-                             #     the position stack is the warmup memory wall at C=1,024.
-    positions_last=None,       # with stack_positions: keep only the last k steps' positions (the
-                             #     refresh needs its pool, not the whole of phase A)
-    t0=None,                   # initial trajectory length in time units (paper: pi/2);
-                             #     None keeps the installed initialisation (step_size)
     single_step_iters=0,       # run L=1 for this many steps while the step size settles
 ):
     """ChEES warmup, as host-driven chunks of ONE jitted program (`compiled.warmup_chunk`).
@@ -125,8 +107,8 @@ def chees_warmup_with_progress(
     ``num_steps`` compiles nothing. Per-step keys are ``fold_in(rng_key, global_step_index)``; the Halton
     jitter index runs in the carried state. Both are independent of ``num_steps`` and of the chunk size.
 
-    Returns ``(last_states, parameters), WarmupInfo``; ``WarmupInfo.info`` / ``.trace`` / ``.positions``
-    are NumPy stacks with one row per step run.
+    Returns ``(last_states, parameters), WarmupInfo``; ``WarmupInfo.info`` / ``.trace`` are NumPy stacks
+    with one row per step run.
     """
     # --- metric shape guard -------------------------------------------------
     # The metric is a flat kernel-order quantity: its dimension must equal the
@@ -160,13 +142,12 @@ def chees_warmup_with_progress(
         optim=optim if hasattr(optim, "init") else float(optim),
         target_accept=float(target_acceptance_rate), decay_rate=float(decay_rate),
         jitter_amount=float(jitter_amount), max_leapfrog_steps=int(max_leapfrog_steps),
-        iterate=iterate, single_step_iters=int(single_step_iters))
+        single_step_iters=int(single_step_iters))
 
-    # Start: HMC states for every chain, and the adapter's state. Step size and t0 are values.
+    # Start: HMC states for every chain, and the adapter's state. The step size is a value.
     eps0 = jnp.asarray(initial_step_size, dtype=jnp.result_type(initial_step_size))
-    t0_val = jnp.asarray(0.0 if t0 is None else t0, dtype=eps0.dtype)
     init_states, adaptation_state = _compiled.warmup_init(
-        ld.fn, ld.names, ld.values, positions, eps0, t0_val, has_t0=t0 is not None, **settings)
+        ld.fn, ld.names, ld.values, positions, eps0, **settings)
 
     def chunk_call(size, stack):
         def call(carry, start, n):
@@ -259,26 +240,21 @@ def chees_warmup_with_progress(
             if stopped_at is not None:
                 break
         # The last block's stacks only, as before.
-        pos_hist, warm_info, trace_hist = jax.tree_util.tree_map(
-            lambda x: np.asarray(x)[:n], (pos_blk, info_blk, trace_blk))
+        warm_info, trace_hist = jax.tree_util.tree_map(
+            lambda x: np.asarray(x)[:n], (info_blk, trace_blk))
     else:
-        # Default path: chunks of WARMUP_CHUNK steps. Positions are stacked only when asked (WP4's
-        # metric refresh); that stack is the memory wall at C=1,024, so the plain path never builds it.
+        # Default path: chunks of WARMUP_CHUNK steps. The positions are not stacked: that stack is the
+        # memory wall at C=1,024, and only the stop rule reads it.
         rest = _compiled.HostStack(num_steps)
-        pos = _compiled.HostStack(num_steps, keep_last=positions_last) if stack_positions else None
 
         def consume(start, n, out):
             host = jax.tree_util.tree_map(np.asarray, out)
-            if stack_positions:
-                pos.add(start, n, host[0])
-                host = host[1:]
             rest.add(start, n, host)
             tick(start + n, *[jax.tree_util.tree_map(lambda x: x[:n], t) for t in host])
 
-        carry = _compiled.run_chunks(chunk_call(_compiled.WARMUP_CHUNK, bool(stack_positions)), carry,
+        carry = _compiled.run_chunks(chunk_call(_compiled.WARMUP_CHUNK, False), carry,
                                      num_steps, _compiled.WARMUP_CHUNK, consume)
         warm_info, trace_hist = rest.result()
-        pos_hist = pos.result() if stack_positions else None
         stopped_at = None
     last_states, last_adapt_state = carry
 
@@ -313,9 +289,4 @@ def chees_warmup_with_progress(
     # warm_info is the projected per-step stack (WarmupScanInfo): exact gradient counts,
     # divergences, and the acceptance signal -- NOT the full HMCInfo, whose proposal.*
     # leaves are ~4x the states and were the warmup memory wall at C=1,024 (WP5).
-    # `positions` is the warmup position stack, and it is None on the default path by
-    # design: nothing there reads it. WP4's two-phase metric refresh does need phase-A
-    # positions, and sampler.py raises rather than sampling from a stale metric when they
-    # are absent -- so the refresh runs only when positions are actually stacked
-    # (stack_positions=True, or under a stop rule). See LEDGER 2026-10-20 "wp4 x wp5 interaction".
-    return (last_states, parameters), WarmupInfo(info=warm_info, trace=trace_hist, positions=pos_hist)
+    return (last_states, parameters), WarmupInfo(info=warm_info, trace=trace_hist)
