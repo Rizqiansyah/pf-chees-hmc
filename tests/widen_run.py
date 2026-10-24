@@ -4,17 +4,17 @@
     python widen_run.py draws TREE MODEL OUT.npz
 
 TREE is a source tree that provides `pfcheeshmc/` and `tools/` (the checkout, or a `git archive` of an earlier commit).
-Nothing here may need what only the newer tree has: `graphs` calls `_widen_model_inputs` and
-`initial_point_expression` only.
+Nothing here may need what only the newer tree has: `graphs` calls `_widen_model_inputs`, `initial_point_expression`
+and the lifts only.
 
 graphs
     For the ladder models, the extra models of test_lifted and its literal models at every literal pair (those cross the
     autocast boundaries: 0.5 is float32, 0.1 float64, 1000 int16), at the three sites of a lift (logp, initial point,
-    value -> RV transform): the widened outputs as text (``debugprint``, which shows every node, type, constant and
-    the sharing of nodes; variable names are left out: they do not enter a computation) and the constants replaced, each with its dtype, shape and bytes. Writes the hashes, and the
-    head of the text to read a difference by. Also, for the ladder and the extra models: the lift of each site
-    (key, ``n_lifted``, rule, the kept-static report), and whether a fresh build of the model finds the first one's
-    function (``lifted._REGISTRY``, ``lifted._MEMO``).
+    value -> RV transform): the widened outputs as text (``debugprint``, which shows every node, type, constant and the
+    sharing of nodes; variable names are left out, they do not enter a computation) and the constants replaced, each
+    with its dtype, shape and bytes. Writes the hashes, and the head of the text to read a difference by. Also, for
+    the ladder and the extra models: the lift of each site (key, ``n_lifted``, rule, the kept-static report), and
+    whether a lift of a fresh build of the model returns the first one's function.
 draws
     One sampler call on a model, then a second on a fresh build of it with another seed (the second lift finds the
     first one's memo), the arrays of both: unconstrained draws, sample statistics, ``config``.
