@@ -217,3 +217,5 @@
   load 2.6–3.4 with the F2i task on the CPU). The host gather costs nothing measurable: warm init unchanged to
   0.002 s, one or two programs fewer per model. GEV's call 1 is 2.9 s slower, spread over every stage (XLA compile
   22.6 → 25.2 s), so CPU load, not the change.
+- 2026-10-24 — F2h → local `main` (owner's up-front yes): merged with `--no-ff` (beb3087). Its tree equals `f2`'s
+  152eaf8; since the suite-tested 44a0556 only results changed. Not pushed; `origin/main` is still ecd9ba1.
