@@ -7,7 +7,7 @@ What a wrong answer here costs:
   * the smoke test of 2026-10-24 failed on all four models with "cond branches must have equal output types", inside
     BlackJAX's L-BFGS. The value that optax's line search keeps in its state has the dtype of the position (float32);
     a fresh evaluation has the dtype of the log-density, and that was float64: the two example notebooks (8 Schools,
-    GEV) run ``jax.config.update("jax_enable_x64", True)`` in their first cell, `tools/r1_bias.build_model` executed
+    GEV) run ``jax.config.update("jax_enable_x64", True)`` in their first cell, the tag's model builder executed
     them, and 8 Schools' data are float64 NumPy arrays that PyMC does not cast. The first model turned x64 on for the
     whole process, so the other three failed behind it. Nothing in the sampler produces the mismatch (a process whose
     x64 was off all along ran logit_1000x25 on the code before this task). The sampler says so when x64 and floatX
