@@ -27,11 +27,11 @@ Releasing compiled programs (F2g, F2j)
     stated in the limit read at run time, so a host with a lower limit releases sooner (at 32,768 it is 384, under the
     2,000 mappings of an idle process: after every module, as the first version of this fixture did).
 
-    Results on the 575 tests of the F2i head (584 with test_conftest_release.py), CPU, OMP_NUM_THREADS=4:
+    Results on the 575 tests of the F2i head (584 with test_conftest_release.py), CPU, OMP_NUM_THREADS=4, host shared:
       release after every module   peak 15,688 mappings   774 s
-      this rule                    peak 22,730 mappings   717 s   (released after test_compile_once.py 22,710,
-                                   test_lifted.py 17,914, test_pf_closed_form.py 17,273, test_step_size_batched.py
-                                   18,414; every other module ended at or under 14,710)
+      this rule                    peak 22,730 and 22,726 mappings   717 s and 721 s (two runs; released after
+                                   test_compile_once.py 22,710, test_lifted.py 17,914, test_pf_closed_form.py 17,274,
+                                   test_step_size_batched.py 18,415; every other module ended at or under 14,710)
       never release                aborts in XLA in the last module, after 64,301 mappings at the end of test_widen.py
     Half the limit is 32,765.
 """
