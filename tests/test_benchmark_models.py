@@ -35,6 +35,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent
 sys.path.insert(0, str(REPO))
 from benchmarks.models import MODELS, build_model  # noqa: E402
+from test_api_prune import without_removed  # noqa: E402
 
 TAG = "archive/pre-cleanup"
 LADDER = ("8schools", "gev", "logit_1000x25", "radon_noncentered")
@@ -117,8 +118,9 @@ def test_the_python_model_is_the_notebook_model(runs, floatx, name):
 @pytest.mark.parametrize("floatx", FLOATX)
 @pytest.mark.parametrize("name", LADDER)
 def test_the_draws_are_bit_identical_to_the_notebook_models(runs, floatx, name):
-    """Seeds 1 and 2, 8 chains, 10 draws, 25 warmup: every posterior and sample_stats array and the resolved config, equal
-    to the last bit between the tag (notebook-built models) and this tree (`benchmarks.models`)."""
+    """Seeds 1 and 2, 8 chains, 10 draws, 25 warmup: every posterior and sample_stats array and the resolved config (less
+    the keys of the options C2 removed, which the tag still records), equal to the last bit between the tag
+    (notebook-built models) and this tree (`benchmarks.models`)."""
     old_meta, old = runs[f"draws:old:{floatx}"].result()
     new_meta, new = runs[f"draws:new:{floatx}"].result()
     assert old_meta["floatX"] == new_meta["floatX"] == floatx and old_meta["x64"] == new_meta["x64"] == (floatx == "float64")
@@ -128,8 +130,11 @@ def test_the_draws_are_bit_identical_to_the_notebook_models(runs, floatx, name):
         for label in ("posterior", "stats", "config"):
             assert any(k.startswith(f"{name}/seed{seed}/{label}") for k in keys), (seed, label)
     for key in keys:
+        if key.endswith("/config"):                              # the resolved config
+            assert without_removed(json.loads(str(old[key]))) == json.loads(str(new[key])), key
+            continue
         assert old[key].dtype == new[key].dtype, key
-        if old[key].dtype.kind in "US":                          # the resolved config
+        if old[key].dtype.kind in "US":
             assert str(old[key]) == str(new[key]), key
         else:
             assert np.array_equal(old[key], new[key], equal_nan=True), key

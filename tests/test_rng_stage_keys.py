@@ -67,7 +67,7 @@ def test_seed_changes_the_sampled_chain():
 
         idata = pfcheeshmc.sample_pf_chees_hmc(
             model, draws=4, chains=2, random_seed=seed,
-            chees_kwargs={"draws": 2}, pathfinder_kwargs={"num_paths": 2, "draws": 8},
+            chees_kwargs={"draws": 2}, pathfinder_kwargs={"draws": 8},
         )
         return float(np.asarray(idata.posterior["x"].values).ravel()[0])
 

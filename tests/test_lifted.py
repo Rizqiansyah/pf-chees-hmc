@@ -663,7 +663,7 @@ def test_sampler_log_density_is_the_lifted_one_and_draws_match_the_old_path():
 
     m = m_pm_data(0)
     kw = dict(chains=4, draws=4, keep_untransformed=True, chees_kwargs={"draws": 8, "progressbar": False},
-              dynamic_hmc_kwargs={"progressbar": False}, pathfinder_kwargs={"num_paths": 2, "draws": 16})
+              dynamic_hmc_kwargs={"progressbar": False}, pathfinder_kwargs={"draws": 16})
     new = PfCheesHMC(m, seed=3)
     assert isinstance(new._lifted, lifted.LiftedGraph) and new._lifted.rule_used == "model_inputs"
     old = PfCheesHMC(m, seed=3)
