@@ -124,7 +124,9 @@ def build_model(model_name):
     tests/test_rng_stage_keys.py by ordering alone. Snapshot, build, restore.
     """
     import bench_ladder as bl
+    import jax
     import pymc as pm
+    import pytensor
     import pfcheeshmc
 
     keep = (pm.sample, pm.sample_prior_predictive, pm.sample_posterior_predictive,
@@ -135,6 +137,11 @@ def build_model(model_name):
         (pm.sample, pm.sample_prior_predictive, pm.sample_posterior_predictive,
          pfcheeshmc.sample_pf_chees_hmc) = keep
         assert pfcheeshmc.sample_pf_chees_hmc is keep[3], "sampling stub was not restored"
+        # The example notebooks also run `jax.config.update("jax_enable_x64", True)`. PyTensor's JAX
+        # dispatch sets the flag from floatX at import (`jax_enable_x64 = floatX == "float64"`), so under
+        # `floatX=float32` a notebook would leave float64 on, and a float32 run would then mix widths.
+        if pytensor.config.floatX != "float64":
+            jax.config.update("jax_enable_x64", False)
 
 
 def value_var_names(model_name):
