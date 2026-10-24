@@ -37,3 +37,6 @@
   verbatim (0c18874) and TASK-RULES now says to return it in the reply. Integrator: nothing blocking; merged 9c5fe20,
   suite `587 passed, 53 warnings in 846.23s (0:14:06)`. C4 task launched in `~/pf/cleanup-c4` from 4951526
   (`benchmarks/` as the PLAN lists, no `tools/`; acceptance: identical b² to the tag's `r1_bias` on 8schools C=64).
+- 2026-10-24 — Owner: "Pause after this subtask". When C4 reports, commit its SUMMARY if the task could not, and
+  stop. **To resume:** the C4 integrator, step 1 (`~/pf/cleanup-c4`, branch `cleanup-c4`); then C3, C5+C6, C7, C8
+  in the PLAN's order. If C4 stops at the time limit, resume the paused task; do not restart it.
