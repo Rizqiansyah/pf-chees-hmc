@@ -219,3 +219,12 @@
   22.6 → 25.2 s), so CPU load, not the change.
 - 2026-10-24 — F2h → local `main` (owner's up-front yes): merged with `--no-ff` (beb3087). Its tree equals `f2`'s
   152eaf8; since the suite-tested 44a0556 only results changed. Not pushed; `origin/main` is still ecd9ba1.
+- 2026-10-24 11:46 — F2i (fast-tier, one round). Merged with `--no-ff` (a7a4413; task head 749cdff). Task suite:
+  `575 passed, 64 warnings in 772.33s`. Not a memo, a third design: `_rebuild` remakes only the nodes below a
+  widened constant (`clone_replace` cloned all of the graph, twice), and the literal-built parameters are folded in
+  one `constant_fold` call, only those whose dtype and ndim some graph constant has. The same graph as before
+  (120 graph cases and 209 replaced constants equal to 44a0556; draws bit-identical). CPU, saved per call:
+  0.017 / 0.016 / 0.016 / 0.046 s (8schools / gev / logit / radon). A memo on top could add at most about 0.01 s,
+  for well over the plan's 80-line budget. Lead suite running.
+- 2026-10-24 — F2j task launched (`~/pf/f2-j` from the `f2` head): release compiled programs in the tests
+  only above a mapping-count threshold. `results/f2/probes/mapcount_plugin.py` (F2g's measurement plugin) added.
