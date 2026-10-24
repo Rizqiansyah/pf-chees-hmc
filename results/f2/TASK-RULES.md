@@ -43,7 +43,7 @@ pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" python -m pytest
   a fixed seed, they must; prove it with a test.
 
 ## Deliverables
-1. Commits on `f2-<wp>`. Messages end with a blank line and a commit trailer.
+1. Commits on `f2-<wp>`. Messages end with a blank line and a trailer naming your own model, not another one.
 2. A SUMMARY for `results/f2/<WP>/SUMMARY.md`. Do not write this file. Return its content as the last
    section of your final reply, and the lead will commit it. It contains:
    - **DEVIATIONS** (first; "none" if none);
