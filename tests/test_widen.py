@@ -258,7 +258,9 @@ def _child(tree, *args):
 
 def test_widened_graphs_and_replacements_are_those_of_the_old_code(base_tree, tmp_path):
     """Every model of `CASES` at the three sites, in fresh processes: the same graphs (type, constant and sharing of
-    every node) and the same constants replaced, byte for byte, as 44a0556 makes."""
+    every node) and the same constants replaced, byte for byte, as 44a0556 makes. And for the ladder and the extra
+    models, the same key, ``n_lifted``, rule and kept-static report at each site, and the same function object for
+    a rebuild of the model."""
     got = {}
     with concurrent.futures.ThreadPoolExecutor(2) as pool:
         jobs = {label: pool.submit(_child, tree, "graphs", tmp_path / f"{label}.json")
@@ -267,12 +269,19 @@ def test_widened_graphs_and_replacements_are_those_of_the_old_code(base_tree, tm
             job.result()
             got[label] = json.loads((tmp_path / f"{label}.json").read_text())
     old, new = got["old"], got["new"]
-    assert sorted(old) == sorted(new) == sorted(f"{name}|{site}" for name in CASES for site in SITES)
-    assert sum(v["n"] for v in old.values()) > 100, "few constants were replaced: the premise of the test is gone"
-    for key in old:
+    graphs = sorted(f"{name}|{site}" for name in CASES for site in SITES)
+    lifts = sorted(f"lift:{name}" for name in (*LADDER, *(f"extra:{n}" for n in EXTRA)))
+    assert sorted(old) == sorted(new) == sorted(graphs + lifts)
+    assert sum(old[key]["n"] for key in graphs) > 100, "few constants were replaced: the premise of the test is gone"
+    for key in graphs:
         assert new[key]["n"] == old[key]["n"], key
         assert new[key]["replaced"] == old[key]["replaced"], key
         assert new[key]["graph"] == old[key]["graph"], key
+    for key in lifts:                    # key, n_lifted, rule and kept-static report of each site; a rebuild finds the same fn
+        assert new[key] == old[key], key
+        assert set(old[key]) == set(SITES)
+        for site, lg in old[key].items():
+            assert lg["again_same_fn"] and lg["again_same_key"] and lg["rule"] == "model_inputs", (key, site)
 
 
 @pytest.mark.parametrize("name", ["8schools", "gev"])

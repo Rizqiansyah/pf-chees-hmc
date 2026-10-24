@@ -12,7 +12,9 @@ graphs
     autocast boundaries: 0.5 is float32, 0.1 float64, 1000 int16), at the three sites of a lift (logp, initial point,
     value -> RV transform): the widened outputs as text (``debugprint``, which shows every node, type, constant and
     the sharing of nodes; variable names are left out: they do not enter a computation) and the constants replaced, each with its dtype, shape and bytes. Writes the hashes, and the
-    head of the text to read a difference by.
+    head of the text to read a difference by. Also, for the ladder and the extra models: the lift of each site
+    (key, ``n_lifted``, rule, the kept-static report), and whether a fresh build of the model finds the first one's
+    function (``lifted._REGISTRY``, ``lifted._MEMO``).
 draws
     One sampler call on a model, then a second on a fresh build of it with another seed (the second lift finds the
     first one's memo), the arrays of both: unconstrained draws, sample statistics, ``config``.
@@ -48,6 +50,21 @@ def digest(text):
     return {"sha": hashlib.sha256(text.encode()).hexdigest(), "n": len(text), "head": text[:600]}
 
 
+def lift_sites(model):
+    from pfcheeshmc.sampler import PfCheesHMC
+    sampler = PfCheesHMC(model)
+    transform, _ = sampler._lift_value_to_rv()
+    return {"logp": sampler._lifted, "initial_point": lifted.lift_initial_point(model), "transform": transform}
+
+
+def lifts(make_first, make_again):
+    first, again = lift_sites(make_first()), lift_sites(make_again())
+    return {site: {"key": lg.key, "n_lifted": lg.n_lifted, "rule": lg.rule_used,
+                   "kept_static": [list(map(str, k)) for k in lg.kept_static],
+                   "again_same_fn": again[site].fn is lg.fn, "again_same_key": again[site].key == lg.key}
+            for site, lg in first.items()}
+
+
 def graphs(out):
     import test_lifted as tl
     models = {name: (lambda name=name: r1_bias.build_model(name)) for name in tl.LADDER}
@@ -66,6 +83,10 @@ def graphs(out):
                 f"{old.dtype} {old.data.shape} {np.asarray(old.data).tobytes().hex()} -> "
                 f"{new.dtype} {new.data.shape} {np.asarray(new.data).tobytes().hex()}" for old, new in replaced.items())
             result[f"{name}|{site}"] = {"graph": digest(text.getvalue()), "replaced": digest(constants), "n": len(replaced)}
+    for name in tl.LADDER:
+        result[f"lift:{name}"] = lifts(lambda name=name: r1_bias.build_model(name), lambda name=name: r1_bias.build_model(name))
+    for name, build in tl.EXTRA.items():
+        result[f"lift:extra:{name}"] = lifts(lambda build=build: build(1), lambda build=build: build(2))
     with open(out, "w") as f:
         json.dump(result, f)
 
