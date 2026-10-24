@@ -251,3 +251,16 @@
   created.
 - 2026-10-24 — F2j → local `main` (owner's up-front yes for the follow-ups): merged with `--no-ff` (89721fd), tree
   equal to `f2`'s 2872ecb. Not pushed. F2j checkout and branch removed.
+- 2026-10-24 16:25 — F2k (fast-tier, one round, resumed once after the time limit). Merged with `--no-ff` (58b5c93;
+  task head 9392c38). Task suite: `596 passed, 63 warnings in 755.67s`.
+  - float32 had never run because the example notebooks' first cell turns `jax_enable_x64` on after PyTensor turned
+    it off. The fix is in the tools (`build_model` switches it back off), and the sampler now warns about the
+    contradiction.
+  - The audit fixes are dtype-generic. float64 draws are bit-identical (tested), except that the stratified pick
+    now skips non-finite pool rows. Before, a `-inf` row became chain 0's start for the whole run (a bug fix,
+    accepted).
+  - CPU at C=1024: 8schools, logit and radon match float64. GEV's step size collapses under float32 (2 of 3 seeds
+    fail the gate): report only.
+- 2026-10-24 16:40 — Lead suite on merged `f2` (58b5c93): `596 passed, 63 warnings in 752.89s (0:12:32)`,
+  rc 0. The real `~/.cache/pfcheeshmc` was not created. F2k GPU part started (`results/f2/drivers/f2k_gpu.sh`, then
+  `run_step.sh F2k F2k_gate.cmds`).
