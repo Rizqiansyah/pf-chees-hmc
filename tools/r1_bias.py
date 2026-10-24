@@ -440,7 +440,7 @@ def effective_from(idata):
     return json.loads(cfg) if cfg else None
 
 
-def expected_config(pf_kw, ch_kw, chains=None, draws=None, seed=None, W=None):
+def expected_config(pf_kw, ch_kw, chains=None, draws=None, seed=None):
     """{config key: value} that `effective` must show, from the kwargs ACTUALLY passed.
 
     A knob that was not passed is not constrained (the sampler decides). `ch_kw=None` is a
@@ -522,7 +522,7 @@ def run_cell(bl, model_name, args, W, seed, rep, cold, keep=None):
         if effective is None and (pf_kw or set(ch_kw) - {"draws"}):
             print("[r1_bias] WARNING: idata.attrs has no 'config' (a tree older than R2-WP2): the "
                   "flags cannot be checked against what ran", flush=True)
-        check_effective(effective, expected_config(pf_kw, ch_kw, args.chains, args.draws, seed, W))
+        check_effective(effective, expected_config(pf_kw, ch_kw, args.chains, args.draws, seed))
         import arviz as az
 
         unc = {}
