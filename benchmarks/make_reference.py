@@ -187,7 +187,7 @@ def make_reference(model_name, chains, draws, tune, target, seed, out):
         key = ("u__" if n in u_set else "x__") + n
         arr[key] = x
         # Per-parameter stats: shape must equal the sample shape minus the
-        # (chain, draw) axes, or WP3 would score every parameter of a vector
+        # (chain, draw) axes, or the gate would score every parameter of a vector
         # variable against one pooled number. Guarded below, loudly.
         arr["mean__" + n] = x.mean(axis=(0, 1))
         arr["var__" + n] = x.var(axis=(0, 1), ddof=1)

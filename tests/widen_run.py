@@ -39,9 +39,9 @@ from pytensor.printing import debugprint  # noqa: E402
 
 from pfcheeshmc import lifted  # noqa: E402
 
-try:                                      # this tree; a tree before benchmarks/ builds the notebook models in tools/r1_bias
+if os.path.isdir(os.path.join(tree, "benchmarks")):  # the tree decides, not an ImportError: PYTHONPATH can put THIS benchmarks/ on an older tree's path
     from benchmarks.models import build_model
-except ModuleNotFoundError:
+else:                                                    # a tree before benchmarks/: its models are the notebooks', built by tools/r1_bias
     from r1_bias import build_model
 
 

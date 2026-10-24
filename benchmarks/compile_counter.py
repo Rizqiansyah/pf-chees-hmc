@@ -1,4 +1,4 @@
-"""Count XLA backend compiles, the way F2's compile-once tests need them counted.
+"""Count XLA backend compiles, the way the compile-once tests need them counted.
 
 JAX records one `"/jax/core/compile/backend_compile_duration"` duration event per XLA compile
 (`jax/_src/interpreters/pxla.py`, `dispatch.BACKEND_COMPILE_EVENT`), tagged with `fun_name` -- the name

@@ -23,7 +23,9 @@ teeth test builds a synthetic legacy-format file and asserts the shared guard
 reports it red.
 """
 
+import json
 import os
+import pathlib
 import sys
 
 import numpy as np
@@ -114,3 +116,30 @@ def test_legacy_shape_fails_the_guard():
         "mcse_x2__theta": np.ones(x.shape[2:]),
     }
     assert reference_shape_problems(clean, chains=8, draws=100, names=["theta"]) == []
+
+
+def test_a_rebuild_changes_the_manifest_entry_of_its_model_and_nothing_else(tmp_path, monkeypatch):
+    """`make_reference` writes the new sha256 and settings into `benchmarks/references.json`, which `bias.py` checks the file
+    against; the entry's note survives unless one is given, and a rewrite of the file is a minimal diff."""
+    from benchmarks import bias, make_reference
+
+    text = pathlib.Path(bias.MANIFEST).read_text()
+    assert json.dumps(json.loads(text), indent=2) + "\n" == text
+    copy = tmp_path / "references.json"
+    copy.write_text(text)
+    monkeypatch.setattr(bias, "MANIFEST", str(copy))
+    monkeypatch.setattr(make_reference, "MANIFEST", str(copy))
+    meta = {"sha256": "ab" * 32, "chains": 2, "draws": 100, "tune": 100, "seed": 7, "target_accept": 0.9, "max_rhat": 1.5,
+            "min_bulk_ess": 20.0, "divergences": 3, "divs_per_1k": 15.0, "gate": "FAIL", "wall_s": 1.5,
+            "created": "2026-10-24T00:00:00+1100"}
+    old = json.loads(text)
+    make_reference.update_manifest("gev", meta, None)
+    new = json.loads(copy.read_text())
+    assert new["models"]["gev"] == {"path": "~/pf-runs/references/gev.npz", "sha256": "ab" * 32, "chains": 2, "draws": 100,
+                                   "tune": 100, "seed": 7, "target_accept": 0.9, "max_rhat": 1.5, "min_ess": 20.0,
+                                   "divergences": 3, "divs_per_1k": 15.0, "gate": "FAIL", "wall_s": 1.5,
+                                   "note": old["models"]["gev"]["note"]}
+    assert list(new["models"]) == list(old["models"]) and new["created"] == meta["created"]
+    assert {k: v for k, v in new["models"].items() if k != "gev"} == {k: v for k, v in old["models"].items() if k != "gev"}
+    make_reference.update_manifest("gev", meta, "a new note")
+    assert json.loads(copy.read_text())["models"]["gev"]["note"] == "a new note"

@@ -301,21 +301,23 @@ def test_the_blas_link_line_for_the_path_with_a_space_is_added_to_the_users_flag
 # ---------------------------------------------------------------- the gate, on a 2-D Gaussian (the real sampler)
 
 def _tiny_model():
+    """Value variables `x` (2 leaves) and `s_log__` (the transformed one: the gate scores the unconstrained space)."""
     import pymc as pm
 
     with pm.Model() as m:
         pm.Normal("x", 0.0, 1.0, size=2)
+        pm.HalfNormal("s", 1.0)
     return m
 
 
 @pytest.fixture
 def tiny_ladder(monkeypatch):
-    """`benchmarks.models.build_model` returns a 2-D Gaussian, and the reference is a synthetic one: a real sampler run on CPU, no files."""
+    """`benchmarks.models.build_model` returns a small model, and the reference is a synthetic one: a real sampler run on CPU, no files."""
     import benchmarks.models as bm
 
-    ref = np.random.default_rng(0).normal(size=(800, 2))
+    rng = np.random.default_rng(0)
     monkeypatch.setattr(bm, "build_model", lambda name: _tiny_model())
-    return {"x": ref}
+    return {"x": rng.normal(size=(800, 2)), "s_log__": np.log(np.abs(rng.normal(size=(800, 1))))}
 
 
 def _cell(ref, pf_kw=None, ch_kw=None, seed=1, cold=False):
@@ -336,8 +338,8 @@ def test_a_cell_is_a_row_with_the_score_the_hash_of_its_draws_and_the_samplers_o
     assert row["schema"] == "pf-bias/v1" and row["reference_sha256"] == "0" * 64
     assert row["kwargs"] == {"pathfinder_kwargs": {}, "chees_kwargs": {"draws": 6}}
     assert (row["model"], row["chains"], row["draws_per_chain"], row["warmup"], row["seed"]) == ("tiny", 8, 4, 6, 1)
-    assert row["d"] == 2 and row["g_r1"] == "not eligible (C*D < 2000)"
-    assert row["b2_max"] >= 0 and row["b2_floor"] > 0 and row["b2_argmax"].startswith("x[")
+    assert row["d"] == 3 and row["g_r1"] == "not eligible (C*D < 2000)"
+    assert row["b2_max"] >= 0 and row["b2_floor"] > 0 and row["b2_argmax"].split(" (")[0] in ("s_log__", "x[0]", "x[1]")
     assert row["floatX"] == "float64" and row["x64"] is True and row["cold"] is False
     assert row["frozen_step_size"] > 0 and row["steps_mean"] > 0 and row["wall_s"] > 0
 
@@ -345,8 +347,8 @@ def test_a_cell_is_a_row_with_the_score_the_hash_of_its_draws_and_the_samplers_o
                                             keep_untransformed=True, chees_kwargs={"draws": 6})
     knobs = lambda c: {k: v for k, v in c.items() if k not in _RESULT_KEYS}
     assert knobs(row["effective"]) == knobs(json.loads(direct.attrs["config"])), "a gate default differs from the sampler's"
-    x = np.asarray(direct.posterior["x"].values, dtype="float64")
-    assert row["draws_sha256"] == rb.draws_digest({"x": x.reshape(8, 4, -1)})
+    unc = {n: np.asarray(direct.posterior[n].values, dtype="float64").reshape(8, 4, -1) for n in ("x", "s_log__")}
+    assert row["draws_sha256"] == rb.draws_digest(unc)
     assert row["frozen_step_size"] == direct.attrs["frozen_step_size"]
     assert row["grads_per_chain_warmup"] == direct.attrs["warmup_grad_evals_per_chain"]
 

@@ -11,7 +11,7 @@ cold; calls 2.. are warm, with a new seed each. `--new-data S` gives each ladder
 (the "new data every run" workflow: `seeded_models.with_new_data`).
 
 The on-disk compilation cache is OFF unless asked, so that call 1 is cold: the library switches a default cache
-on in `~/.cache/pfcheeshmc/jax` at its first call (F2g), and a "cold" call that read it would be a warm one. The
+on in `~/.cache/pfcheeshmc/jax` at its first call, and a "cold" call that read it would be a warm one. The
 tool sets `PFCHEESHMC_COMPILATION_CACHE=0` unless the environment already has a value. Asking for it:
   `--cache-dir DIR`                     `pfcheeshmc.enable_compilation_cache(DIR)` (TREE must have it): run the same
                                         command twice for call 1 with the cache cold, then warm, in a fresh process

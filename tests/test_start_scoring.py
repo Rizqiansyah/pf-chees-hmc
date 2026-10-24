@@ -13,9 +13,6 @@ Pinned here:
 * with the whole pool scored the picks are the stratified picks over the whole pool (bit-identical to the
   code before the cap), and with a stride they are the stratified picks over exactly that strided subset;
 * a larger pool than the cap still gives distinct, ordered, finite starts.
-
-The start-dispersion ratio of radon against the reference posterior (REPORT run-1 section 3j), old against new,
-is `tools/start_dispersion.py`; its numbers are in results/f2/F2cd/SUMMARY.md.
 """
 import math
 

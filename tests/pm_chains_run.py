@@ -22,9 +22,9 @@ import jax  # noqa: E402
 from compile_counter import count_compiles  # noqa: E402
 from pfcheeshmc.sampler import PfCheesHMC  # noqa: E402
 
-try:                                      # this tree; a tree before benchmarks/ builds the notebook models in tools/r1_bias
+if os.path.isdir(os.path.join(tree, "benchmarks")):  # the tree decides, not an ImportError: PYTHONPATH can put THIS benchmarks/ on an older tree's path
     from benchmarks.models import build_model
-except ModuleNotFoundError:
+else:                                                    # a tree before benchmarks/: its models are the notebooks', built by tools/r1_bias
     from r1_bias import build_model
 
 sampler = PfCheesHMC(build_model("gev"), seed=3)
