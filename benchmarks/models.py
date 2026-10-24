@@ -6,9 +6,8 @@
     radon_noncentered   the posteriordb radon_mn pair, county effects non-centered (d=175, N=919)
 
 The graphs are those the two example notebooks and `bench_ladder` built before: `8schools` and `gev` are the model cells
-of `examples/8 Schools example.ipynb` and `examples/GEV Port Pirie example.ipynb`, transcribed (data, priors, names,
-shapes, creation order); `logit_1000x25` and `radon_noncentered` are `bench_ladder.build_logistic` and `build_radon`,
-moved here. `tests/test_benchmark_models.py` holds the proof (value variables, `logp` and `dlogp` at 100 points, the
+of the 8 Schools and the GEV Port Pirie notebooks in `examples/`, transcribed (data, priors, names, shapes, creation
+order); `logit_1000x25` and `radon_noncentered` are `bench_ladder.build_logistic` and `build_radon`, moved here. `tests/test_benchmark_models.py` holds the proof (value variables, `logp` and `dlogp` at 100 points, the
 graph, and the draws of `sample_pf_chees_hmc`, against the notebook-built models of the tag `archive/pre-cleanup`).
 
 Building a model sets no JAX option and no environment variable: not `jax_enable_x64` (PyTensor's JAX dispatch sets it

@@ -142,7 +142,7 @@ def test_the_draws_are_bit_identical_to_the_notebook_models(runs, floatx, name):
 
 
 # ------------------------------------------------------------------------------------ no JAX setting
-@pytest.mark.parametrize("flag", ["", "--import-sampler"])
+@pytest.mark.parametrize("flag", ["", "--import-sampler"], ids=["before-sampler-import", "after-sampler-import"])
 @pytest.mark.parametrize("floatx", FLOATX)
 def test_build_model_never_changes_a_jax_option_or_an_environment_variable(runs, floatx, flag):
     """Building the four models changes no ``jax_*`` option (x64, the platform, the compilation cache) and no environment
