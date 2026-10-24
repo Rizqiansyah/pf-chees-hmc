@@ -27,3 +27,7 @@
   owner says go. Then the C1 integrator, step 1.
 - 2026-10-24 — C1 task reported: head 53ad265 on `cleanup-c1`; SUMMARY committed there (`docs/cleanup/C1/SUMMARY.md`). Task suite `620 passed, 63 warnings in 828.14s`. Models proved equal to the tag's notebook-built ones at both floatX (graphs, logp/dlogp at 100 points, draws over 102 arrays). Paused per the owner: **next is the C1 integrator, step 1.**
 - 2026-10-24 — C1 merged into `cleanup` at 1e08876 (`--no-ff` of cleanup-c1 53ad265): the four ladder models in Python (`benchmarks/models.py`), proved bit-identical to the notebook-built ones at the tag (graphs, logp/dlogp at 100 points, draws, both floatX); notebook loader and its x64 workaround removed. Integrator suite: `620 passed, 63 warnings in 830.07s (0:13:50)`, rc 0. Findings 1–3 (stale stub comments and trivial guards; unused centered radon branch and build_logistic parameters; blas__ldflags workaround for bias.py) carried to C4. Paused per the owner until told to go: next is C2.
+- 2026-10-24 — Owner: "Continue autonomously". C1 integrator (fast-tier): step 1 found nothing blocking; merged as
+  1e08876, suite `620 passed, 63 warnings in 830.07s (0:13:50)`; findings 1–3 carried to C4. C2 task (fast-tier)
+  launched in `~/pf/cleanup-c2` from 432aaac: verify the Q3 list, remove it, TypeError on removed options,
+  default-path draws bit-identical against the tag (child-process proof; C3's golden fixture replaces it).
