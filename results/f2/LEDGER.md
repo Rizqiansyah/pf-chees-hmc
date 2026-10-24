@@ -211,3 +211,9 @@
   compiles nothing. Draws are bit-identical at `pm_chains` = 1 and = chains. The lead fixed a stale test
   comment (44a0556). Lead suite running.
 - 2026-10-24 — F2i task launched (`~/pf/f2-i` from 44a0556): the widening memo, under the plan's stop rule.
+- 2026-10-24 11:12 — Lead suite on merged `f2` (44a0556): `514 passed, 63 warnings in 730.13s
+  (0:12:10)`, rc 0. The real `~/.cache/pfcheeshmc` was not created.
+- 2026-10-24 11:12–11:14 — F2h GPU check (`results/f2/drivers/f2h_gpu.sh`; 8schools, radon_noncentered, GEV;
+  load 2.6–3.4 with the F2i task on the CPU). The host gather costs nothing measurable: warm init unchanged to
+  0.002 s, one or two programs fewer per model. GEV's call 1 is 2.9 s slower, spread over every stage (XLA compile
+  22.6 → 25.2 s), so CPU load, not the change.

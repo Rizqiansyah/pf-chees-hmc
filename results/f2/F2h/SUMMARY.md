@@ -4,7 +4,8 @@ Task: fast-tier, one round.
 - Branch `f2-h`: 3 commits on 2605245, head edc227f. Merged into `f2` with `--no-ff` (82c8b2c).
 - Task's suite: `514 passed, 63 warnings in 724.36s (0:12:04)`. It was 496; this adds 18 in `tests/test_pm_chains.py`,
   with child runner `tests/pm_chains_run.py`.
-- Lead suite on merged `f2`: SUITE_PLACEHOLDER
+- Lead suite on merged `f2`: `514 passed, 63 warnings in 730.13s (0:12:10)`, rc 0 (44a0556). The real
+  `~/.cache/pfcheeshmc` does not exist after it.
 
 ## Result
 - **The bug:** `_run_pathfinder` broadcast the repaired `(pm_chains, ...)` stack to `(chains, ...)` with
@@ -33,7 +34,20 @@ Task: fast-tier, one round.
 ## DEVIATIONS (accepted)
 - A host gather (`np.take` + `device_put`) instead of the brief's `jnp.take`/`jnp.tile`. The reason is above: it
   compiles nothing. On the GPU it costs a copy of `pm_chains` rows to the host and of `chains` rows back.
-  GPU_PLACEHOLDER
+  **GPU check (lead):** `results/f2/drivers/f2h_gpu.sh`, rows `results/f2/runs/F2h/`, against F2g's
+  same-data rows. C=1,024, D=10, the default `pm_chains = 1` (which takes the gather), cache off, `--calls 3`;
+  2026-10-24 11:12–11:14, load 2.6–3.4, with the F2i task profiling on the CPU.
+
+  | model | call 1, F2g → F2h | init, call 1 | warm wall (calls 2, 3) | warm init |
+  |---|---|---|---|---|
+  | 8schools | 17.0 s / 130 → 17.5 s / 128 | 0.36 → 0.38 s | 0.23, 0.23 → 0.24, 0.23 s | 0.015 → 0.016 s |
+  | radon_noncentered | 44.5 s / 135 → 45.4 s / 133 | 0.62 → 0.64 s | 7.36, 5.44 → 7.33, 5.49 s | 0.031 → 0.031 s |
+  | gev | 27.2 s / 121 → 30.1 s / 120 | 2.47 → 2.62 s | 0.58, 0.36 → 0.69, 0.38 s | 0.026 → 0.027 s |
+
+  - The gather costs nothing measurable: warm init is unchanged to 0.002 s, and every model compiles one or two
+    programs fewer.
+  - GEV's call 1 is 2.9 s slower, but its XLA compile time is 22.6 → 25.2 s. Every stage is about 10% slower,
+    not just the Pathfinder stage that holds the gather, so this is the CPU load, not the change.
 
 ## Tests (`tests/test_pm_chains.py`, 18)
 - **Cyclic assignment:** `pm_chains` ∈ {1, 2, 3, 5, 7, 8}, with chains = 8 and `jitter+adapt_diag` (the PyMC points
