@@ -54,7 +54,7 @@ pixi run python tests/test_inference_data.py
 
 A few seconds, CPU only, no MCMC. It pins the `sample_stats` contract in `# Output` below.
 
-The whole suite runs in one process (`pytest tests`, about 11 minutes on CPU). `tests/conftest.py` releases the compiled programs after each test module (a process may hold at most `vm.max_map_count`, 65,530 by default, memory mappings, and every compiled XLA program takes dozens) and switches the default compilation cache off for the session (see "Keeping the compiled programs between Python processes").
+The whole suite runs in one process (`pytest tests`, about 12 minutes on CPU). `tests/conftest.py` releases the compiled programs after a test module once the process holds more than 16,765 memory mappings (a process may hold at most `vm.max_map_count`, 65,530 by default, and every compiled XLA program takes dozens; the threshold is half the limit less the largest growth of one module, and the suite's peak is about 23,000) and switches the default compilation cache off for the session (see "Keeping the compiled programs between Python processes").
 
 # Use
 See the `examples/` folder for some examples. In short

@@ -39,7 +39,9 @@ def test_a_limit_under_twice_the_growth_releases_after_every_module():
 
 @pytest.mark.skipif(not os.path.exists("/proc/self/maps"), reason="no /proc")
 def test_the_readers_see_this_process():
-    assert conftest.mapping_count() > 100                   # a Python process with JAX loaded holds thousands
+    with open("/proc/self/maps", "rb") as f:
+        lines = len(f.read().splitlines())
+    assert abs(conftest.mapping_count() - lines) < 100       # a Python process with JAX loaded holds thousands
     assert conftest.mapping_limit() == int(open("/proc/sys/vm/max_map_count").read())
 
 
