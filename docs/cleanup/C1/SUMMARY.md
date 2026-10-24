@@ -88,3 +88,15 @@ On commit 6d89797 (the code of the final head; the head adds only this file):
 ## UNVERIFIED
 - Nothing GPU was run (not asked). `radon_noncentered` read the posteriordb data already cached in `~/.cache/pf-ladder`; a cold download was not exercised (the function is unchanged).
 - The runners' `except ModuleNotFoundError` fallback is exercised by the git-archive proofs of test_compile_once, test_chunked_loops, test_pm_chains, test_start_repair, test_widen and test_float32 (old trees at their BASE_SHA) and by the new test's `draws:old` child; the suite had no skips, so none of them was skipped here. A checkout without those commits or the tag skips them cleanly, as before.
+
+## Integrator (fast-tier)
+Step 1 verdicts (2026-10-24): scope OK; no behaviour change OK (`tests/test_benchmark_models.py` 23 passed in 81.21 s, `tests/test_r1_bias.py` 33 passed; no sampler default changed, `pfcheeshmc/` untouched); acceptance OK;
+must-fail OK (8schools `sigma[0]` 15.0 -> 15.1 in `benchmarks/models.py` fails `test_the_python_model_is_the_notebook_model[8schools-float64]` on `logp_graph` and `dlogp_graph`; reverted); dangling references OK (stale comments only); code quality OK;
+SUMMARY accurate. The five deviations are acceptable. Nothing blocked the merge.
+
+Integrator suite on merged `cleanup` (1e08876): `620 passed, 63 warnings in 830.07s (0:13:50)`, rc 0, load 1.24 2.26 1.40 → 2.87 4.80 3.90.
+
+Findings carried to C4 (none blocking):
+1. Stale stub comments and now-trivial guards: `tools/make_reference.py:26-27`, `tools/t3_cpu_nuts.py:53` and `:81-83`, `tools/t5_step_cost.py:38`, `tools/wp1_rebaseline.py:192`, `tools/gev_g3b.py:57`, `results/r2/drivers/g3_meanshift.py:56`.
+2. The unused centered branch of `build_radon(False)` (and its docstring) and the unused `n_obs`, `d`, `seed` parameters of `build_logistic` in `benchmarks/models.py`.
+3. `benchmarks/models.py` has no `blas__ldflags` workaround for the space in the repo path; `bias.py` (C4) must set it itself, as `r1_bias.py` and `bench_ladder.py` do.
