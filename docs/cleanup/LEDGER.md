@@ -10,3 +10,4 @@
   - Standing: autonomous, one task at a time, never push, nothing filed upstream.
 - 2026-10-24 — C0: tag `archive/pre-cleanup` → b34e66e (local `main`; local only). Branch `cleanup` from f2 9a236ba
   (= main + the scope). Plan, task rules and ledger in `docs/cleanup/`.
+- 2026-10-24 — C1 task launched (`~/pf/cleanup-c1` from e087a2f): the four ladder models in Python (`benchmarks/models.py`); proof against the notebook-built models at the tag; consumers switched; notebook loader removed.
