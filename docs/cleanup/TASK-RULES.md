@@ -47,8 +47,7 @@ pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" python -m pytest
 
 ## Deliverables
 1. Commits on `cleanup-<wp>`. Messages end with a blank line and a trailer naming your own model, not another one.
-2. A SUMMARY for `docs/cleanup/<WP>/SUMMARY.md`. Do not write this file. Return its content as the last
-   section of your final reply, and the lead will commit it. It contains:
+2. **Write and commit your SUMMARY yourself** at `docs/cleanup/<WP>/SUMMARY.md` in your branch. It contains:
    - **DEVIATIONS** (first; "none" if none);
    - each spec item → DONE / DEVIATED / SKIPPED, with `file:line`;
    - tests added. For each test that must fail on the old code: the mutation or old-code command,
@@ -56,11 +55,11 @@ pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" python -m pytest
    - measurement numbers, with the exact command that produced them;
    - the full-suite result line, **copied from the command's own output**;
    - anything you could not verify, marked `UNVERIFIED`.
-3. Your final reply: a header of at most 15 lines, then the SUMMARY section. Do not paste diffs. The
-   header has:
+3. **Your final reply is the header only, at most 15 lines.** Do not paste the SUMMARY or diffs; the lead
+   reads the file only where it needs to. The header has:
    - the branch head sha;
    - the suite line, verbatim;
    - the item statuses;
-   - any open issue.
+   - any open issue or deviation, one line each.
 4. Commit work in progress at every milestone. If your time budget runs short, stop at the last
    commit and mark the remaining items PENDING.

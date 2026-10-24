@@ -74,10 +74,37 @@ README.md, pyproject.toml, pixi.toml, pixi.lock, .gitignore
 Everything else is deleted from the tree. It stays reachable through the tag `archive/pre-cleanup` at b34e66e
 (the tags `pf-r1`, `pf-r2`, `archive/pf-r1-int` and `archive/wp-wp4` already exist).
 
-## Work packages (sequential fast-tier tasks, the same rules as F2; the lead reviews, merges and runs the suite)
+## Who does what (owner, 2026-10-24: "use a smaller model for most of these simpler tasks too")
+the lead keeps only the judgment calls. Everything else goes to fast-tier, and pure run-and-report jobs
+go to steady-tier. One subtask runs at a time.
+
+| role | model | does | reads |
+|---|---|---|---|
+| **lead** | — | edits the plan; writes each task's brief (a few lines: the PLAN row is the spec); decides accept or send back from the integrator's findings; talks to the owner | the task header (≤ 15 lines), the integrator's findings (≤ 25 lines), spot checks only where a finding points |
+| **task** | fast-tier | implements one WP in its checkout (`TASK-RULES.md`); commits its own `docs/cleanup/<WP>/SUMMARY.md` | the PLAN, the code |
+| **integrator** | fast-tier, one per WP, kept alive across rounds | step 1: reviews the task branch against its PLAN row and `INTEGRATOR.md`, and reports findings without changing anything. Step 2, after the lead's "merge": merges into `cleanup` with `--no-ff`, runs the full suite, appends the suite line to the SUMMARY, writes the ledger line, removes the checkout and branch, and reports the suite line | the task SUMMARY, the diff |
+| **runner** | steady-tier | runs a given command list and reports the output lines verbatim: GPU notebook execution under `tools/gpu_run.sh` (C7), the final suite (C8). Never edits | the command list |
+
+**Flow per WP:** the lead launches the task → the task reports a header → the lead launches the
+integrator (step 1) → findings → the lead says merge, or sends the findings back to the task
+→ the integrator's step 2 → the next task.
+
+**Assignment:**
+
+| WP | task | integrator | runner | the lead's part |
+|---|---|---|---|---|
+| C1 models | fast-tier (running) | fast-tier | – | accept |
+| C2 API prune | fast-tier | fast-tier | – | accept; it must check that the Q3 list matches the code |
+| C4 benchmarks | fast-tier | fast-tier | – | accept |
+| C3 tests | fast-tier | fast-tier | – | accept, checking the coverage diff |
+| C5+C6 docs | fast-tier: deletions, `design.md`, `upstream-drafts.md`, pyproject, README | fast-tier | – | accept, with one read of the README |
+| C7 notebooks | fast-tier writes, and runs them on the CPU | fast-tier | steady-tier runs them on the GPU and commits outputs | accept |
+| C8 | – | fast-tier: delete `docs/cleanup/`, run the suite, merge into local `main` after the lead's go | – | go / no-go; **never push** |
+
+## Work packages
 | WP | what | acceptance |
 |---|---|---|
-| **C0** (lead) | tag `archive/pre-cleanup`; branch `cleanup` from `main`; save the golden draws (4 models × 2 seeds, CPU, small shape) | tag and fixture committed |
+| **C0** (lead) | tag `archive/pre-cleanup`; branch `cleanup`; plan, task rules, ledger (done, e087a2f). The golden draws are made in C3 from the tag's tree | done |
 | **C1** | `benchmarks/models.py`: the four ladder models in Python. Tools and tests switch to it, and the notebook loader and its x64 workaround go | for each model, the same value variables, the same `logp` at 100 points, and the same draws as the notebook-built model |
 | **C2** (if Q3 = prune) | remove the experiment options and their code paths (list below) | golden draws bit-identical; compile-once tests pass; an unknown option raises a clear `TypeError` |
 | **C3** | tests: drop the git-archive proofs in favour of `tests/test_golden.py`; drop the tests of deleted tools; merge small modules; keep compile counts, the cache, float32, the statistical checks and the output contract | the suite passes in about 5 min; no package line loses coverage it has today (coverage diff in the SUMMARY) |
