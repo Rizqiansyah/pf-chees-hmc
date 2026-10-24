@@ -32,3 +32,8 @@
   launched in `~/pf/cleanup-c2` from 432aaac: verify the Q3 list, remove it, TypeError on removed options,
   default-path draws bit-identical against the tag (child-process proof; C3's golden fixture replaces it).
 - 2026-10-24 — C2 merged into `cleanup` at 9c5fe20 (`--no-ff` of cleanup-c2 0c18874): the Q3 experiment options are removed (`imm_orientation`, `imm_order`, `metric_refresh*`, `superchains` and nested R-hat, `iterate`, `init_pick`, `pf_start_scale`, `pf_center`; `ensemble_metric.py` deleted; every stage raises `TypeError` on a key it does not read); default-path and kept-option draws bit-identical to the tag (`tests/test_api_prune.py`). Integrator suite `587 passed, 53 warnings in 846.23s (0:14:06)`. Carried to C3: `without_removed` is imported by 5 modules from `test_api_prune`; carried (unverified): float32/GPU.
+- 2026-10-24 — C2 task reported (b7ce5cd; 9 options removed, `pfcheeshmc/` 4,302 → 3,709 lines; proof 0 differences
+  over 498 arrays against the tag). The task could not write its SUMMARY; the lead committed the task's text
+  verbatim (0c18874) and TASK-RULES now says to return it in the reply. Integrator: nothing blocking; merged 9c5fe20,
+  suite `587 passed, 53 warnings in 846.23s (0:14:06)`. C4 task launched in `~/pf/cleanup-c4` from 4951526
+  (`benchmarks/` as the PLAN lists, no `tools/`; acceptance: identical b² to the tag's `r1_bias` on 8schools C=64).
