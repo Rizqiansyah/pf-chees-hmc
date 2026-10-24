@@ -1,4 +1,4 @@
-"""Permanent shape guard for the WP0.2 reference npz files (A8).
+"""Permanent shape guard for the reference npz files (`benchmarks/make_reference.py`).
 
 The 2026-10-19 review caught that the first reference build stored per-variable
 mean/var/MCSE as scalars even for vector-valued variables: x.mean() / x.var()
@@ -14,7 +14,7 @@ runs inside make_reference before it saves, so generation also fails loudly;
 this test is the guard on the committed reference artifacts and calls the
 production function rather than re-implementing the comparison.
 
-The npz files live outside git (~/pf-runs/references/ per A8). The first
+The npz files live outside git (~/pf-runs/references/). The first
 review found that a missing directory made the fixture collect ZERO tests,
 so `pixi run test` went all-green with the guard doing nothing: that trap is
 closed by test_reference_files_present, which FAILS (not skips) when the
@@ -29,8 +29,8 @@ import sys
 import numpy as np
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
-from make_reference import reference_shape_problems  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from benchmarks.make_reference import reference_shape_problems  # noqa: E402
 
 
 def _reference_dir():
@@ -66,7 +66,7 @@ def test_reference_files_present():
         pytest.fail(
             f"no .npz files under {d}; the reference shape guard collected nothing. "
             "Regenerate with `pixi run --manifest-path <main checkout>/pixi.toml "
-            "env PYTHONPATH=<this checkout> python tools/make_reference.py <model>` "
+            "env PYTHONPATH=<this checkout> python benchmarks/make_reference.py <model>` "
             "(models: 8schools, gev, logit_1000x25, radon_noncentered), or set "
             "REFERENCE_FILES_OPTIONAL=1 in environments without the run artifacts."
         )
@@ -83,7 +83,7 @@ def test_reference_npz_keeps_parameter_axis(npz_path):
     probs = reference_shape_problems(arr, chains, draws, names)
     assert not probs, (
         f"shape contract violated in {npz_path}:\n  " + "\n  ".join(probs)
-        + "\n(the 2026-10-19 incident: see tools/make_reference.py docstring)"
+        + "\n(the 2026-10-19 incident: see benchmarks/make_reference.py docstring)"
     )
 
 

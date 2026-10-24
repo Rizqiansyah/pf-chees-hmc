@@ -15,7 +15,8 @@ os.environ.setdefault("PYTENSOR_FLAGS", "blas__ldflags=-llapack -lblas -lcblas -
 tree, out, chains, pathfinder = sys.argv[1:5]
 sys.path.insert(0, os.path.join(tree, "tools"))
 sys.path.insert(0, tree)
-sys.path.insert(1, os.path.dirname(os.path.abspath(__file__)))
+# benchmarks/ of THIS checkout (compile_counter), whatever TREE is
+sys.path.insert(1, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "benchmarks"))
 
 import jax  # noqa: E402
 from compile_counter import count_compiles  # noqa: E402

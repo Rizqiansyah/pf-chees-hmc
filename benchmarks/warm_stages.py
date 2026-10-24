@@ -1,14 +1,14 @@
 #!/usr/bin/env python
-"""F2b: per-stage wall time, XLA compiles and PyTensor functions of repeated `sample_pf_chees_hmc` calls (CPU or GPU).
+"""Per-stage wall time, XLA compiles and PyTensor functions of repeated `sample_pf_chees_hmc` calls (CPU or GPU).
 
-    python tools/warm_stages.py TREE MODEL CHAINS DRAWS WARMUP [--calls 3] [--json OUT]
-                                [--progressbar] [--chees JSON] [--pathfinder JSON] [--cache-dir DIR]
+    python benchmarks/warm_stages.py TREE MODEL CHAINS DRAWS WARMUP [--calls 3] [--json OUT]
+                                [--progressbar] [--chees JSON] [--pathfinder JSON] [--cache-dir DIR] [--new-data S]
 
-TREE is the source tree to measure: this checkout, or a `git archive` of an earlier commit (it provides
-`pfcheeshmc/` and `tools/r1_bias.py`). MODEL is a ladder name, or `hier`: the seeded 8-Schools-shaped model
-of `tests/seeded_models.py`, rebuilt with NEW data and prior values on every call. Call 1 is cold; calls 2..
-are warm, with a new seed each. `--new-data S` gives each ladder call new observed data at the same shapes
-(the "new data every run" workflow).
+TREE is the source tree whose `pfcheeshmc/` is measured: this checkout (`.`), or a `git archive` of an earlier commit. The
+models and the counters are always this checkout's `benchmarks/`. MODEL is a ladder name, or `hier`: the seeded
+8-Schools-shaped model of `benchmarks/seeded_models.py`, rebuilt with NEW data and prior values on every call. Call 1 is
+cold; calls 2.. are warm, with a new seed each. `--new-data S` gives each ladder call new observed data at the same shapes
+(the "new data every run" workflow: `seeded_models.with_new_data`).
 
 The on-disk compilation cache is OFF unless asked, so that call 1 is cold: the library switches a default cache
 on in `~/.cache/pfcheeshmc/jax` at its first call (F2g), and a "cold" call that read it would be a warm one. The
@@ -21,15 +21,14 @@ tool sets `PFCHEESHMC_COMPILATION_CACHE=0` unless the environment already has a 
   `JAX_COMPILATION_CACHE_DIR` (+ the two thresholds)  JAX's own settings, which the library then leaves alone.
 The cache in use is printed in the header line; with one, each call reports its hits and writes.
 
-Timing is `time.perf_counter` around the PfCheesHMC stage methods, blocking on their output (the same
-instrumentation as `tools/r1_bias.instrument`, without the GPU lock `--timed` requires). Stages:
+Timing is `time.perf_counter` around the PfCheesHMC stage methods, blocking on their output. Stages:
   init        _pymc_adapt_diag_start + _ensure_finite_inits
   pathfinder  _run_pathfinder minus init
   eps0        _run_step_size_tune
   warmup      _run_chees (loop programs included)
   sampling    _run_dynamic_hmc (loop program included)
   transform   _transform_value_samples_to_problem_space
-Compiles are counted with `tests/compile_counter.py` over each stage and the whole call: XLA programs (JAX's
+Compiles are counted with `benchmarks/compile_counter.py` over each stage and the whole call: XLA programs (JAX's
 backend-compile event; the program names of a warm call are printed) and PyTensor functions (each is a
 `FunctionMaker`: rewrites plus the C backend, e.g. `pm.init_nuts`). Cells are `seconds / XLA / PyTensor`.
 """
@@ -40,7 +39,11 @@ import os
 import sys
 import time
 
-os.environ.setdefault("PYTENSOR_FLAGS", "blas__ldflags=-llapack -lblas -lcblas -lm")
+# This repo's path has a space ("Python packages"): PyTensor puts the environment prefix into blas__ldflags as an unquoted
+# -Wl,-rpath token and its linker dies on it for any model that compiles a Dot.
+_flags = os.environ.get("PYTENSOR_FLAGS", "")
+if "blas__ldflags" not in _flags:
+    os.environ["PYTENSOR_FLAGS"] = ",".join(f for f in (_flags, "blas__ldflags=-llapack -lblas -lcblas -lm") if f)
 os.environ.setdefault("PFCHEESHMC_COMPILATION_CACHE", "0")          # cold means cold: see the docstring
 
 ap = argparse.ArgumentParser()
@@ -57,20 +60,20 @@ ap.add_argument("--pathfinder", default="{}", help="pathfinder_kwargs, JSON")
 ap.add_argument("--cache-dir", help="enable the on-disk compilation cache in this directory")
 ap.add_argument("--new-data", type=int, default=None, metavar="S",
                 help="call k samples the model with new observed data at the same shapes (permutation seed S+k); "
-                     "every call is a clone, so all share one structure (results/f2/drivers/new_data.py)")
+                     "every call is a clone, so all share one structure (seeded_models.with_new_data)")
 args = ap.parse_args()
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(args.tree, "tools"))
-sys.path.insert(0, args.tree)
-sys.path.insert(1, os.path.join(HERE, "..", "tests"))
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
 
 import jax  # noqa: E402
 import pytensor  # noqa: E402
+from benchmarks.compile_counter import count_compiles, count_pytensor_functions  # noqa: E402
+from benchmarks.models import build_model  # noqa: E402
+from benchmarks.seeded_models import hier, with_new_data  # noqa: E402
+
+sys.path.insert(0, args.tree)                    # pfcheeshmc/ of the tree under measurement, imported from here on
 import pfcheeshmc.sampler as sm  # noqa: E402
-import r1_bias  # noqa: E402
-from compile_counter import count_compiles, count_pytensor_functions  # noqa: E402
-from seeded_models import hier  # noqa: E402
 
 CACHE_EVENTS = collections.Counter()   # a cache hit is still a "backend compile" event: these tell them apart
 import jax.monitoring  # noqa: E402
@@ -120,11 +123,9 @@ for method, label in METHODS.items():
 def build(call):
     if args.model == "hier":
         return hier(100 + call, 200 + call)
-    model = r1_bias.build_model(args.model)
+    model = build_model(args.model)
     if args.new_data is None:
         return model
-    sys.path.insert(0, os.path.join(HERE, "..", "results", "f2", "drivers"))
-    from new_data import with_new_data
     return with_new_data(model, args.new_data + call)
 
 

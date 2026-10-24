@@ -37,7 +37,7 @@ pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from benchmarks.models import build_model  # noqa: E402
-from seeded_models import hier  # noqa: E402
+from benchmarks.seeded_models import hier  # noqa: E402
 from test_lifted import EXTRA  # noqa: E402
 
 from pfcheeshmc import lifted  # noqa: E402

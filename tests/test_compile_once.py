@@ -3,7 +3,7 @@
 What a wrong answer here would silently cost: every `sample()` call recompiles XLA programs (15.9-17.4 s of
 a 19.9-21.9 s call for 8 Schools at C=1,024) because jitted closures are rebuilt per call and per-run values
 (data, priors, metric, step size) are compiled in as constants. Nothing in the draws would show it, so the
-only honest test counts compiles: `compile_counter.count_compiles` listens to JAX's backend-compile event.
+only honest test counts compiles: `benchmarks/compile_counter.count_compiles` listens to JAX's backend-compile event.
 
 F2b-1 converted the non-loop sites (`pfcheeshmc.compiled`): the start screening
 and scoring, the Pathfinder fit and draws, the step-size search, the pool gradients, the warmup init, and the
@@ -43,9 +43,10 @@ import numpy as np
 import pymc as pm
 import pytest
 
-from compile_counter import count_compiles, count_pytensor_functions
-from seeded_models import dims_model, hier
-from test_api_prune import REMOVED_CONFIG_KEYS
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from benchmarks.compile_counter import count_compiles, count_pytensor_functions  # noqa: E402
+from benchmarks.seeded_models import dims_model, hier  # noqa: E402
+from test_api_prune import REMOVED_CONFIG_KEYS  # noqa: E402
 
 from pfcheeshmc import compiled
 from pfcheeshmc.lifted import lift_logp

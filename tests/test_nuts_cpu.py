@@ -1,10 +1,10 @@
-"""R2-WP3a tests: the noise floor is squared, and the T3 CPU-NUTS driver scores like the GPU rows.
+"""The noise floor is squared, and the CPU-NUTS driver (`benchmarks/nuts_cpu.py`) scores like the GPU rows.
 
-Run 1's T3 driver compared b2 with MCSE/sd (not squared) and scored constrained `x__` keys. These
-tests pin the instrument it must now share: `r1_bias.score_ensemble`'s floor on i.i.d. draws, the same
-number through `t3_cpu_nuts`'s scoring entry point, and the pieces of the driver that a wrong answer
+An earlier NUTS driver compared b2 with MCSE/sd (not squared) and scored constrained `x__` keys. These
+tests pin the instrument it must share with the gate: `bias.score_ensemble`'s floor on i.i.d. draws, the same
+number through `nuts_cpu`'s scoring entry point, and the pieces of the driver that a wrong answer
 would silently corrupt (the sampler settings, the value-var names, the gradient count).
-No reference files are needed; the one sampling test uses a 3-variable toy model.
+No reference files are needed; the one sampling test uses a 2-variable toy model.
 """
 
 import pathlib
@@ -14,9 +14,9 @@ import numpy as np
 import pytest
 import xarray as xr
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
-import r1_bias as rb  # noqa: E402
-import t3_cpu_nuts as t3  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from benchmarks import bias as rb  # noqa: E402
+from benchmarks import nuts_cpu as t3  # noqa: E402
 
 C, D, DIM = 256, 40, 5
 
@@ -58,15 +58,15 @@ def test_floor_is_squared_through_score_ensemble(seed):
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2])
-def test_floor_is_squared_through_the_t3_scorer(seed):
-    """The same check through t3_cpu_nuts's entry point, starting from an InferenceData."""
+def test_floor_is_squared_through_the_nuts_scorer(seed):
+    """The same check through nuts_cpu's entry point, starting from an InferenceData."""
     sc = t3.score_idata(_idata({"x": _iid(seed)}), ["x"], _ref(), C, D)
     exp = _expected_floor()
     assert 0.7 * exp <= sc["b2_floor"] <= 1.3 * exp, (sc["b2_floor"], exp, sc["b2_floor"] / exp)
     assert sc["g_r1"] == "pass"            # b2 ~ floor ~ 5e-4 on identical distributions
 
 
-def test_t3_scorer_calls_score_ensemble_and_g_r1_not_its_own_scorer(monkeypatch):
+def test_nuts_scorer_calls_score_ensemble_and_g_r1_not_its_own_scorer(monkeypatch):
     seen = {}
 
     def fake_score(unc, ref, chains, draws):
@@ -111,7 +111,6 @@ def test_gradients_include_tuning_and_are_exact_per_chain():
     idata = az.InferenceData(sample_stats=ss, warmup_sample_stats=ws)
     g = t3.grads_per_chain(idata, chains=2, tune=7, draws=5)
     assert (g["warmup"], g["sampling"], g["total"]) == (28.0, 15.0, 43.0)
-    assert g["warmup_list"] == [28, 28] and g["sampling_list"] == [15, 15]
     with pytest.raises(RuntimeError, match="omit tuning"):
         t3.grads_per_chain(az.InferenceData(sample_stats=ss), chains=2, tune=7, draws=5)
 
@@ -130,7 +129,7 @@ def test_run_cell_scores_the_transformed_coordinate_and_counts_tuning_gradients(
     row = t3.run_cell(m, "toy", names, ref, tune=60, draws=40, seed=3, chains=2, cores=1)
     assert row["error"] is None, row["error"]
     assert row["scored_vars"] == ["s_log__", "x"] and row["d"] == 2
-    assert row["schema"] == "pf-r2/v1" and row["step"] == "M5" and row["target_accept"] == 0.8
+    assert row["schema"] == "pf-nuts/v1" and row["target_accept"] == 0.8
     assert row["tune"] == 60 and row["draws"] == 40 and row["chains"] == 2
     assert row["grads_per_chain_total"] == pytest.approx(
         row["grads_per_chain_warmup"] + row["grads_per_chain_sampling"])

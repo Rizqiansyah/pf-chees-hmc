@@ -37,8 +37,8 @@ pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from benchmarks.models import build_model  # noqa: E402
-from compile_counter import count_compiles, count_pytensor_functions  # noqa: E402
-from seeded_models import dims_model as m_dims, hier  # noqa: E402
+from benchmarks.compile_counter import count_compiles, count_pytensor_functions  # noqa: E402
+from benchmarks.seeded_models import dims_model as m_dims, hier  # noqa: E402
 
 from pfcheeshmc import compiled, lifted, sampler as sampler_module  # noqa: E402
 from pfcheeshmc.lifted import lift_initial_point, lift_logp  # noqa: E402
