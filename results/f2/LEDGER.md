@@ -217,3 +217,20 @@
   load 2.6–3.4 with the F2i task on the CPU). The host gather costs nothing measurable: warm init unchanged to
   0.002 s, one or two programs fewer per model. GEV's call 1 is 2.9 s slower, spread over every stage (XLA compile
   22.6 → 25.2 s), so CPU load, not the change.
+- 2026-10-24 — F2h → local `main` (owner's up-front yes): merged with `--no-ff` (beb3087). Its tree equals `f2`'s
+  152eaf8; since the suite-tested 44a0556 only results changed. Not pushed; `origin/main` is still ecd9ba1.
+- 2026-10-24 11:46 — F2i (fast-tier, one round). Merged with `--no-ff` (a7a4413; task head 749cdff). Task suite:
+  `575 passed, 64 warnings in 772.33s`. Not a memo, a third design: `_rebuild` remakes only the nodes below a
+  widened constant (`clone_replace` cloned all of the graph, twice), and the literal-built parameters are folded in
+  one `constant_fold` call, only those whose dtype and ndim some graph constant has. The same graph as before
+  (120 graph cases and 209 replaced constants equal to 44a0556; draws bit-identical). CPU, saved per call:
+  0.017 / 0.016 / 0.016 / 0.046 s (8schools / gev / logit / radon). A memo on top could add at most about 0.01 s,
+  for well over the plan's 80-line budget. Lead suite running.
+- 2026-10-24 — F2j task launched (`~/pf/f2-j` from the `f2` head): release compiled programs in the tests
+  only above a mapping-count threshold. `results/f2/probes/mapcount_plugin.py` (F2g's measurement plugin) added.
+- 2026-10-24 12:01 — Lead suite on merged `f2` (a7a4413): `575 passed, 64 warnings in 836.55s
+  (0:13:56)`, rc 0; the F2j task's per-module runs overlapped it (load 11–14). The real `~/.cache/pfcheeshmc`
+  was not created.
+- 2026-10-24 12:01–12:04 — F2i GPU check (`results/f2/drivers/f2i_gpu.sh`; load 11–13 from the F2j task):
+  warm wall and warm "rest" equal F2h's within noise on 8schools and GEV; radon's warm "rest" 0.02–0.04 s lower.
+  The CPU rows remain the evidence. F2i checkout and branch removed.

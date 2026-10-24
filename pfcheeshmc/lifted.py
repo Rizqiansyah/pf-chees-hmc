@@ -61,7 +61,7 @@ from pytensor.compile import mode
 from pytensor.compile.sharedvalue import SharedVariable
 from pytensor.graph.basic import Constant, equal_computations
 from pytensor.graph.fg import FunctionGraph, Output
-from pytensor.graph.replace import clone_replace, graph_replace
+from pytensor.graph.replace import graph_replace
 from pytensor.graph.traversal import ancestors, toposort
 from pytensor.link.jax.dispatch import jax_funcify
 from pytensor.scalar.math import Erfcx
@@ -385,12 +385,28 @@ def _built_from_literals(var) -> bool:
     return all(isinstance(v, TensorConstant) and v.ndim == 0 for v in roots)
 
 
+def _rebuild(outputs, replace):
+    """``outputs`` with the variables of ``replace`` swapped for their values and every node below one remade.
+
+    `Apply.clone_with_new_inputs(strict=False)` remakes a node through ``make_node`` when an input's type
+    changed, so a new dtype propagates (``graph_replace`` would refuse it). Only the nodes below a replaced
+    variable are remade; the others are shared with the old graph, which a graph is allowed to do. That is the
+    graph ``clone_replace(outputs, replace, rebuild_strict=False)`` makes (it clones all of the graph, twice),
+    in 15-45% of the time on the ladder models' logp graphs.
+    """
+    new = dict(replace)
+    for node in toposort(outputs):
+        if any(i in new for i in node.inputs):
+            clone = node.clone_with_new_inputs([new.get(i, i) for i in node.inputs], strict=False)
+            new.update(zip(node.outputs, clone.outputs))
+    return [new.get(o, o) for o in outputs]
+
+
 def _widen_model_inputs(model, outputs):
     """``outputs`` rebuilt with the scalar distribution-parameter constants of ``model`` widened.
 
     Returns ``(new_outputs, replaced)`` where ``replaced`` maps each old constant to its widened one.
-    `clone_replace(..., rebuild_strict=False)` remakes every downstream node through ``make_node``, so
-    the new dtype propagates (``graph_replace`` would refuse the type change). The dtype rule is
+    `_rebuild` remakes every node below a widened constant, so the new dtype propagates. The dtype rule is
     `_widened_dtype`; arrays are left alone, as NumPy arrays already carry a fixed dtype.
 
     Two forms of a literal reach the graph. For an RV of shape () the parameter is the scalar constant
@@ -399,8 +415,13 @@ def _widen_model_inputs(model, outputs):
     back to the scalar. Those folded constants are found by their fingerprint (dtype, shape, bytes) and
     widened the same way. Only non-scalar ones are matched, so a formula constant such as an exponent can
     never be mistaken for a prior value.
+
+    PyMC's ``constant_fold`` is the one slow step (3-4 ms, fixed), so it runs once for all the parameters, and
+    only for those that can matter: a folded value has its parameter's dtype and number of dimensions, so a
+    parameter that is not narrower than ``floatX``, or that no non-scalar constant of ``outputs`` matches in
+    dtype and number of dimensions, is not folded.
     """
-    replaced, folded = {}, {}
+    replaced, pending = {}, []
     for rv in model.basic_RVs:
         node = rv.owner
         params = node.op.dist_params(node) if hasattr(node.op, "dist_params") else node.inputs
@@ -410,22 +431,29 @@ def _widen_model_inputs(model, outputs):
                     target = _widened_dtype(param.dtype, rv.dtype)
                     if target is not None:
                         replaced[param] = _constant(param.data, target)
-            elif param.owner is not None and _built_from_literals(param):
-                (value,) = constant_fold([param], raise_not_constant=False)
-                if isinstance(value, np.ndarray) and value.ndim > 0:
-                    target = _widened_dtype(value.dtype, rv.dtype)
-                    if target is not None:
-                        folded.setdefault(_fingerprint(value), _constant(value, target))
-    if folded:
-        for node in toposort(outputs):
-            for inp in node.inputs:
-                if isinstance(inp, TensorConstant) and inp.ndim > 0 and inp not in replaced:
-                    twin = folded.get(_fingerprint(np.asarray(inp.data)))
-                    if twin is not None:
-                        replaced[inp] = twin
+            elif param.owner is not None and param.ndim > 0 and _built_from_literals(param):
+                target = _widened_dtype(param.dtype, rv.dtype)
+                if target is not None:
+                    pending.append((param, target))
+    arrays = []                 # the non-scalar constants of the graph, in toposort order
+    if pending:
+        arrays = [inp for node in toposort(outputs) for inp in node.inputs
+                  if isinstance(inp, TensorConstant) and inp.ndim > 0]
+        kinds = {(a.dtype, a.ndim) for a in arrays}
+        pending = [(param, target) for param, target in pending if (param.dtype, param.ndim) in kinds]
+    if pending:
+        folded = {}
+        for (_, target), value in zip(pending, constant_fold([p for p, _ in pending], raise_not_constant=False)):
+            if isinstance(value, np.ndarray) and value.ndim > 0:
+                folded.setdefault(_fingerprint(value), _constant(value, target))
+        for inp in arrays:
+            if inp not in replaced:
+                twin = folded.get(_fingerprint(np.asarray(inp.data)))
+                if twin is not None:
+                    replaced[inp] = twin
     if not replaced:
         return list(outputs), replaced
-    return clone_replace(list(outputs), replace=replaced, rebuild_strict=False), replaced
+    return _rebuild(list(outputs), replaced), replaced
 
 
 def _candidates(model, fg: FunctionGraph, outputs, rule: str, replaced=None) -> list:

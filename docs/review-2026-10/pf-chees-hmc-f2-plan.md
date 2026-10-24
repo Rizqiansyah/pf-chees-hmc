@@ -201,7 +201,7 @@ Three items from the F2f report (`results/f2/F2f/REPORT.md`, Findings), done in 
    - **Tests run with it off,** except the tests of the default itself, which run in fresh
      subprocesses.
 
-### F2h — `1 < pm_chains < chains` (pre-existing bug; owner's go 2026-10-24)
+### F2h — `1 < pm_chains < chains` (pre-existing bug; owner's go 2026-10-24; done 2026-10-24, merged into `f2` at 82c8b2c, `results/f2/F2h/SUMMARY.md`)
 - **Today:** `_run_pathfinder` (`sampler.py:697–709`) repairs the `(pm_chains, ...)` stack from
   `_pymc_adapt_diag_start` and then `jnp.broadcast_to`s it to `(chains, ...)`. That is right only for one
   row, so any `1 < pm_chains < chains` raises `Incompatible types for broadcasting`. It fails on `main`
@@ -224,7 +224,7 @@ Three items from the F2f report (`results/f2/F2f/REPORT.md`, Findings), done in 
 - **Files:** `pfcheeshmc/sampler.py`, a new `tests/test_pm_chains.py` (with a child runner if needed), and
   the README.
 
-### F2i — memoise the widening (owner's go 2026-10-24, autonomous run)
+### F2i — memoise the widening (owner's go 2026-10-24, autonomous run; done 2026-10-24 as a cheaper widening without a memo, merged into `f2` at a7a4413, `results/f2/F2i/SUMMARY.md`)
 - **Today:** on a model rebuilt around new data or priors, `_widen_model_inputs` is the largest lift cost
   that is ours. `tools/lift_cost.py . MODEL --reps 4`, CPU, builds 2–4, summed over the three sites:
 
