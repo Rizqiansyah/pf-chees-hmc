@@ -3,15 +3,17 @@
     python float32_run.py TREE MODEL OUT.npz [--init-sources pf,adapt_diag] [--chains N] [--warmup W]
                           [--x64-after-build]
 
-TREE is a source tree that provides `pfcheeshmc/` and `tools/` (the checkout, or a `git archive` of an earlier commit).
+TREE is a source tree that provides `pfcheeshmc/` and `benchmarks/` or `tools/` (the checkout, or a `git archive` of an
+earlier commit).
 Nothing here may need what only the newer tree has.
 
 The caller sets ``PYTENSOR_FLAGS`` (``floatX=float32``, or nothing for float64) in this process's environment: PyTensor's
 JAX dispatch sets ``jax_enable_x64 = (floatX == "float64")`` when it is imported, so the type cannot be chosen from
 inside a process that has imported it.
 
-For each init source, one `sample_pf_chees_hmc` call on the model (``r1_bias.build_model``: the two notebook models run
-a cell that calls ``jax.config.update("jax_enable_x64", True)``). OUT.npz holds every posterior (unconstrained
+For each init source, one `sample_pf_chees_hmc` call on the model (``benchmarks.models.build_model``; a tree before
+`benchmarks/` builds the two notebook models in ``tools/r1_bias.build_model``, which runs a cell that calls
+``jax.config.update("jax_enable_x64", True)``). OUT.npz holds every posterior (unconstrained
 variables too) and sample_stats array as ``SOURCE/posterior/NAME`` and ``SOURCE/stats/NAME``, and ``meta`` as JSON:
 
     floatX, x64_start (after the imports), x64_built (after ``build_model``), x64_end,
@@ -42,13 +44,17 @@ def option(flag, default):
 import jax  # noqa: E402
 import numpy as np  # noqa: E402
 import pytensor  # noqa: E402
-import r1_bias  # noqa: E402
 
 from pfcheeshmc import sample_pf_chees_hmc  # noqa: E402
 
+try:                                      # this tree; a tree before benchmarks/ builds the notebook models in tools/r1_bias
+    from benchmarks.models import build_model
+except ModuleNotFoundError:
+    from r1_bias import build_model
+
 meta = {"floatX": pytensor.config.floatX, "x64_start": bool(jax.config.jax_enable_x64), "dtypes": {},
         "warnings": [], "x64_warnings": [], "config": {}, "errors": {}}
-model = r1_bias.build_model(name)
+model = build_model(name)
 meta["x64_built"] = bool(jax.config.jax_enable_x64)
 if "--x64-after-build" in opts:
     jax.config.update("jax_enable_x64", True)

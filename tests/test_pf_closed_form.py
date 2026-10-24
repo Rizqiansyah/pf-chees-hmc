@@ -12,7 +12,7 @@ pool covariance the sampler used to build is a noisy estimate of that matrix. Th
 5. `pf_start_scale`;
 6. `idata.attrs["config"]`: resolved values, not requests.
 
-Models come from `tools/r1_bias.build_model`, which undoes `bench_ladder`'s global sampling stubs.
+Models come from `benchmarks.models.build_model`.
 """
 import functools
 import json
@@ -34,12 +34,11 @@ import pytensor
 # This repo lives under a path with a space; PyTensor's default blas__ldflags carries the env prefix as
 # an unquoted -Wl,-rpath token that its linker rejects for any model with a dot product (logit_1000x25).
 # tools/bench_ladder.py works around it with PYTENSOR_FLAGS, but that is read at pytensor import, which
-# pytest has already done by the time build_model imports bench_ladder. Set the same flags on the
-# live config (numpy still supplies BLAS at runtime).
+# pytest has already done here. Set the same flags on the live config (numpy still supplies BLAS at runtime).
 pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
-import r1_bias as rb  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from benchmarks.models import build_model  # noqa: E402
 
 import pfcheeshmc.sampler as sampler_mod  # noqa: E402
 from pfcheeshmc import compiled  # noqa: E402
@@ -63,7 +62,7 @@ def _fit(model_name):
     kernel ordering. The state is captured by spying on `approximate`, so what is tested is the fit the
     sampler actually made.
     """
-    model = rb.build_model(model_name)
+    model = build_model(model_name)
     s = PfCheesHMC(model, seed=1)
     box = {}
     real = compiled.pathfinder_fit

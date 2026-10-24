@@ -2,8 +2,8 @@
 
     python compile_equiv_run.py TREE MODEL OUT.npz [--chains C] [--warmup W] [--draws D] [--seed S]
 
-TREE is a source tree that provides `pfcheeshmc/` and `tools/` (the checkout, or a `git archive` of an
-earlier commit). Writes the unconstrained draws, the sample statistics and `idata.attrs["config"]`.
+TREE is a source tree that provides `pfcheeshmc/` and `benchmarks/` or `tools/` (the checkout, or a `git archive` of
+an earlier commit). Writes the unconstrained draws, the sample statistics and `idata.attrs["config"]`.
 It must not import anything that exists only in the newer tree. Everything runs in float64: PyTensor's
 JAX dispatch switches `jax_enable_x64` on at import (its floatX default is float64).
 """
@@ -30,10 +30,14 @@ sys.path.insert(0, os.path.join(args.tree, "tools"))
 sys.path.insert(0, args.tree)
 
 import numpy as np  # noqa: E402
-import r1_bias  # noqa: E402
 from pfcheeshmc import sample_pf_chees_hmc  # noqa: E402
 
-model = r1_bias.build_model(args.model)
+try:                                      # this tree; a tree before benchmarks/ builds the notebook models in tools/r1_bias
+    from benchmarks.models import build_model
+except ModuleNotFoundError:
+    from r1_bias import build_model
+
+model = build_model(args.model)
 idata = sample_pf_chees_hmc(
     model, draws=args.draws, chains=args.chains, random_seed=args.seed, progressbar=False,
     keep_untransformed=True, chees_kwargs={"draws": args.warmup, **json.loads(args.chees)},

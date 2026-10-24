@@ -55,8 +55,7 @@ for name, meth in M.items():
 
 
 def run(model_name, chains, draws, warmup, seed):
-    model = (bl.load_notebook_model(bl.REPO / "examples" / "8 Schools example.ipynb")
-             if model_name == "8schools" else bl.build_radon(True))
+    model = bl.build_model("8schools" if model_name == "8schools" else "radon_noncentered")
     TIMINGS.clear()
     t0 = time.perf_counter()
     idata = bl.REAL_SAMPLE_PF(model, draws=draws, chains=chains, random_seed=seed,

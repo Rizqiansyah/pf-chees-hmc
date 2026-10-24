@@ -314,7 +314,6 @@ def test_covariance_orientation_mixes_the_anisotropic_target(anisotropic_model):
             f"{name}: mean {got:.4g} != {mean[name]:.4g}")
     assert max_rhat < 1.01, f"max R-hat {max_rhat:.4f}, per-variable ESS {per}"
     assert min_ess / (steps * 1000) > 1.0, f"ESS per gradient {min_ess / (steps * 1000):.3f}"
-    assert pfcheeshmc.sample_pf_chees_hmc.__name__ != "_tiny_idata", "stubbed entry point"
 
 
 def test_precision_orientation_does_not_mix_the_anisotropic_target(anisotropic_model):

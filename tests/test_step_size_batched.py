@@ -27,8 +27,8 @@ import pytest
 
 pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
-import r1_bias as rb  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from benchmarks.models import build_model  # noqa: E402
 from compile_counter import count_compiles  # noqa: E402
 from seeded_models import hier  # noqa: E402
 
@@ -75,7 +75,7 @@ def probes_around_the_initial_point(model, n=16, scale=0.3, infeasible=(), seed=
 
 @pytest.fixture(scope="module")
 def ladder():
-    return {name: rb.build_model(name) for name in LADDER}
+    return {name: build_model(name) for name in LADDER}
 
 
 @pytest.mark.parametrize("name", LADDER)

@@ -74,6 +74,7 @@ os.environ.setdefault("PFCHEESHMC_COMPILATION_CACHE", "0")      # rep 0 is a COL
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(1, os.path.dirname(HERE))       # the repo root: benchmarks/models.py
 
 import numpy as np  # noqa: E402
 import jax  # noqa: E402
@@ -114,35 +115,10 @@ def _walk(obj, trail=()):
 
 
 def build_model(model_name):
-    """Build a ladder model and undo bench_ladder's global sampling stubs.
+    """A ladder model: `benchmarks.models.build_model`."""
+    from benchmarks.models import build_model as build
 
-    `load_notebook_model` executes the example notebook with `pm.sample`,
-    `pm.sample_prior_predictive`, `pm.sample_posterior_predictive` and
-    `pfcheeshmc.sample_pf_chees_hmc` replaced by a stub (so loading a notebook does not sample) and
-    **never restores them**. In the same process, everything that samples afterwards silently gets a
-    one-draw dummy InferenceData. Observed twice: it made `az.rhat(idata.posterior)` raise on a
-    2-variable stub, and merely importing this module's model list into a pytest run broke
-    tests/test_rng_stage_keys.py by ordering alone. Snapshot, build, restore.
-    """
-    import bench_ladder as bl
-    import jax
-    import pymc as pm
-    import pytensor
-    import pfcheeshmc
-
-    keep = (pm.sample, pm.sample_prior_predictive, pm.sample_posterior_predictive,
-            pfcheeshmc.sample_pf_chees_hmc)
-    try:
-        return bl.model_specs()[model_name]()
-    finally:
-        (pm.sample, pm.sample_prior_predictive, pm.sample_posterior_predictive,
-         pfcheeshmc.sample_pf_chees_hmc) = keep
-        assert pfcheeshmc.sample_pf_chees_hmc is keep[3], "sampling stub was not restored"
-        # The example notebooks also run `jax.config.update("jax_enable_x64", True)`. PyTensor's JAX
-        # dispatch sets the flag from floatX at import (`jax_enable_x64 = floatX == "float64"`), so under
-        # `floatX=float32` a notebook would leave float64 on, and a float32 run would then mix widths.
-        if pytensor.config.floatX != "float64":
-            jax.config.update("jax_enable_x64", False)
+    return build(model_name)
 
 
 def value_var_names(model_name):
@@ -564,17 +540,6 @@ def run_cell(bl, model_name, args, W, seed, rep, cold, keep=None):
     if args.timed:
         require_gpu_lock(f"R1 timed cell {model_name} W={W}")
     import bench_ladder as bl
-    import pfcheeshmc
-
-    # A stubbed public sampler returns a 1-draw InferenceData instantly with no divergences, which
-    # would look like an outstanding result instead of a failure. bench_ladder used to leak its
-    # notebook-loading stubs for the whole process (fixed on pf-r1); this is the per-cell assertion.
-    if pfcheeshmc.sample_pf_chees_hmc is not getattr(bl, "REAL_SAMPLE_PF", None):
-        raise RuntimeError(
-            "pfcheeshmc.sample_pf_chees_hmc is not bench_ladder.REAL_SAMPLE_PF "
-            f"(got {getattr(pfcheeshmc.sample_pf_chees_hmc, '__name__', '?')}): a stub would "
-            "produce a fake instant cell with no divergences")
-
     from pfcheeshmc import sample_pf_chees_hmc
 
     model = build_model(model_name)

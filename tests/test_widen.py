@@ -39,8 +39,8 @@ pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent
-sys.path.insert(0, str(REPO / "tools"))
-import r1_bias as rb  # noqa: E402
+sys.path.insert(0, str(REPO))
+from benchmarks.models import build_model  # noqa: E402
 from test_lift_memo import point, pymc_logp  # noqa: E402
 from test_lifted import EXTRA, LADDER, LITERALS, LITERALS_INT_RV, _literal_models  # noqa: E402
 
@@ -60,7 +60,7 @@ def sites(model):
 def models():
     """The ladder, the extra models of test_lifted, and its literal models at every literal pair (the pairs cross the
     autocast boundaries: 0.5 is float32, 0.1 float64, 1000 int16)."""
-    cases = {name: (lambda name=name: rb.build_model(name)) for name in LADDER}
+    cases = {name: (lambda name=name: build_model(name)) for name in LADDER}
     cases.update({f"extra:{name}": (lambda build=build: build(1)) for name, build in EXTRA.items()})
     for kind, build in _literal_models().items():
         for pair in (LITERALS_INT_RV if kind == "poisson" else LITERALS):
@@ -129,7 +129,7 @@ def test_only_the_nodes_below_a_widened_constant_are_remade(name):
 
 # ------------------------------------------------------------------------------------ the fold
 def test_the_parameters_are_folded_in_one_call_not_one_each(monkeypatch):
-    model = rb.build_model("radon_noncentered")                 # four literal-built parameters
+    model = build_model("radon_noncentered")                    # four literal-built parameters
     folds = Folds(monkeypatch)
     lifted._widen_model_inputs(model, [model.logp()])
     assert (folds.calls, folds.expressions) == (1, 4)
