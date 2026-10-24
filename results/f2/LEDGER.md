@@ -249,3 +249,5 @@
 - 2026-10-24 13:19 — Lead suite on merged `f2` (6ade5b1), the bare command: `584 passed, 64 warnings in
   725.14s (0:12:05)`, rc 0 (load 1.4 → 4.2, with the F2k task starting). The real `~/.cache/pfcheeshmc` was not
   created.
+- 2026-10-24 — F2j → local `main` (owner's up-front yes for the follow-ups): merged with `--no-ff` (89721fd), tree
+  equal to `f2`'s 2872ecb. Not pushed. F2j checkout and branch removed.

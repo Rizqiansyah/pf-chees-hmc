@@ -57,16 +57,15 @@ The owner wants **universal** improvements (any PyMC model), not benchmark tunin
   - follow-ups F2i, F2j, F2k, one task at a time, no default flips;
   - upstream bugs stay drafted;
   - never push.
-- **Local `main`:** 67f2820 (= f2 fbc85ad, which includes F2h and F2i). Not pushed.
+- **Local `main`:** 89721fd (tree = f2 2872ecb: F2h, F2i and F2j). Not pushed.
 - **F2h:** done. Suite on 44a0556: 514 passed. GPU check: the host gather costs nothing measurable.
 - **F2i:** done as a cheaper widening, no memo (a7a4413). Suite: 575 passed. CPU: 0.016–0.046 s saved per call.
-  Checkout and branch removed.
-- **F2j task** (threshold teardown): running in `~/pf/f2-j` (branch `f2-j` from b71e71e).
-- **After F2j:** F2k (float32 probe), as planned in the plan doc. F2k's smoke
-  test: float32 fails in `pathfinder_fit` on all models, also on pre-F2 main. For each task:
+- **F2j:** done (6ade5b1). The tests release compiled programs only above `max_map_count // 2 - 16,000` mappings.
+  Suite: 584 passed in 725 s, against 774 s before. Peak 22.7k mappings.
+- Checkouts and branches of F2h–F2j are removed. TASK-RULES now tell a task to sign with its own model (62c38a3).
+- **F2k task** (float32 probe, CPU): running in `~/pf/f2-k` (branch `f2-k` from 62c38a3). When it reports:
   - review, merge into `f2`, run the suite, write the SUMMARY and the ledger;
-  - merge into local `main`;
-  - start the next task.
+  - merge into local `main`.
 - **F2k GPU part (lead):** float32 warm/cold stages, and the R1 gate rows on the GPU.
 - **At the end:** a final F2 report to the owner.
 
