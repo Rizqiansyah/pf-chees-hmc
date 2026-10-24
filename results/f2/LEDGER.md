@@ -249,3 +249,26 @@
 - 2026-10-24 13:19 — Lead suite on merged `f2` (6ade5b1), the bare command: `584 passed, 64 warnings in
   725.14s (0:12:05)`, rc 0 (load 1.4 → 4.2, with the F2k task starting). The real `~/.cache/pfcheeshmc` was not
   created.
+- 2026-10-24 — F2j → local `main` (owner's up-front yes for the follow-ups): merged with `--no-ff` (89721fd), tree
+  equal to `f2`'s 2872ecb. Not pushed. F2j checkout and branch removed.
+- 2026-10-24 16:25 — F2k (fast-tier, one round, resumed once after the time limit). Merged with `--no-ff` (58b5c93;
+  task head 9392c38). Task suite: `596 passed, 63 warnings in 755.67s`.
+  - float32 had never run because the example notebooks' first cell turns `jax_enable_x64` on after PyTensor turned
+    it off. The fix is in the tools (`build_model` switches it back off), and the sampler now warns about the
+    contradiction.
+  - The audit fixes are dtype-generic. float64 draws are bit-identical (tested), except that the stratified pick
+    now skips non-finite pool rows. Before, a `-inf` row became chain 0's start for the whole run (a bug fix,
+    accepted).
+  - CPU at C=1024: 8schools, logit and radon match float64. GEV's step size collapses under float32 (2 of 3 seeds
+    fail the gate): report only.
+- 2026-10-24 16:40 — Lead suite on merged `f2` (58b5c93): `596 passed, 63 warnings in 752.89s (0:12:32)`,
+  rc 0. The real `~/.cache/pfcheeshmc` was not created. F2k GPU part started (`results/f2/drivers/f2k_gpu.sh`, then
+  `run_step.sh F2k F2k_gate.cmds`).
+- 2026-10-24 16:40–16:51 — F2k GPU part (f2 9697f6c; load 2–5 from other users). Warm call, float64 → float32:
+  8schools 0.21 → 0.16 s, gev 0.47 → 0.75 s, logit 1.39 → 0.18 s, radon 6.42 → 2.06 s.
+  - R1 gate under float32: logit and radon pass 3/3, with ε and L equal to float64's.
+  - GEV's ε collapses (3e-5–9e-3, R-hat 57–112). Its b² passes only because the chains barely leave Pathfinder's
+    starts: a fail in substance.
+  - 8schools fails seed 1. Over seeds 1–13, float32 fails 2 and float64 fails 0. Both float32 failures share one
+    signature (L 14–15, about 620 warmup divergences, bias in `mu`).
+  - Report only; no default changed. `results/f2/F2k/SUMMARY.md`, `gpu.md`.

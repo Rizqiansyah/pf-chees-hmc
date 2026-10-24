@@ -274,7 +274,7 @@ Three items from the F2f report (`results/f2/F2f/REPORT.md`, Findings), done in 
   - the threshold and its measurement go in the docstring.
 - **Files:** `tests/conftest.py`, and the README's Testing line.
 
-### F2k — float32 probe (owner's go 2026-10-24: measure and fix, no default flip)
+### F2k — float32 probe (owner's go 2026-10-24: measure and fix, no default flip; done 2026-10-24, merged into `f2` at 58b5c93, `results/f2/F2k/SUMMARY.md`)
 - **Why:** the RTX A2000, like most consumer and workstation GPUs, runs float64 at 1/32 of the float32
   rate. Every F2 measurement is float64: PyTensor's JAX dispatch sets
   `jax_enable_x64 = (floatX == "float64")` at import (`pytensor/link/jax/dispatch/basic.py:21`).
