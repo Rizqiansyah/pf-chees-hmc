@@ -78,6 +78,7 @@ sys.path.insert(0, HERE)
 import numpy as np  # noqa: E402
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
+import pytensor  # noqa: E402
 
 # A8 stage key -> the PfCheesHMC methods that make it up. _run_pathfinder NESTS the two init
 # methods, so `init` is timed separately and subtracted from it (the double-count that made an
@@ -124,7 +125,9 @@ def build_model(model_name):
     tests/test_rng_stage_keys.py by ordering alone. Snapshot, build, restore.
     """
     import bench_ladder as bl
+    import jax
     import pymc as pm
+    import pytensor
     import pfcheeshmc
 
     keep = (pm.sample, pm.sample_prior_predictive, pm.sample_posterior_predictive,
@@ -135,6 +138,11 @@ def build_model(model_name):
         (pm.sample, pm.sample_prior_predictive, pm.sample_posterior_predictive,
          pfcheeshmc.sample_pf_chees_hmc) = keep
         assert pfcheeshmc.sample_pf_chees_hmc is keep[3], "sampling stub was not restored"
+        # The example notebooks also run `jax.config.update("jax_enable_x64", True)`. PyTensor's JAX
+        # dispatch sets the flag from floatX at import (`jax_enable_x64 = floatX == "float64"`), so under
+        # `floatX=float32` a notebook would leave float64 on, and a float32 run would then mix widths.
+        if pytensor.config.floatX != "float64":
+            jax.config.update("jax_enable_x64", False)
 
 
 def value_var_names(model_name):
@@ -580,6 +588,7 @@ def run_cell(bl, model_name, args, W, seed, rep, cold, keep=None):
                                      "metric_refresh_reseed": getattr(args, "metric_refresh_reseed",
                                                                       None),
                                      "chains": args.chains, "draws": args.draws, "warmup": W,
+                                     "floatX": pytensor.config.floatX,
                                      # exactly what was passed: an absent key means "sampler decides"
                                      "pathfinder_kwargs": pf_kw, "chees_kwargs": ch_kw,
                                      "progressbar": False,
@@ -796,8 +805,8 @@ def run_starts(bl, model_name, args, rep, cold):
                   draws_per_chain=1, warmup=0, seed=s.seed, rep=rep, cold=cold, schema=SCHEMA_R2,
                   wall_s=round(time.perf_counter() - t_start, 2),
                   b2_max=b2_max, b2_argmax=argmax_name(labels, k), d=ens.shape[1],
-                  kwargs=json.dumps({"chains": args.chains, "pathfinder_kwargs": pf_kw},
-                                    sort_keys=True))
+                  kwargs=json.dumps({"chains": args.chains, "pathfinder_kwargs": pf_kw,
+                                     "floatX": pytensor.config.floatX}, sort_keys=True))
     row.update(step=getattr(args, "step", None), pooled=False, effective=effective)
     write_row(args.out, row)
     banner(model=model_name, cold=cold, wp=args.wp, arm="pf_starts")

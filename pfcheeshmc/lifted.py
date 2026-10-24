@@ -146,6 +146,27 @@ def jax_funcify_Erfcx(op, **kwargs):
 
 
 # --------------------------------------------------------------------------------------------------
+# float32
+# --------------------------------------------------------------------------------------------------
+# PyTensor sums a float32 graph with ``acc_dtype=float64`` and its JAX dispatch casts with ``.astype(acc_dtype)``
+# (pytensor/link/jax/dispatch/elemwise.py:49). With ``jax_enable_x64`` off (PyTensor sets it from floatX) JAX
+# narrows that to float32 and warns "Explicitly requested dtype float64 ... set the jax_enable_x64 configuration
+# option", which is advice that would undo the float32 run, from a line nobody here wrote. The warning is dropped
+# while the lifted function runs (it fires when a program is traced), and only while x64 is off.
+_TRUNCATION = r"Explicitly requested dtype float64 requested in "
+
+
+def _quiet_truncation(call: Callable) -> Callable:
+    def quiet(xs, values):
+        if jax.config.jax_enable_x64:
+            return call(xs, values)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=_TRUNCATION, category=UserWarning)
+            return call(xs, values)
+    return quiet
+
+
+# --------------------------------------------------------------------------------------------------
 # lifting
 # --------------------------------------------------------------------------------------------------
 # A model input is lifted only if every client of it (looking through `DimShuffle`, which is how
@@ -576,7 +597,7 @@ def _build(model, inputs, outputs, rule: str):
             if isinstance(v, SharedVariable) and not isinstance(v.type, RandomType)
         )
         jitted = get_jaxified_graph(inputs=inputs, outputs=outputs)
-        return (lambda xs, values: jitted(*xs)), (), [], (), shared, None
+        return _quiet_truncation(lambda xs, values: jitted(*xs)), (), [], (), shared, None
 
     replaced = {}
     if rule == "model_inputs":
@@ -610,7 +631,7 @@ def _build(model, inputs, outputs, rule: str):
         fgraph = FunctionGraph(inputs=new_inputs, outputs=new_outputs, clone=True)
         mode.JAX.optimizer.rewrite(fgraph)
         jitted = jax_funcify(fgraph)
-        memo = _Memo(new_inputs, new_outputs, lambda xs, values: jitted(*xs, *values))
+        memo = _Memo(new_inputs, new_outputs, _quiet_truncation(lambda xs, values: jitted(*xs, *values)))
         if slot is not None:
             slot.append(memo)
 
