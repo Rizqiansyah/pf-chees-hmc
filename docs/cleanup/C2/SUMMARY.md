@@ -111,3 +111,18 @@ Command: `pixi run --manifest-path $MAIN/pixi.toml env PYTHONPATH=$WT python -m 
 - The probe tools listed above: not run; they fail by construction.
 
 Written by the task (fast-tier); the write step refused the file for the subtask, so the lead committed the task's text verbatim.
+
+## Integrator (fast-tier)
+Integrator suite on merged `cleanup` (9c5fe20): `587 passed, 53 warnings in 846.23s (0:14:06)`, rc 0, load 3.03 → 3.93 (1-minute average).
+
+Step-1 verdicts (cleanup-c2 at 0c18874):
+1. Scope: OK. 29 files; `pfcheeshmc/`, tests, and `tools/{r1_bias,_common,t3_cpu_nuts}.py` (nested R-hat and superchains parts); every deviation is listed above.
+2. No behaviour change: OK. `tests/test_api_prune.py` run by the integrator: 25 passed in 58 s. No default value changed; the `sample_pf_chees_hmc` signature and `__init__.py` are unchanged. The tag child runs the tag's `pfcheeshmc/` (`PYTHONPATH` and `sys.path.insert(0, tree)`; checked by import: the tag tree has `_run_chees_two_phase`, this tree has not).
+3. Acceptance: OK. Q3 list checked against the tag's code (defaults are the surviving branches; the 14 removed keys are exactly the Q3 list; the Kept list is intact). `test_compile_once.py` + `test_rng_stage_keys.py`: 67 passed. The accepted-key sets match what each stage reads; kept callers (notebooks, README, `bench_ladder`, `r1_bias`, `warm_stages`) pass no rejected key. Deviation 3 helpers have no remaining caller.
+4. Must-fail: OK. Mutation 1 (`split(key, 5)` → `split(key, 4)`) reproduced: `[kept]` fails ("18 of 356 differ"), `[default]` passes; reverted. The rejection tests fail against the tag's code.
+5. Dangling references: OK (only the probes C4 deletes, tests that assert the names are gone, `tools/wp3_chop_check.py`, and README/`chees.py` prose).
+6. Code quality: OK. No new unused imports; no ladder-model special-casing.
+7. SUMMARY: accurate. Finding 1 (corrected): item 1 of the deviations lists `test_compile_once` among the tests that use `without_removed`; it does not import it (the importers are `test_api_prune`, `test_benchmark_models`, `test_pm_chains`, `test_float32`, `test_start_repair`, `test_widen`).
+- Finding 2 (carried to C3): five test modules (`test_benchmark_models`, `test_pm_chains`, `test_float32`, `test_start_repair`, `test_widen`) import `test_api_prune.without_removed`, and `test_api_prune` is itself a git-archive proof. Keep the helper or move it when C3 drops the git-archive proofs.
+- Finding 3 (UNVERIFIED): float32 and the GPU programs. The new proof is CPU float64 only.
+No finding blocked the merge.

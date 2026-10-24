@@ -31,3 +31,4 @@
   1e08876, suite `620 passed, 63 warnings in 830.07s (0:13:50)`; findings 1–3 carried to C4. C2 task (fast-tier)
   launched in `~/pf/cleanup-c2` from 432aaac: verify the Q3 list, remove it, TypeError on removed options,
   default-path draws bit-identical against the tag (child-process proof; C3's golden fixture replaces it).
+- 2026-10-24 — C2 merged into `cleanup` at 9c5fe20 (`--no-ff` of cleanup-c2 0c18874): the Q3 experiment options are removed (`imm_orientation`, `imm_order`, `metric_refresh*`, `superchains` and nested R-hat, `iterate`, `init_pick`, `pf_start_scale`, `pf_center`; `ensemble_metric.py` deleted; every stage raises `TypeError` on a key it does not read); default-path and kept-option draws bit-identical to the tag (`tests/test_api_prune.py`). Integrator suite `587 passed, 53 warnings in 846.23s (0:14:06)`. Carried to C3: `without_removed` is imported by 5 modules from `test_api_prune`; carried (unverified): float32/GPU.
