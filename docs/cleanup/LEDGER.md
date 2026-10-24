@@ -25,3 +25,4 @@
   - the lead writes the briefs and decides.
   C1 was told of the SUMMARY change by message. The pause still holds: when C1 reports, launch nothing until the
   owner says go. Then the C1 integrator, step 1.
+- 2026-10-24 — C1 task reported: head 53ad265 on `cleanup-c1`; SUMMARY committed there (`docs/cleanup/C1/SUMMARY.md`). Task suite `620 passed, 63 warnings in 828.14s`. Models proved equal to the tag's notebook-built ones at both floatX (graphs, logp/dlogp at 100 points, draws over 102 arrays). Paused per the owner: **next is the C1 integrator, step 1.**
