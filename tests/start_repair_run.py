@@ -17,8 +17,8 @@ another key) and the stack's shape. The repaired stack of each call goes to OUT.
                     row 0 fenced off at x0 = 12 (the backtrack finds a usable point on its 2nd halving),
                     row 1 usable, row 2 on a fenced strip around x1 = 0 (every backtrack fails: random restarts),
                     row 3 as row 2, under another key
-    last_resort   a unit-ball log-density, a start and a `center` far outside it: the search from them fails and
-                  the search from the origin gives the answer
+    last_resort   a unit-ball log-density and a start far outside it, with no backtracks and no restarts allowed: the
+                  search from the start fails and the search from the origin gives the answer
     clean_64      64 usable starts: nothing to repair
 """
 import json
@@ -84,7 +84,7 @@ elif case == "last_resort":
         pm.Potential("ball", pt.switch(pt.sum(x ** 2) > 1.0, -np.inf, 0.0))
     s = PfCheesHMC(model, seed=1)
     stack = {"x": jnp.array([[50.0, 50.0]])}
-    KW["center"] = {"x": jnp.array([100.0, 100.0])}
+    KW.update(max_backtracks=0, max_restarts=0)
 elif case == "clean_64":
     with pm.Model() as model:
         pm.Normal("x", shape=(3,))

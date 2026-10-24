@@ -1,10 +1,10 @@
 """CPU tests for the vendored ChEES adapter (pfcheeshmc/chees.py).
 
-The load-bearing one is test_ma_mode_is_bit_for_bit_upstream: it feeds the
-vendored iterate="ma" adapter and the installed BlackJAX base() the same
-deterministic inputs for 64 updates and requires every state field to match
-exactly. That is what makes "vendor-and-fix" reviewable: the fix is a
-switchable branch, and the default branch is provably the installed code.
+The load-bearing one is test_the_vendored_adapter_is_bit_for_bit_upstream: it feeds the
+vendored adapter and the installed BlackJAX base() the same deterministic inputs
+for 64 updates and requires every state field to match exactly. That is what
+makes the vendored copy reviewable: it is provably the installed code, plus a
+scalar trace.
 """
 
 import numpy as np
@@ -77,7 +77,7 @@ def _assert_states_equal(a, b, label):
             assert bool(jnp.all(jnp.equal(xa, xb))), f"{label}: arrays differ"
 
 
-def test_ma_mode_is_bit_for_bit_upstream():
+def test_the_vendored_adapter_is_bit_for_bit_upstream():
     jit_gn = lambda i: jnp.asarray(0.5 + 0.5 * jnp.sin(0.31 * jnp.asarray(i, dtype=jnp.float64)), dtype=jnp.float64)
     next_rarg = lambda i: i + 1
     imm = jnp.array([4.0, 1.0, 0.25], dtype=jnp.float64)
@@ -117,11 +117,11 @@ def test_optim_default_matches_positional():
     _assert_states_equal(sa, sb, "optim default")
 
 
-def test_t0_none_is_bit_for_bit_upstream_init():
+def test_init_is_bit_for_bit_upstream():
     jit_gn = lambda i: jnp.asarray(0.5, dtype=jnp.float64)
     init_up, _ = upstream_chees.base(jit_gn, lambda i: i + 1, optax.adam(0.05), 0.651, 0.5, 1000)
     init_my, _ = vendored_base(jit_gn, lambda i: i + 1, optax.adam(0.05), 0.651, 0.5, 1000)
-    _assert_states_equal(init_up(0, 0.1), init_my(0, 0.1), "t0=None init")
+    _assert_states_equal(init_up(0, 0.1), init_my(0, 0.1), "init")
 
 
 def test_harmonic_pooling_excludes_divergent_chains():
@@ -157,17 +157,12 @@ def test_harmonic_pooling_excludes_divergent_chains():
         assert a == b, f"step {i}: divergent-chain acceptance leaked into the state: {a} vs {b}"
 
 
-def test_invalid_iterate_raises():
-    with pytest.raises(ValueError, match="iterate"):
-        vendored_base(lambda i: 0.5, lambda i: i + 1, optax.adam(0.05), 0.651, 0.5, 1000, iterate="bogus")
-
-
 def test_bad_single_step_iters_raises():
     with pytest.raises(ValueError, match="single_step_iters"):
         vendored_base(lambda i: 0.5, lambda i: i + 1, optax.adam(0.05), 0.651, 0.5, 1000, single_step_iters=-1)
 
 
-# --- raw-iterate behaviour and the utils-level guards -------------------------
+# --- the warmup around the adapter and its utils-level guards -------------------
 
 def _aniso_gaussian(sd):
     """log-density of an anisotropic 2-D Gaussian, dict-of-arrays pytree.
@@ -184,7 +179,7 @@ def _aniso_gaussian(sd):
     return ld
 
 
-def _run_warmup(iterate, n_steps=300, chains=8, seed=0, t0=None):
+def _run_warmup(n_steps=300, chains=8, seed=0):
     from pfcheeshmc.utils import chees_warmup_with_progress
 
     sd = (1e-2, 1e2)  # one stiff, one soft direction
@@ -201,38 +196,14 @@ def _run_warmup(iterate, n_steps=300, chains=8, seed=0, t0=None):
         imm,
         progressbar=False,
         max_leapfrog_steps=100,
-        iterate=iterate,
-        t0=t0,
     )
     tr = warm.trace
     L = tr.trajectory_length / tr.step_size
     return L, tr, params
 
 
-def test_raw_iterate_grows_L_faster_in_the_early_phase():
-    """Mechanism check on a synthetic target: the paper-faithful raw iterate
-    must let the trajectory length grow at least as fast as the
-    moving-average-fed one in the early phase, where the MA feedback is the
-    rate limit. The frozen-value comparison (raw better than ma at W=2,000 on
-    the real targets) is the GPU deliverable, not something this 2-D toy can
-    certify: here dual averaging drives eps to ~1e-4 and the two modes
-    couple to it differently, so the late-phase ordering on this target is a
-    regime artifact, not evidence about the fix.
-    """
-    L_ma, tr_ma, _ = _run_warmup("ma")
-    L_raw, tr_raw, _ = _run_warmup("raw")
-    assert L_raw[99] >= L_ma[99], (
-        f"raw L@100 {L_raw[99]:.3f} below ma L@100 {L_ma[99]:.3f} -- "
-        "the rate limit is not lifted"
-    )
-    # Both traces finite throughout; the modes are genuinely different, not
-    # silently identical.
-    assert bool(jnp.all(jnp.isfinite(L_raw))) and bool(jnp.all(jnp.isfinite(L_ma)))
-    assert not bool(jnp.all(jnp.equal(L_raw, L_ma)))
-
-
 def test_trace_matches_state_and_counts():
-    L, tr, params = _run_warmup("ma", n_steps=50)
+    L, tr, params = _run_warmup(n_steps=50)
     assert tr.step.shape[0] == 50
     assert tr.step_size.shape == (50,)
     assert tr.trajectory_length.shape == (50,)

@@ -118,7 +118,6 @@ def test_the_same_seed_gives_bit_identical_draws_and_another_seed_does_not():
 # ------------------------------------------------------------------- chunk-size invariance
 CHUNK_PATHS = {
     "default": dict(warmup=40),
-    "refresh": dict(warmup=70, metric_refresh="fisher_diag", metric_refresh_warmup=30),
     "stop rule that never fires": dict(warmup=40, warmup_stop={"block": 16, "window": 16, "rhat": 0.0}),
 }
 
@@ -198,25 +197,12 @@ def test_discrete_bookkeeping_matches_an_independent_recomputation(monkeypatch, 
     assert json.loads(idata.attrs["config"])["num_draws"] == D == idata.posterior["mu"].shape[1]
 
 
-def test_the_refresh_path_keeps_one_warmup_of_the_full_length(monkeypatch):
-    """Phase A then phase B, joined on the host: W rows, with the gradient counts of both phases."""
-    set_chunks(monkeypatch, 7, 5, 5)
-    with spy_on_warmup(monkeypatch) as seen:
-        idata = run(warmup=60, metric_refresh="fisher_diag", metric_refresh_warmup=23)
-    assert seen["info"].num_integration_steps.shape == (60, CH) and seen["trace"].step_size.shape == (60,)
-    assert idata.attrs["warmup_steps_used"] == 60 and idata.attrs["metric_refresh_warmup"] == 23
-    assert idata.attrs["warmup_grad_evals_per_chain"] == int(seen["info"].num_integration_steps.sum()) // CH
-    # phase B restarts its own step counter: the trace's step column is 2..24 then 2..38
-    assert np.array_equal(seen["trace"].step, np.concatenate([np.arange(2, 25), np.arange(2, 39)]))
-
-
 # ------------------------------------------------------------------ a known posterior
 @pytest.fixture(scope="module")
 def known_posterior(tmp_path_factory):
-    """New tree and the F2 head, on the conjugate model (C=256, W=200, D=50), plain and with a refresh."""
+    """New tree and the F2 head, on the conjugate model (C=256, W=200, D=50)."""
     tmp = tmp_path_factory.mktemp("known")
     base = _base_tree(tmp)
-    refresh = json.dumps({"metric_refresh": "fisher_diag", "metric_refresh_warmup": 60})
     runner = pathlib.Path(__file__).with_name("known_posterior_run.py")
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="", JAX_PLATFORMS="cpu", OMP_NUM_THREADS="2",
                PYTENSOR_FLAGS="blas__ldflags=-llapack -lblas -lcblas -lm")
@@ -232,7 +218,7 @@ def known_posterior(tmp_path_factory):
 
     repo = pathlib.Path(__file__).resolve().parents[1]
     jobs = {(t, c): (t, tree, c, extra) for t, tree in (("old", base), ("new", repo))
-            for c, extra in (("plain", []), ("refresh", ["--chees", refresh]))}
+            for c, extra in (("plain", []),)}
     with concurrent.futures.ThreadPoolExecutor(len(jobs)) as pool:
         futures = {key: pool.submit(job, *args) for key, args in jobs.items()}
         return {key: f.result() for key, f in futures.items()}
@@ -254,7 +240,7 @@ def mc_check(theta, label):
         assert np.all(np.abs(z) < 4.0), f"{label} {name}: z = {np.round(z, 2)}"
 
 
-@pytest.mark.parametrize("case", ["plain", "refresh"])
+@pytest.mark.parametrize("case", ["plain"])
 def test_known_posterior_mean_and_variance_within_4_standard_errors(known_posterior, case):
     new = known_posterior[("new", case)]["theta"]
     assert new.shape == (256, 50, kp.D_THETA)
@@ -262,10 +248,10 @@ def test_known_posterior_mean_and_variance_within_4_standard_errors(known_poster
     mc_check(known_posterior[("old", case)]["theta"], f"f2 head {case}")        # the check itself is sound
 
 
-@pytest.mark.parametrize("case", ["plain", "refresh"])
+@pytest.mark.parametrize("case", ["plain"])
 def test_known_posterior_draws_are_not_distinguishable_from_the_f2_head(known_posterior, case):
     """Two-sample KS per coordinate, new vs F2 head, same seed, at 1e-3. (`plain` has the same stream and
-    agrees to the ulp; `refresh` changed its stream, so it is another realisation of the same sampler.)"""
+    agrees to the ulp.)"""
     new, old = known_posterior[("new", case)]["theta"], known_posterior[("old", case)]["theta"]
     for j in range(kp.D_THETA):
         p = scipy.stats.ks_2samp(new[..., j].ravel(), old[..., j].ravel()).pvalue
@@ -328,14 +314,13 @@ def _jaxprs():
     pos = {n: jnp.zeros((CH,) + np.shape(v)) for n, v in s.model.initial_point().items() if n in names}
     d = sum(int(np.prod(np.shape(v))) for v in pos.values()) // CH
     settings = dict(optim=0.05, target_accept=0.651, decay_rate=0.5, jitter_amount=1.0, max_leapfrog_steps=100,
-                    iterate="ma", single_step_iters=0)
-    states, astate = compiled.warmup_init(ld.fn, ld.names, ld.values, pos, jnp.asarray(0.1), jnp.asarray(0.0),
-                                          has_t0=False, **settings)
+                    single_step_iters=0)
+    states, astate = compiled.warmup_init(ld.fn, ld.names, ld.values, pos, jnp.asarray(0.1), **settings)
     key, imm = jax.random.key(0), jnp.eye(d)
     z = np.int32(0)
     out = {}
     out["warmup_init"] = jax.make_jaxpr(lambda p: compiled.warmup_init(
-        ld.fn, ld.names, ld.values, p, jnp.asarray(0.1), jnp.asarray(0.0), has_t0=False, **settings))(pos)
+        ld.fn, ld.names, ld.values, p, jnp.asarray(0.1), **settings))(pos)
     for stack in (False, True):
         out[f"warmup_chunk stack={stack}"] = jax.make_jaxpr(lambda c: compiled.warmup_chunk(
             ld.fn, ld.names, ld.values, c, imm, key, z, np.int32(3), chunk=5, stack_positions=stack, **settings)
@@ -374,15 +359,13 @@ def test_run_chunks_dispatches_the_next_chunk_before_it_converts_the_previous_on
     assert events == ["dispatch 0+0", "consume 0+0"]                  # one empty chunk: the shapes are known
 
 
-def test_host_stack_cuts_the_real_rows_with_numpy_and_can_keep_only_the_last_ones():
+def test_host_stack_cuts_the_real_rows_with_numpy():
     out = lambda start: {"a": np.arange(start, start + 4)[:, None] * np.ones((1, 2)), "b": np.arange(start, start + 4)}
-    full, last = compiled.HostStack(10), compiled.HostStack(10, keep_last=3)
+    full = compiled.HostStack(10)
     for start, n in ((0, 4), (4, 4), (8, 2)):
         full.add(start, n, out(start))
-        last.add(start, n, out(start))
-    f, l = full.result(), last.result()
+    f = full.result()
     assert f["b"].tolist() == list(range(10)) and f["a"].shape == (10, 2)
-    assert l["b"].tolist() == [7, 8, 9] and l["a"].shape == (3, 2)
     empty = compiled.HostStack(0)
     empty.add(0, 0, out(0))
     assert empty.result()["b"].shape == (0,)
