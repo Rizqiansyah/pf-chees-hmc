@@ -1,4 +1,4 @@
-# Repo cleanup — scope (draft for the owner, 2026-10-24)
+# Repo cleanup — plan (owner's answers 2026-10-24)
 
 **Goal.** A repo that a new user or maintainer can read in an afternoon. It holds:
 - the package;
@@ -9,6 +9,23 @@
 
 The history stays reachable through a git tag, not in the tree. No sampler default changes. Draws on the default
 path stay bit-identical.
+
+## Decisions (owner, 2026-10-24)
+- **History:** tag `archive/pre-cleanup` (b34e66e, done), then delete `results/`, the `docs/` plans and reviews,
+  the workflow-skill directory and the probes from the tree. **No history page.** The lead's reading: the two unfiled
+  upstream drafts are pending actions, not history, so they stay as `docs/upstream-drafts.md`.
+- **Tools:** a slim `benchmarks/`, as below.
+- **API:** prune the Q3 list below. The default path stays bit-identical.
+- **float32:** a **clear, loud opt-in** README section with its caveats, **and the examples demonstrate it**.
+  The owner knows why GEV fails and will do the mitigation later. The examples show how to switch it on, where it
+  helps (logit, radon), and how to see that it failed (GEV: step size and R-hat). Not a default.
+- **The run:** autonomous. One fast-tier task at a time. Merge into `cleanup` after review and the suite. Local `main`
+  is updated at the end (C8). Never push. File nothing upstream.
+- **Process records** (this plan, `LEDGER.md`, `TASK-RULES.md`, the per-WP `SUMMARY.md`) live in `docs/cleanup/`
+  during the run, and are deleted at C8. The `--no-ff` merges keep them in the history.
+
+**Order:** C0 → C1 → C2 → C4 → C3 → C5 → C6 → C7 → C8. The benchmarks move before the tests are slimmed, so that
+tool tests move or go with their tools. C5 and C6 can be one task (deletions by the lead, then the docs).
 
 ## Today (local `main` b34e66e, 384 tracked files)
 | area | files | what it is | essential? |
@@ -46,9 +63,11 @@ benchmarks/            README with the exact commands
   bias.py              the R1 gate (b²_max against NUTS references), trimmed from tools/r1_bias.py
   references.json      the reference manifest (sha256, seeds, settings); make_reference.py rebuilds them
   make_reference.py, warm_stages.py, nuts_cpu.py, gpu_run.sh
-examples/              8 Schools, GEV, and a new "new data every call" notebook (the owner's workflow)
+examples/              8 Schools, GEV, a new "new data every call" notebook (the owner's workflow), and float32
+                       demonstrated (see C7)
 docs/
   design.md            one maintainer page: rule C lifting, compile-once layout, start repair, metric convention
+                       (no history)
   upstream-drafts.md   the PyMC Uniform int8 and JAX erfcx (float64 and float32 bands) drafts, not filed
 README.md, pyproject.toml, pixi.toml, pixi.lock, .gitignore
 ```
@@ -63,12 +82,12 @@ Everything else is deleted from the tree. It stays reachable through the tag `ar
 | **C2** (if Q3 = prune) | remove the experiment options and their code paths (list below) | golden draws bit-identical; compile-once tests pass; an unknown option raises a clear `TypeError` |
 | **C3** | tests: drop the git-archive proofs in favour of `tests/test_golden.py`; drop the tests of deleted tools; merge small modules; keep compile counts, the cache, float32, the statistical checks and the output contract | the suite passes in about 5 min; no package line loses coverage it has today (coverage diff in the SUMMARY) |
 | **C4** | `benchmarks/` as above: `bias.py` trimmed to what the gate needs; the references manifest moved; a benchmarks README | the R1 gate rows reproduce F2f's b² on 8schools at C=64 on the CPU |
-| **C5** (lead + task) | delete `results/`, `docs/*` (except the two new pages); write `docs/design.md` and `docs/upstream-drafts.md`; pyproject: version 0.2.0, `jax[cuda13]` as an extra rather than a hard dependency | no dangling path in the tree (`grep` for `results/`, `docs/review`, `tools/`) |
+| **C5** (lead + task) | delete `results/`, `docs/*` (except `docs/cleanup/` until C8 and the two new pages); write `docs/design.md` and `docs/upstream-drafts.md`; pyproject: version 0.2.0, `jax[cuda13]` as an extra rather than a hard dependency | no dangling path in the tree (`grep` for `results/`, `docs/review`, `tools/`) |
 | **C6** | README rewrite (outline below) | every number cites a reproducible command in `benchmarks/`; no "pending" or "caveat" paragraphs |
-| **C7** (task writes, lead runs on the GPU) | notebooks: drop the forced `JAX_PLATFORM_NAME=gpu` and the `jax_enable_x64` cell; current API (`random_seed`, `progressbar`, many short chains); the NUTS comparison kept in GEV; a third notebook for new data every call; executed on the GPU with outputs committed | each runs top to bottom on the GPU and on the CPU |
+| **C7** (task writes, lead runs on the GPU) | notebooks: drop the forced `JAX_PLATFORM_NAME=gpu` and the `jax_enable_x64` cell; current API (`random_seed`, `progressbar`, many short chains); the NUTS comparison kept in GEV; a third notebook for new data every call; **float32 demonstrated** (a loud opt-in cell at the top of each notebook, and a float32 notebook: where it helps, and how to see the GEV failure); executed on the GPU with outputs committed | each runs top to bottom on the GPU and on the CPU |
 | **C8** (lead) | full suite, the notebooks on the GPU, merge into local `main` | **not pushed** |
 
-**Q3: experiment options proposed for removal** (default path untouched). The task verifies each against the code
+**Q3: experiment options to remove (approved)** (default path untouched). The task verifies each against the code
 before removing it.
 - **Reproduce known bugs:** `imm_orientation="precision"` (the inverted metric) and `imm_order` other than
   `"kernel"` (the permutation).
@@ -88,7 +107,8 @@ before removing it.
 - choosing chains, draws and warmup (the bias-gated W per model, from F2f);
 - performance (F2's GPU numbers against CPU NUTS);
 - compile once and the disk cache (a third of today's length);
-- float32 (per Q4);
+- float32: a loud opt-in section. How to switch it on (before PyTensor is imported), the measured speed-ups,
+  the GEV and 8schools failures, the checks to run (frozen step size, R-hat), and a pointer to the examples;
 - the output contract;
 - common issues;
 - testing and benchmarks;
