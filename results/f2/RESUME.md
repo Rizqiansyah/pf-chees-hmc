@@ -51,6 +51,32 @@ The owner wants **universal** improvements (any PyMC model), not benchmark tunin
   - Accept no size cap on the default directory (task's DEVIATION 1)?
   - Fix the `1 < pm_chains < chains` broadcast bug (small task)?
 
+## Update 2026-10-24, autonomous run (owner: "Do not ask. Work autonomously.")
+- **Owner's up-front answers** (in the LEDGER):
+  - F2h → local `main` without asking, after the review and the suite;
+  - follow-ups F2i, F2j, F2k, one task at a time, no default flips;
+  - upstream bugs stay drafted;
+  - never push.
+- **Local `main`:** 780c3dc (= f2 80f0916, which includes F2g).
+- **F2h:** merged into `f2` (82c8b2c), plus a comment fix (44a0556). Checkout and branch removed.
+  `results/f2/F2h/SUMMARY.md` is drafted, with two placeholders:
+  - SUITE_PLACEHOLDER: the lead's suite on 44a0556, log `~/pf-runs/f2g/logs/suite_f2h.log`;
+  - GPU_PLACEHOLDER: a short GPU check that the host gather costs nothing.
+    `results/f2/drivers/f2g_gpu.sh radon_noncentered` writes over the F2g rows, so use a copy with
+    OUT=`results/f2/runs/F2h`, and compare init with F2g's 0.62 s cold / 0.03 s warm.
+- **Then:**
+  - commit the SUMMARY and the ledger;
+  - merge `f2` → local `main` with `--no-ff`.
+- **F2i task** (widening memo): running in `~/pf/f2-i` (branch `f2-i` from 44a0556). Its stop rule is in the
+  plan.
+- **After F2i:** F2j (threshold teardown), then F2k (float32 probe), as planned in the plan doc. F2k's smoke
+  test: float32 fails in `pathfinder_fit` on all models, also on pre-F2 main. For each task:
+  - review, merge into `f2`, run the suite, write the SUMMARY and the ledger;
+  - merge into local `main`;
+  - start the next task.
+- **F2k GPU part (lead):** float32 warm/cold stages, and the R1 gate rows on the GPU.
+- **At the end:** a final F2 report to the owner.
+
 ## Next steps (as written before F2e; steps 1–2 are now done)
 1. **F2e: one fast-tier task**, in a checkout at `~/pf/f2-e` on branch `f2-e`. Git refs cannot nest
    `f2/x` under `f2`.

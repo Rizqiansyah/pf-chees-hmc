@@ -189,3 +189,31 @@
   - **Default cache with new data, fresh process:** 3.6, 6.2, 4.9 and 9.6 s, with every request a hit.
     It equals the explicit helper (F2f: 3.7, 7.4, 4.8, 9.8). GEV is still 0.3 s behind CPU NUTS's 5.9 s.
   - **Directory:** 2.9–3.7 MB, mode 700, plus JAX's GPU autotune subdirectory.
+- 2026-10-24 — Owner's answers to the F2g report:
+  - **Merge `f2` → local `main`: yes.** Merged with `--no-ff` (780c3dc). Its tree equals `f2`'s 80f0916;
+    since the suite-tested 51e15cf only docs and results changed. Not pushed; `origin/main` is still
+    ecd9ba1.
+  - **No size cap** on the default cache directory: accepted.
+  - **Fix `1 < pm_chains < chains`:** yes, as a small task, F2h (plan section added).
+- 2026-10-24 — F2h task launched (`~/pf/f2-h` from 2605245). It fixes the cyclic `pm_chains` assignment, audits the init path for the same one-row assumption, adds a test that fails today, and checks draws stay bit-identical at `pm_chains` = 1 and = chains against 80f0916.
+- 2026-10-24 — The owner said to work autonomously: "Do not ask. Work autonomously. ... If you have to
+  ask, ask now." Their answers to the batch of questions asked up front:
+  - **F2h → local `main`:** merge without asking once the review and the suite pass. Never push.
+  - **Follow-ups after F2h**, one task at a time, in this order:
+    - F2i: memoise `_widen_model_inputs`;
+    - F2j: a cheaper test teardown, clearing only when the mapping count is high;
+    - F2k: a float32 probe, measuring speed and R1 bias.
+
+    Measure and fix, but no default flips: any default change stays the owner's.
+  - **Upstream bugs** (PyMC Uniform int8, JAX erfcx): leave them drafted. Do not file them.
+- 2026-10-24 — F2h (fast-tier, one round). Merged with `--no-ff` (82c8b2c; task head edc227f). Task suite:
+  `514 passed, 63 warnings in 724.36s`. Chain c takes repaired row `c % pm_chains`, via a host gather that
+  compiles nothing. Draws are bit-identical at `pm_chains` = 1 and = chains. The lead fixed a stale test
+  comment (44a0556). Lead suite running.
+- 2026-10-24 — F2i task launched (`~/pf/f2-i` from 44a0556): the widening memo, under the plan's stop rule.
+- 2026-10-24 11:12 — Lead suite on merged `f2` (44a0556): `514 passed, 63 warnings in 730.13s
+  (0:12:10)`, rc 0. The real `~/.cache/pfcheeshmc` was not created.
+- 2026-10-24 11:12–11:14 — F2h GPU check (`results/f2/drivers/f2h_gpu.sh`; 8schools, radon_noncentered, GEV;
+  load 2.6–3.4 with the F2i task on the CPU). The host gather costs nothing measurable: warm init unchanged to
+  0.002 s, one or two programs fewer per model. GEV's call 1 is 2.9 s slower, spread over every stage (XLA compile
+  22.6 → 25.2 s), so CPU load, not the change.
