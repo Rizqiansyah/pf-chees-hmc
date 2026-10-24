@@ -141,8 +141,7 @@ def run(model, policy, warmup, seed):
 
 if __name__ == "__main__":
     PF_RVS = []
-    model = (bl.build_radon(True) if MODEL == "radon"
-             else bl.load_notebook_model(bl.REPO / "examples" / "8 Schools example.ipynb"))
+    model = bl.build_model("radon_noncentered" if MODEL == "radon" else "8schools")
     for policy in ("same_point", "iid", "stratified", "overdispersed"):
         for w in WARMUPS:
             for seed in SEEDS:

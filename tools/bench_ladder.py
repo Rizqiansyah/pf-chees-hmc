@@ -3,7 +3,7 @@
 Usage (all configurable by environment):
     pixi run python tools/bench_ladder.py
 Environment:
-    MODELS=8schools,gev          which models (see MODELS below)
+    MODELS=8schools,gev          which models (the names in benchmarks/models.py)
     ARMS=gpu,cpu                 which backends
     GPU_CHAINS=32,128            chain counts for the GPU arm
     CPU_CHAINS=4,16,32           chain counts for the CPU arm (cores = chains, 1 thread each)
@@ -25,6 +25,7 @@ chain-count sweep has to report where the device stops, not extrapolate past it.
 """
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -48,11 +49,15 @@ import numpy as np
 import pfcheeshmc
 import pymc as pm
 
-# Captured before load_notebook_model() stubs them for notebook loading.
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(1, str(REPO))                 # benchmarks/models.py
+from benchmarks.models import MODELS, build_model  # noqa: E402
+
+# The two sampling entry points the runners call. (The names date from when loading a notebook model replaced them with
+# stubs; nothing replaces them now, and the tools that import them are unchanged.)
 REAL_SAMPLE_PF = pfcheeshmc.sample_pf_chees_hmc
 REAL_PM_SAMPLE = pm.sample
 
-REPO = Path(__file__).resolve().parents[1]
 OUT = Path(os.environ.get("LADDER_OUT", str(Path.home() / "pf-runs" / "ladder.jsonl")))
 SEEDS = [int(s) for s in os.environ.get("SEEDS", "42,43,44").split(",")]
 DRAWS = int(os.environ.get("DRAWS", "2000"))
@@ -82,151 +87,15 @@ CPU_CONFIGS = _configs(os.environ.get("CPU_CONFIGS", ""))
 CPU_TUNE = int(os.environ.get("CPU_TUNE", "1000"))          # PyMC's default tune
 REPEAT = int(os.environ.get("REPEAT", "1"))                 # 2 = cold row then warm row
 
-SKIP_PREFIX = ("plt.", "az.plot", "sns.", "%", "display(", "pmat.", "arviz.plot", ".plot(")
-
-
 # --------------------------------------------------------------------------- models
-def _tiny_idata(*args, **kwargs):
-    """Stand-in for any sampling call a notebook makes while we are only loading its model."""
-    import xarray as xr
-    rng = np.random.default_rng(0)
-    ds = xr.Dataset({"f": (("chain", "draw"), rng.normal(size=(2, 10)))})
-    return az.InferenceData(posterior=ds)
-
-
-def load_notebook_model(nb_path: str):
-    """Executes a notebook's code cells with plotting removed and sampling stubbed, returns the model.
-
-    Sampling must be stubbed, not merely skipped: the committed examples contain real
-    `sample_pf_chees_hmc` / `pm.sample` / `pm.sample_posterior_predictive` calls, and executing them
-    here would silently run a full sample just to load a model. If a data cell were skipped the
-    model would end up with no observed RVs, which would silently measure prior sampling, so that is
-    a hard error.
-    """
-    import pymc as pm
-    import pfcheeshmc
-
-    saved = (
-        pm.sample,
-        pm.sample_prior_predictive,
-        pm.sample_posterior_predictive,
-        pfcheeshmc.sample_pf_chees_hmc,
-    )
-    pm.sample = _tiny_idata
-    pm.sample_prior_predictive = _tiny_idata
-    pm.sample_posterior_predictive = _tiny_idata
-    pfcheeshmc.sample_pf_chees_hmc = _tiny_idata
-
-    nb = json.loads(Path(nb_path).read_text())
-    ns = {"pm": pm, "np": np, "az": az}
-    try:
-        for cell in nb["cells"]:
-            if cell["cell_type"] != "code":
-                continue
-            src = "".join(cell["source"])
-            lines = ["" if ln.strip().startswith(SKIP_PREFIX) else ln for ln in src.splitlines()]
-            try:
-                code = "\n".join(lines)
-                exec(compile(code, str(nb_path), "exec"), ns)
-            except SyntaxError:
-                exec(compile(src, str(nb_path), "exec"), ns)
-    finally:
-        # The stubs must not outlive the load: they are silent, so any later call to
-        # pfcheeshmc.sample_pf_chees_hmc in the same process would return the tiny fake
-        # InferenceData and produce a plausible but void measurement row.
-        (pm.sample, pm.sample_prior_predictive, pm.sample_posterior_predictive,
-         pfcheeshmc.sample_pf_chees_hmc) = saved
-    model = ns.get("model")
-    if model is None or not getattr(model, "observed_RVs", []):
-        raise RuntimeError(f"{nb_path}: no model or no observed RVs — a data cell did not execute")
-    return model
-
-
-# A synthetic ill-conditioned MvNormal family was here and is deleted on purpose: with a dense
-# `cov` over many observations the jaxed logp allocated 4.63 GiB under 32 vmapped chains at d=50,
-# and the cheap n_obs=1 variant was unusable as a comparison because CPU NUTS failed it too
-# (R-hat 1.33). Stiffness comes from real models instead.
-
-PDB_RAW = "https://raw.githubusercontent.com/stan-dev/posteriordb/master/posterior_database"
-PDB_CACHE = Path.home() / ".cache" / "pf-ladder"
-
-
-def pdb_data(name: str):
-    """Fetch one PosteriorDB dataset (json.zip) and cache it under $HOME."""
-    import io
-    import urllib.request
-    import zipfile
-
-    PDB_CACHE.mkdir(parents=True, exist_ok=True)
-    out = PDB_CACHE / f"{name}.json"
-    if not out.exists():
-        raw = urllib.request.urlopen(f"{PDB_RAW}/data/data/{name}.json.zip", timeout=120).read()
-        with zipfile.ZipFile(io.BytesIO(raw)) as z:
-            out.write_bytes(z.read(f"{name}.json"))
-    return json.loads(out.read_text())
-
-
-def build_radon(noncentered: bool):
-    """Radon hierarchical slope/intercept model, posterior_database radon_mn pair (d=175, N=919).
-
-    The two parameterisations differ only in how the county effects are drawn, which makes this the
-    conditioning A/B: `centered` is the funnel where the group size is not identified, and
-    Seyboldt et al. excluded every centered variant of it for non-convergence. Ported directly from
-    the database's Stan source: half-normal(0,1) on the three sigmas, normal(0,10) on the two means,
-    county intercepts and slopes normal(mu, sigma), y ~ normal(alpha[c] + floor*beta[c], sigma_y).
-    """
-    import pymc as pm
-
-    d = pdb_data("radon_mn")
-    idx = np.asarray(d["county_idx"]) - 1          # Stan is 1-based
-    floor = np.asarray(d["floor_measure"], dtype=float)
-    y = np.asarray(d["log_radon"], dtype=float)
-    J = int(d["J"])
-
-    with pm.Model() as model:
-        sigma_y = pm.HalfNormal("sigma_y", 1.0)
-        sigma_alpha = pm.HalfNormal("sigma_alpha", 1.0)
-        sigma_beta = pm.HalfNormal("sigma_beta", 1.0)
-        mu_alpha = pm.Normal("mu_alpha", 0.0, 10.0)
-        mu_beta = pm.Normal("mu_beta", 0.0, 10.0)
-        if noncentered:
-            alpha_raw = pm.Normal("alpha_raw", shape=(J,))
-            beta_raw = pm.Normal("beta_raw", shape=(J,))
-            alpha = pm.Deterministic("alpha", mu_alpha + sigma_alpha * alpha_raw)
-            beta = pm.Deterministic("beta", mu_beta + sigma_beta * beta_raw)
-        else:
-            alpha = pm.Normal("alpha", mu=mu_alpha, sigma=sigma_alpha, shape=(J,))
-            beta = pm.Normal("beta", mu=mu_beta, sigma=sigma_beta, shape=(J,))
-        pm.Normal("obs", mu=alpha[idx] + floor * beta[idx], sigma=sigma_y, observed=y)
-    return model
-
-
-def build_logistic(n_obs, d, seed=11):
-    """Bernoulli logistic regression with correlated predictors."""
-    import pymc as pm
-
-    rng = np.random.default_rng(seed)
-    a = rng.normal(size=(d, d)) / np.sqrt(d)
-    x = rng.normal(size=(n_obs, d)) @ (np.eye(d) + a)
-    beta = rng.normal(size=d) * 0.5
-    p = 1.0 / (1.0 + np.exp(-(x @ beta)))
-    y = rng.binomial(1, p)
-
-    with pm.Model() as model:
-        b = pm.Normal("b", shape=(d,))
-        pm.Bernoulli("y", logit_p=x @ b, observed=y, shape=(n_obs,))
-    return model
+# The ladder models are in benchmarks/models.py. A synthetic ill-conditioned MvNormal family was here and is deleted on
+# purpose: with a dense `cov` over many observations the jaxed logp allocated 4.63 GiB under 32 vmapped chains at d=50,
+# and the cheap n_obs=1 variant was unusable as a comparison because CPU NUTS failed it too (R-hat 1.33). Stiffness
+# comes from real models instead.
 
 
 def model_specs():
-    return {
-        "8schools": lambda: load_notebook_model(REPO / "examples" / "8 Schools example.ipynb"),
-        "gev": lambda: load_notebook_model(REPO / "examples" / "GEV Port Pirie example.ipynb"),
-        "logit_1000x25": lambda: build_logistic(1000, 25),
-        "logit_10000x50": lambda: build_logistic(10000, 50),
-        "radon_centered": lambda: build_radon(False),
-        "radon_noncentered": lambda: build_radon(True),
-    }
+    return {name: (lambda name=name: build_model(name)) for name in MODELS}
 
 
 # --------------------------------------------------------------------------- metrics

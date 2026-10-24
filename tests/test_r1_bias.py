@@ -243,7 +243,7 @@ def test_real_reference_files_are_keyed_and_shaped_right():
         p = _common.reference_path(model)
         if not os.path.exists(p):
             pytest.skip(f"WP0.2 reference not built yet: {p}")
-        import pymc as pm  # noqa: F401  (bench_ladder's loader needs PyMC importable)
+        import pymc as pm  # noqa: F401  (build_model needs PyMC importable)
 
         names = rb.value_var_names(model)
         ref = rb.load_reference(model, names)   # strict: the real files must satisfy the contract

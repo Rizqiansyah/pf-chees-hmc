@@ -3,7 +3,8 @@
     python widen_run.py graphs TREE OUT.json
     python widen_run.py draws TREE MODEL OUT.npz
 
-TREE is a source tree that provides `pfcheeshmc/` and `tools/` (the checkout, or a `git archive` of an earlier commit).
+TREE is a source tree that provides `pfcheeshmc/` and `benchmarks/` or `tools/` (the checkout, or a `git archive` of an earlier
+commit).
 Nothing here may need what only the newer tree has: `graphs` calls `_widen_model_inputs`, `initial_point_expression`
 and the lifts only.
 
@@ -33,11 +34,15 @@ sys.path.insert(0, tree)
 sys.path.insert(1, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np  # noqa: E402
-import r1_bias  # noqa: E402
 from pymc.util import get_default_varnames  # noqa: E402
 from pytensor.printing import debugprint  # noqa: E402
 
 from pfcheeshmc import lifted  # noqa: E402
+
+try:                                      # this tree; a tree before benchmarks/ builds the notebook models in tools/r1_bias
+    from benchmarks.models import build_model
+except ModuleNotFoundError:
+    from r1_bias import build_model
 
 
 def sites(model):
@@ -67,7 +72,7 @@ def lifts(make_first, make_again):
 
 def graphs(out):
     import test_lifted as tl
-    models = {name: (lambda name=name: r1_bias.build_model(name)) for name in tl.LADDER}
+    models = {name: (lambda name=name: build_model(name)) for name in tl.LADDER}
     models.update({f"extra:{name}": (lambda build=build: build(1)) for name, build in tl.EXTRA.items()})
     for kind, build in tl._literal_models().items():
         for pair in (tl.LITERALS_INT_RV if kind == "poisson" else tl.LITERALS):
@@ -84,7 +89,7 @@ def graphs(out):
                 f"{new.dtype} {new.data.shape} {np.asarray(new.data).tobytes().hex()}" for old, new in replaced.items())
             result[f"{name}|{site}"] = {"graph": digest(text.getvalue()), "replaced": digest(constants), "n": len(replaced)}
     for name in tl.LADDER:
-        result[f"lift:{name}"] = lifts(lambda name=name: r1_bias.build_model(name), lambda name=name: r1_bias.build_model(name))
+        result[f"lift:{name}"] = lifts(lambda name=name: build_model(name), lambda name=name: build_model(name))
     for name, build in tl.EXTRA.items():
         result[f"lift:extra:{name}"] = lifts(lambda build=build: build(1), lambda build=build: build(2))
     with open(out, "w") as f:
@@ -96,7 +101,7 @@ def draws(name, out):
     arrays = {}
     for call, seed in (("first", 3), ("second", 4)):
         idata = sample_pf_chees_hmc(
-            r1_bias.build_model(name), draws=10, chains=8, random_seed=seed, progressbar=False,
+            build_model(name), draws=10, chains=8, random_seed=seed, progressbar=False,
             keep_untransformed=True, chees_kwargs={"draws": 20})
         arrays.update({f"{call}/posterior/{k}": np.asarray(v.values) for k, v in idata.posterior.data_vars.items()})
         arrays.update({f"{call}/stats/{k}": np.asarray(v.values) for k, v in idata.sample_stats.data_vars.items()})

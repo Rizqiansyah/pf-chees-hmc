@@ -2,8 +2,8 @@
 
     python start_repair_run.py TREE CASE OUT.npz
 
-TREE is a source tree that provides `pfcheeshmc/` and `tools/` (the checkout, or a `git archive` of an earlier
-commit). It must not import anything that exists only in the newer tree. Everything runs in float64: PyTensor's
+TREE is a source tree that provides `pfcheeshmc/` and `benchmarks/` or `tools/` (the checkout, or a `git archive` of an
+earlier commit). It must not import anything that exists only in the newer tree. Everything runs in float64: PyTensor's
 JAX dispatch switches `jax_enable_x64` on at import.
 
 Prints one JSON line: the XLA programs the call compiled (`first`: a cold process; `second`: the same call with
@@ -36,15 +36,19 @@ import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 import pymc as pm  # noqa: E402
 import pytensor.tensor as pt  # noqa: E402
-import r1_bias  # noqa: E402
 from compile_counter import count_compiles  # noqa: E402
 from pfcheeshmc.sampler import PfCheesHMC  # noqa: E402
+
+try:                                      # this tree; a tree before benchmarks/ builds the notebook models in tools/r1_bias
+    from benchmarks.models import build_model
+except ModuleNotFoundError:
+    from r1_bias import build_model
 
 KW = {}
 
 
 def gev(chains, bad_rows=()):
-    s = PfCheesHMC(r1_bias.build_model("gev"), seed=1)
+    s = PfCheesHMC(build_model("gev"), seed=1)
     kwargs = dict(init="adapt_diag", tune=500, random_seed=1) if chains == 1 else \
         dict(init="jitter+adapt_diag", tune=500, random_seed=1)
     stack = s._pymc_adapt_diag_start(chains, **kwargs)

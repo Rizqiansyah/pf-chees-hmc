@@ -7,11 +7,12 @@ What a wrong answer here costs:
   * the smoke test of 2026-10-24 failed on all four models with "cond branches must have equal output types", inside
     BlackJAX's L-BFGS. The value that optax's line search keeps in its state has the dtype of the position (float32);
     a fresh evaluation has the dtype of the log-density, and that was float64: the two example notebooks (8 Schools,
-    GEV) run ``jax.config.update("jax_enable_x64", True)`` in their first cell, `tools/r1_bias.build_model` executes
+    GEV) run ``jax.config.update("jax_enable_x64", True)`` in their first cell, `tools/r1_bias.build_model` executed
     them, and 8 Schools' data are float64 NumPy arrays that PyMC does not cast. The first model turned x64 on for the
     whole process, so the other three failed behind it. Nothing in the sampler produces the mismatch (a process whose
-    x64 was off all along ran logit_1000x25 on the code before this task). `build_model` now puts x64 back to
-    ``floatX == "float64"``, and the sampler says so when the two disagree;
+    x64 was off all along ran logit_1000x25 on the code before this task). The sampler says so when x64 and floatX
+    disagree. The models are built in Python now (`benchmarks/models.py`), and `build_model` sets no JAX option: x64
+    stays what PyTensor made it from floatX, at either floatX (below);
   * a float32 run that finishes with a NaN, or whose posterior is float64 (something converted it back);
   * a warning that tells a float32 user to switch x64 on ("Explicitly requested dtype ... is not available");
   * a float64 run whose draws move by one bit. The code before this task is a `git archive` (`BASE_SHA`), run in fresh
@@ -116,7 +117,7 @@ def test_the_ladder_model_samples_under_float32(float32_jobs, name):
     """Finishes, finite draws, float32 posterior, x64 off, and no warning that advises switching x64 on."""
     meta, arrays = float32_jobs[name]
     assert meta["floatX"] == "float32" and meta["x64_start"] is False
-    assert meta["x64_built"] is False, "building the model turned jax_enable_x64 on (an example notebook's cell)"
+    assert meta["x64_built"] is False, "building the model turned jax_enable_x64 on"
     assert meta["x64_end"] is False
     assert meta["errors"] == {}, meta["errors"]
     assert meta["warnings"] == [], meta["warnings"][:2]
@@ -133,12 +134,14 @@ def test_the_ladder_model_samples_under_float32(float32_jobs, name):
         assert set(meta["dtypes"][source].values()) <= {"float32", "bool", "int32"}, meta["dtypes"][source]
 
 
-def test_the_two_notebook_models_leave_x64_off_under_float32(float32_jobs):
-    """The leaf mismatch of the smoke test. `build_model` runs the notebook cell that turns x64 on; after it, x64 must
-    be what floatX says (off), or the log-density of a float32 position is float64 and L-BFGS fails in `lax.cond`."""
-    for name in ("8schools", "gev"):
-        meta, _ = float32_jobs[name]
-        assert meta["x64_built"] is False and meta["errors"] == {}, (name, meta["x64_built"], meta["errors"])
+@pytest.mark.parametrize("name", LADDER)
+def test_build_model_never_changes_x64_under_float32(float32_jobs, name):
+    """The leaf mismatch of the smoke test: if building a model turns x64 on under float32, the log-density of a float32
+    position is float64 and L-BFGS fails in `lax.cond`. `build_model` sets no JAX option (the notebook models it replaced
+    ran a cell that turned x64 on)."""
+    meta, _ = float32_jobs[name]
+    assert meta["x64_built"] == meta["x64_start"] is False and meta["errors"] == {}, (
+        name, meta["x64_start"], meta["x64_built"], meta["errors"])
 
 
 def test_x64_on_under_float32_is_said_not_left_to_a_jax_type_error(float32_jobs):
@@ -167,8 +170,9 @@ def test_float64_draws_are_bit_identical_to_the_code_before(float64_jobs, name):
     for key in new:
         if "/posterior/" in key:
             assert new[key].dtype == np.float64 and np.isfinite(new[key]).all(), key
-    # the float32 guard in `build_model` must not touch a float64 session: the notebook's x64 stays on
-    assert new_meta["floatX"] == "float64" and new_meta["x64_built"] is True and new_meta["x64_end"] is True
+    # x64 is on in a float64 session (PyTensor's import set it), and `build_model` does not touch it
+    assert new_meta["floatX"] == "float64" and new_meta["x64_start"] is True
+    assert new_meta["x64_built"] is True and new_meta["x64_end"] is True
     assert new_meta["x64_warnings"] == []
 
 

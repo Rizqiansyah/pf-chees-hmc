@@ -27,8 +27,8 @@ from pymc.sampling.jax import get_jaxified_logp
 # imported pytensor.
 pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
-import r1_bias as rb  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from benchmarks.models import build_model  # noqa: E402
 
 from pfcheeshmc import lifted  # noqa: E402
 from pfcheeshmc.lifted import lift_graph, lift_logp  # noqa: E402
@@ -150,7 +150,7 @@ TODAY_RTOL = 1e-7
 
 @pytest.fixture(scope="module")
 def ladder():
-    return {name: rb.build_model(name) for name in LADDER}
+    return {name: build_model(name) for name in LADDER}
 
 
 # ---------------------------------------------------------------- logp equality
@@ -270,7 +270,7 @@ def test_rebuilt_model_with_other_values_lowers_to_identical_hlo_and_key(name):
 def test_ladder_rebuilt_from_scratch_lowers_to_identical_hlo_and_key(ladder, name):
     """A second, fresh pm.Model of the same notebook (new variable objects, auto-generated names): the
     lowered text and the key must not depend on object identity, names or build order."""
-    again = rb.build_model(name)
+    again = build_model(name)
     assert again is not ladder[name]
     assert _hlo(again) == _hlo(ladder[name])
     assert lift_logp(again).key == lift_logp(ladder[name]).key

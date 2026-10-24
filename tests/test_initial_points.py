@@ -35,8 +35,8 @@ from scipy import stats
 # PyMC's own C backend (the reference below) cannot link a Dot under this repo's path with a space.
 pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
-import r1_bias as rb  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from benchmarks.models import build_model  # noqa: E402
 from compile_counter import count_compiles, count_pytensor_functions  # noqa: E402
 from seeded_models import dims_model as m_dims, hier  # noqa: E402
 
@@ -101,7 +101,7 @@ EXTRA = {"initval": m_initval, "data": m_data, "dims": m_dims}
 
 @pytest.fixture(scope="module")
 def ladder():
-    return {name: rb.build_model(name) for name in LADDER}
+    return {name: build_model(name) for name in LADDER}
 
 
 def pymc_points(model, init, chains, seed=5, **kw):
