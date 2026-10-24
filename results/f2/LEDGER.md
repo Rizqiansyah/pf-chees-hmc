@@ -206,3 +206,8 @@
 
     Measure and fix, but no default flips: any default change stays the owner's.
   - **Upstream bugs** (PyMC Uniform int8, JAX erfcx): leave them drafted. Do not file them.
+- 2026-10-24 — F2h (fast-tier, one round). Merged with `--no-ff` (82c8b2c; task head edc227f). Task suite:
+  `514 passed, 63 warnings in 724.36s`. Chain c takes repaired row `c % pm_chains`, via a host gather that
+  compiles nothing. Draws are bit-identical at `pm_chains` = 1 and = chains. The lead fixed a stale test
+  comment (44a0556). Lead suite running.
+- 2026-10-24 — F2i task launched (`~/pf/f2-i` from 44a0556): the widening memo, under the plan's stop rule.
