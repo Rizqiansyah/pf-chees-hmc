@@ -259,7 +259,7 @@ Three items from the F2f report (`results/f2/F2f/REPORT.md`, Findings), done in 
   or the change needs more than about 80 lines of library code, report the numbers and the design, and
   leave the code unmerged.
 
-### F2j — cheaper test teardown (owner's go 2026-10-24)
+### F2j — cheaper test teardown (owner's go 2026-10-24; done 2026-10-24, merged into `f2` at 6ade5b1, `results/f2/F2j/SUMMARY.md`)
 - **Today:** `tests/conftest.py` releases compiled programs after every module. Peak mappings are 15.7k,
   and the suite takes 13% longer (+73 s).
 - **Change:** release only when this process's mapping count is above a threshold. Read the count from

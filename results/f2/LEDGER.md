@@ -234,3 +234,18 @@
 - 2026-10-24 12:01–12:04 — F2i GPU check (`results/f2/drivers/f2i_gpu.sh`; load 11–13 from the F2j task):
   warm wall and warm "rest" equal F2h's within noise on 8schools and GEV; radon's warm "rest" 0.02–0.04 s lower.
   The CPU rows remain the evidence. F2i checkout and branch removed.
+- 2026-10-24 — F2i → local `main` (owner's up-front yes for the follow-ups): merged with `--no-ff` (67f2820), tree
+  equal to `f2`'s fbc85ad. Not pushed.
+- 2026-10-24 13:05 — F2j (fast-tier, one round). Merged with `--no-ff` (6ade5b1; task head 89b3a04). Task suite:
+  `584 passed, 64 warnings in 720.65s`. `tests/conftest.py` releases compiled programs after a module only when
+  `/proc/self/maps` holds more than `max_map_count // 2 - 16,000` mappings (16,765 at 65,530), and after every
+  module when `/proc` cannot be read. The 16,000 is the largest single-module growth measured (12,589) plus 27%.
+  Peak 22,730 (half the limit is 32,765). Time 774 → 717/721 s, which recovers 53–57 s of F2g's 73 s. A
+  never-release run aborts in XLA, as F2g found. 9 unit tests; the audit found no compile-count test that a warm
+  cache can fail or make vacuous.
+- 2026-10-24 — TASK-RULES: the commit trailer names the task's own model (62c38a3). Earlier task commits say
+  "that pinned tier" although fast-tier wrote them; that merged history is not rewritten.
+- 2026-10-24 — F2k task launched (`~/pf/f2-k` from 62c38a3): float32 probe, measure and fix, no default flip.
+- 2026-10-24 13:19 — Lead suite on merged `f2` (6ade5b1), the bare command: `584 passed, 64 warnings in
+  725.14s (0:12:05)`, rc 0 (load 1.4 → 4.2, with the F2k task starting). The real `~/.cache/pfcheeshmc` was not
+  created.
