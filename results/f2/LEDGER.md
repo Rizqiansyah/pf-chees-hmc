@@ -272,3 +272,10 @@
   - 8schools fails seed 1. Over seeds 1–13, float32 fails 2 and float64 fails 0. Both float32 failures share one
     signature (L 14–15, about 620 warmup divergences, bias in `mu`).
   - Report only; no default changed. `results/f2/F2k/SUMMARY.md`, `gpu.md`.
+- 2026-10-24 — F2 → local `main` (owner's up-front yes): merged with `--no-ff` (0d7157f), tree equal to `f2`'s
+  25986e5. Not pushed. F2k checkout and branch removed.
+- 2026-10-24 — The autonomous run is finished. Final report: `results/f2/REPORT.md`. Open for the owner:
+  - push;
+  - a README float32 section (recommended as opt-in with caveats, not a default);
+  - the upstream drafts (the JAX `erfcx` draft gains the float32 band [9.19455, 9.41928]);
+  - follow-ups.
