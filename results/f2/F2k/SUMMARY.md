@@ -136,8 +136,58 @@ Warm CPU wall per call (`tools/warm_stages.py TREE M 1024 10 W --calls 3`; no co
 | radon_noncentered | 29.5 / 23.4 s | 39.1 / 26.9 s (noisy) |
 
 ## GPU (lead)
-GPU_SECTION
+2026-10-24 16:40–16:51, f2 9697f6c (the merged F2k tree). The host load was 2–5, from other users, and only our
+jobs ran on the GPU. Drivers: `results/f2/drivers/f2k_gpu.sh` (warm stages, float64 then float32 per model, in one
+session) and `run_step.sh` with `F2k_gate.cmds`, `F2k_seeds_f32.cmds` and `F2k_seeds_f64.cmds`. Rows:
+`results/f2/runs/F2k/gpu_*.json`, `results/f2/runs/F2k__float32.jsonl` and `results/f2/runs/F2k_seeds__f{32,64}.jsonl`.
+All tables are in `gpu.md` (from `f2k_table.py`). Every job printed the floatX it ran at, and every float32 job had
+`jax_enable_x64: False`.
+
+**Warm call on the GPU** (C=1024, D=10, same data, cache off, mean of calls 2–3, 0 compiles on both):
+
+| model (W) | float64 | float32 | ratio | call 1, f64 → f32 |
+|---|---|---|---|---|
+| 8schools (25) | 0.21 s | 0.16 s | 1.3× | 16.0 → 14.4 s |
+| gev (25) | 0.47 s | 0.75 s | **0.6×** (the collapsed ε) | 26.6 → 27.0 s |
+| logit_1000x25 (50) | 1.39 s | **0.18 s** | **7.7×** | 31.5 → 19.4 s |
+| radon_noncentered (300) | 6.42 s | **2.06 s** | **3.1×** | 43.7 → 44.0 s |
+
+The speed-up is in the warmup and sampling stages: logit 1.07 → 0.07 s of warmup, radon 5.59 → 1.72 s. Pathfinder
+and init are already small. GEV's warm init is 0.026 → 0.162 s under float32.
+
+**R1 gate under float32 on the GPU** (seeds 1–3, 2 reps; the float64 rows are F2f's, from the same shapes):
+
+| model (W) | b²_max seeds 1–3, f64 (F2f) → f32 | G-R1 f32 | ε f32 | L f32 | max R-hat f32 | warm wall f64 → f32 |
+|---|---|---|---|---|---|---|
+| 8schools (25) | 0.0007 0.0007 0.0018 → **0.0142** 0.0005 0.0008 | **2/3** | 0.27 0.32 0.26 | **15** 23 28 | **2.40** 1.44 1.48 | 0.38 → 0.30 s |
+| gev (25) | 0.0014 0.0003 0.0002 → 0.0068 0.0023 0.0072 | 3/3 (not sampling, below) | **2.8e-5 7.4e-4 8.9e-3** | 112 16 3 | **112 92 57** | 0.63 → 0.58 s |
+| logit_1000x25 (50) | 0.0039 0.0045 0.0011 → 0.0008 0.0056 0.0007 | 3/3 | 0.52 0.48 0.47 | 10 10 11 | 2.04 1.96 1.93 | 1.79 → **0.50 s** |
+| radon_noncentered (300) | 0.0032 0.0025 0.0031 → 0.0039 0.0029 0.0032 | 3/3 | 0.86 0.86 0.85 | 19 18 15 | 1.72 1.69 1.85 | 11.15 → **5.58 s** |
+
+The warm wall here includes the harness's scoring, about 4 s on radon (F2f).
+
+- **logit and radon:** float32 passes on every seed, with ε and L equal to float64's, and runs 3–8× faster warm.
+- **GEV:** the CPU collapse repeats on the GPU. ε falls to 3e-5–9e-3 and R-hat is 57–112. The b² values pass
+  only because the chains barely move from Pathfinder starts that are already close. Count it as a fail.
+- **8schools:** seed 1 fails, and its repeat is identical. The run took a short-trajectory path: L 15, 610
+  warmup divergences against about 1,350 on the other seeds, and the bias is in `mu`. On the CPU, float32 seed 1
+  passed (L 24). To tell float32 from W=25's own fragility, seeds 4–13 were run at both floatXs:
+
+  | 8schools, W=25, GPU | seeds | fail | the failing signature |
+  |---|---|---|---|
+  | float32 | 1–13 | **2** (seeds 1 and 4: b² 0.0142, 0.0191) | L 14–15, warmup divergences 610–631, R-hat 2.4, bias in `mu` |
+  | float64 | 1–13 | 0 | never seen; the nearest is seed 12 (L 22, 1,082 warmup divergences, R-hat 1.80, b² 0.0009) |
+
+  Two failures in 13 against none in 13 is not significant by itself (Fisher's exact test, p ≈ 0.48). But both
+  float32 failures share one signature that float64 never reached, so this is treated as a float32 effect at
+  W=25 until shown otherwise. UNVERIFIED: whether a longer warmup removes it.
+
+**Against CPU NUTS** (F2f's per-call figures: logit 9.68 s, radon 18.3 s, 32 chains at their passing configs).
+Measured warm calls on logit and radon would move F2f's GPU-vs-CPU ratio from 6.8× to about 54×, and from 2.5–3.8×
+to about 9×. This compares calls from different sessions; this session's float64 rows match F2f's (1.39 against
+1.43 s; 6.42 against 4.8–7.4 s).
 
 ## UNVERIFIED
+- Whether a longer warmup removes 8schools' float32 failure signature on the GPU.
 - The GEV mechanism beyond the measured gradient error and acceptance zeros.
 - The other `tools/*.py` (`wp*`, `bench_ladder`) under float32: not run.
