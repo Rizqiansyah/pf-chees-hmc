@@ -66,6 +66,7 @@ sys.path.insert(0, args.tree)
 sys.path.insert(1, os.path.join(HERE, "..", "tests"))
 
 import jax  # noqa: E402
+import pytensor  # noqa: E402
 import pfcheeshmc.sampler as sm  # noqa: E402
 import r1_bias  # noqa: E402
 from compile_counter import count_compiles, count_pytensor_functions  # noqa: E402
@@ -78,6 +79,7 @@ if args.cache_dir:
     import pfcheeshmc
     pfcheeshmc.enable_compilation_cache(args.cache_dir)
 CACHE_OFF = os.environ.get("PFCHEESHMC_COMPILATION_CACHE", "").strip().lower() in ("0", "false", "no", "off")
+print(f"floatX: {pytensor.config.floatX}  jax_enable_x64: {jax.config.jax_enable_x64}", flush=True)
 print("disk cache:", args.cache_dir and f"--cache-dir {args.cache_dir}"
       or (jax.config.jax_compilation_cache_dir and f"JAX_COMPILATION_CACHE_DIR={jax.config.jax_compilation_cache_dir} "
           "(your environment: calls are not cold)")
@@ -147,7 +149,8 @@ for call in range(1, args.calls + 1):
     stage["rest"] = (wall - sum(v[0] for v in stage.values()), total.count - sum(v[1] for v in stage.values()),
                      total_pt.count - sum(v[2] for v in stage.values()))
     results.append({"call": call, "wall": wall, "compiles": total.count, "compile_s": total.seconds,
-                    "pytensor_functions": total_pt.count, "stage": stage, "names": sorted(total.names)})
+                    "pytensor_functions": total_pt.count, "stage": stage, "names": sorted(total.names),
+                    "floatX": pytensor.config.floatX})
     cache = (f"  disk cache: {CACHE_EVENTS['cache_hits']} hits, {CACHE_EVENTS['cache_misses']} written"
              if jax.config.jax_compilation_cache_dir else "")
     CACHE_EVENTS.clear()

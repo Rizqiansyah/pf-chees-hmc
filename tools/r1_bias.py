@@ -78,6 +78,7 @@ sys.path.insert(0, HERE)
 import numpy as np  # noqa: E402
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
+import pytensor  # noqa: E402
 
 # A8 stage key -> the PfCheesHMC methods that make it up. _run_pathfinder NESTS the two init
 # methods, so `init` is timed separately and subtracted from it (the double-count that made an
@@ -587,6 +588,7 @@ def run_cell(bl, model_name, args, W, seed, rep, cold, keep=None):
                                      "metric_refresh_reseed": getattr(args, "metric_refresh_reseed",
                                                                       None),
                                      "chains": args.chains, "draws": args.draws, "warmup": W,
+                                     "floatX": pytensor.config.floatX,
                                      # exactly what was passed: an absent key means "sampler decides"
                                      "pathfinder_kwargs": pf_kw, "chees_kwargs": ch_kw,
                                      "progressbar": False,
@@ -803,8 +805,8 @@ def run_starts(bl, model_name, args, rep, cold):
                   draws_per_chain=1, warmup=0, seed=s.seed, rep=rep, cold=cold, schema=SCHEMA_R2,
                   wall_s=round(time.perf_counter() - t_start, 2),
                   b2_max=b2_max, b2_argmax=argmax_name(labels, k), d=ens.shape[1],
-                  kwargs=json.dumps({"chains": args.chains, "pathfinder_kwargs": pf_kw},
-                                    sort_keys=True))
+                  kwargs=json.dumps({"chains": args.chains, "pathfinder_kwargs": pf_kw,
+                                     "floatX": pytensor.config.floatX}, sort_keys=True))
     row.update(step=getattr(args, "step", None), pooled=False, effective=effective)
     write_row(args.out, row)
     banner(model=model_name, cold=cold, wp=args.wp, arm="pf_starts")

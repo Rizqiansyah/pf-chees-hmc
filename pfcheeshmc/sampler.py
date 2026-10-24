@@ -5,6 +5,7 @@ from jax import lax
 import optax
 
 import pymc as pm
+import pytensor
 from pymc import modelcontext
 from pymc.sampling.mcmc import all_continuous
 from pymc.util import get_default_varnames
@@ -40,6 +41,27 @@ START_SCORE_PER_CHAIN = 4
 # PyMC's default (`pm.init_nuts(jitter_max_retries=...)`): redraws of the jitter of a chain whose point has a
 # non-finite log-density.
 JITTER_MAX_RETRIES = 10
+
+
+def _warn_if_x64_contradicts_floatx():
+    """Warn when ``jax_enable_x64`` is on under a floatX narrower than float64.
+
+    PyTensor's JAX dispatch sets ``jax_enable_x64 = (floatX == "float64")`` when it is imported. Anything that
+    turns it on afterwards (the example notebooks' first cell does) leaves the value variables float32 and the
+    JAX defaults float64: a data array that PyMC left float64 makes the log-density float64 at a float32
+    position, and L-BFGS fails inside optax's ``lax.cond`` ("cond branches must have equal output types"). The
+    HMC loops draw their momentum in the default dtype, so they cannot carry float32 positions either.
+    """
+    floatx = pytensor.config.floatX
+    if floatx != "float64" and jax.config.jax_enable_x64:
+        warnings.warn(
+            f"floatX is {floatx} but jax_enable_x64 is on: JAX will compute in float64 beside the {floatx} value "
+            "variables, which the sampler does not support (it can fail with \"cond branches must have equal output "
+            "types\" or \"carry input and carry output must have equal types\"). PyTensor's JAX backend sets "
+            "jax_enable_x64 from floatX when it is imported; something turned it on afterwards (an example "
+            "notebook's jax.config.update(\"jax_enable_x64\", True) does). Turn it off again with "
+            "jax.config.update(\"jax_enable_x64\", False) before sampling.",
+            RuntimeWarning, stacklevel=3)
 
 
 # The sampling scan's per-draw projections are defined with the chunk program that returns them.
@@ -110,10 +132,18 @@ def _stratified_pool_idx(logp_subset, subset_idx, n_pick):
     dispersion this is meant to guarantee. Measured on radon non-centered (32 chains, 500 draws):
     worst R-hat 1.0323 -> 1.0210 and min bulk ESS +6% at warmup 250, identical spread to iid and no
     extra leapfrog steps; indistinguishable from iid at warmup >= 1,000.
+
+    Rows whose log-density is not finite are ranked after the finite ones and left out of the ranks: sorted first,
+    the lowest rank would start a chain at ``-inf``, where it stays for the whole run (every proposal is rejected).
+    A pool with no such row (every float64 run of the four ladder models) is ranked exactly as before. A float32
+    pool has them where float64 has a hugely negative but finite density (GEV's ``(1 + xi z)^(-1/xi)`` overflows
+    at 3.4e38). If no row is finite the ranks run over all of them, as before.
     """
-    order = jnp.argsort(logp_subset)
-    m = int(order.shape[0])
-    ranks = (jnp.arange(n_pick) * m) // n_pick
+    lp = np.asarray(logp_subset)
+    finite = np.isfinite(lp)
+    order = np.argsort(np.where(finite, lp, np.inf), kind="stable")
+    m = int(finite.sum()) or int(order.shape[0])
+    ranks = (np.arange(n_pick) * m) // n_pick
     return subset_idx[order[ranks]]
 
 
@@ -1746,6 +1776,7 @@ def sample_pf_chees_hmc(
     # Keep the compiled programs on disk for the next Python process, unless the user opted out or set a JAX cache of
     # their own (README, "Keeping the compiled programs between Python processes"); does nothing after the first call.
     ensure_default_compilation_cache()
+    _warn_if_x64_contradicts_floatx()
 
     m = modelcontext(model)  # supports both inside/outside context usage
 
