@@ -7,9 +7,10 @@ experiment options this work package removed). MODELS_PY is `benchmarks/models.p
 are built by it in both runs, so only the package differs. GROUP picks the cases:
 
     default   the four ladder models, seeds 1 and 2, no options (the default path)
-    kept      the options the default path keeps, on 8 Schools (every `imm_source`, `pm_chains` 4 and C (the same start
-              point, which 8 Schools' `adapt_diag` start gives every chain, and jittered ones), `init_source`, `pm_init`, `pf_pool_cap`, `score_chunk`, `ridge`, the Fisher knobs, `warmup_stop`, the ChEES knobs, `eps0_probes`)
-              and on GEV (the start repair, which the GEV start at xi = 0 makes work: its knobs)
+    kept      the options the default path keeps, on 8 Schools: every `imm_source`, the Fisher knobs, `pm_chains` 4 and C
+              (with the one start point 8 Schools' `adapt_diag` start gives every chain, and with jittered ones),
+              `init_source`, `pm_init`, `pf_pool_cap`, `score_chunk`, `ridge`, `eps0_probes`, the ChEES knobs,
+              `warmup_stop` (not firing, and firing); and on GEV, whose start at xi = 0 makes the start repair work, its knobs
 
 Every case is 16 chains, 5 draws and 20 warmup draws. OUT.npz holds, per case, every posterior and sample_stats array
 (``CASE/posterior/NAME``, ``CASE/stats/NAME``), the numeric attributes of the InferenceData (``CASE/attrs/NAME``) and the
