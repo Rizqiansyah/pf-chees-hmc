@@ -40,3 +40,12 @@
 - 2026-10-24 — Owner: "Pause after this subtask". When C4 reports, commit its SUMMARY if the task could not, and
   stop. **To resume:** the C4 integrator, step 1 (`~/pf/cleanup-c4`, branch `cleanup-c4`); then C3, C5+C6, C7, C8
   in the PLAN's order. If C4 stops at the time limit, resume the paused task; do not restart it.
+- 2026-10-24 — C4 task reported: code head 58cb898 on `cleanup-c4`; SUMMARY committed by the lead (6aa4bc9;
+  the task could not write it). Task suite `573 passed, 56 warnings in 848.38s (0:14:08)`. `tools/` gone;
+  `benchmarks/` has the PLAN's list plus `compile_counter.py` and `seeded_models.py`. The new `bias.py` gives b²_max
+  and draws identical to the tag's `r1_bias` (8schools C=64 seeds 1–3; gev, logit, radon spot checks), and
+  reproduces F2f's GPU b² at C=1024 to ~1e-14. Task finding: since C1 the tag-side children of the git-archive
+  proofs imported this tree's `benchmarks/models.py` through `PYTHONPATH`, so their model side was vacuous; the runners
+  now pick the builder by the tree, and the proofs pass. For the integrator: stale paths left at
+  `pfcheeshmc/compiled.py:323`, `sampler.py:100,104`, `tests/conftest.py:23`, `README.md:130` (C5/C6).
+  **Paused per the owner: next is the C4 integrator, step 1.**
