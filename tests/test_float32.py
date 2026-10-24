@@ -200,8 +200,8 @@ def test_the_start_repair_keeps_the_dtype_of_the_start():
 
 
 def test_the_stratified_pick_never_starts_a_chain_at_a_non_finite_density():
-    """float32 GEV: the Pathfinder pool had a row at ``-inf`` (``(1 + xi z)^(-1/xi)`` overflows at 3.4e38; float64 has
-    a hugely negative but finite density there), rank 0 of the sort took it, and chain 0 stayed on it for all of its
+    """float32 GEV: the Pathfinder pool had a row outside the support (``1 + xi z <= 0``: ``-inf`` in float64 too; the
+    float64 fit of the same seed had no such row), rank 0 of the sort took it, and chain 0 stayed on it for all of its
     draws (``lp`` -inf, every proposal rejected, counted as divergent). A pool of finite rows is ranked as before."""
     from pfcheeshmc.sampler import _stratified_pool_idx
 

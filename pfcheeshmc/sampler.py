@@ -135,9 +135,9 @@ def _stratified_pool_idx(logp_subset, subset_idx, n_pick):
 
     Rows whose log-density is not finite are ranked after the finite ones and left out of the ranks: sorted first,
     the lowest rank would start a chain at ``-inf``, where it stays for the whole run (every proposal is rejected).
-    A pool with no such row (every float64 run of the four ladder models) is ranked exactly as before. A float32
-    pool has them where float64 has a hugely negative but finite density (GEV's ``(1 + xi z)^(-1/xi)`` overflows
-    at 3.4e38). If no row is finite the ranks run over all of them, as before.
+    A pool with no such row (every float64 run of the four ladder models) is ranked exactly as before. A Pathfinder
+    pool can hold one: GEV's float32 fit put a row outside the support (``1 + xi z <= 0``, ``-inf`` in float64 too;
+    ``tests/test_float32.py``). If no row is finite the ranks run over all of them, as before.
     """
     lp = np.asarray(logp_subset)
     finite = np.isfinite(lp)
