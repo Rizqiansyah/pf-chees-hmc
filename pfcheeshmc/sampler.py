@@ -159,7 +159,7 @@ def _frozen_nominal_L(integration_steps_fn, warmup_steps_used):
     for bits in (base.bit_length() - 1, base.bit_length(), base.bit_length() + 1):
         if bits < 1:
             continue
-        arg = jnp.asarray(2 ** bits - 2, dtype=jnp.int64)   # all-ones index -> jitter 1-2^-bits
+        arg = jnp.asarray(2 ** bits - 2, dtype=int)   # all-ones index -> jitter 1-2^-bits (int64 with x64, else int32)
         try:
             best = max(best, float(integration_steps_fn(arg)))
         except Exception:
@@ -403,7 +403,7 @@ class PfCheesHMC:
         # (1) tiny relative jitter
         key, k0 = jax.random.split(key)
         rel = 1.0 + jnp.abs(flat0)
-        jitter = jax.random.normal(k0, flat0.shape) * (jitter_eps * rel)
+        jitter = jax.random.normal(k0, flat0.shape, dtype=flat0.dtype) * (jitter_eps * rel)
         x = unrav(flat0 + jitter)
         if _is_usable(x):
             return x
@@ -421,7 +421,7 @@ class PfCheesHMC:
         radius = restart_radius
         for _ in range(max_restarts):
             key, k = jax.random.split(key)
-            noise = jax.random.normal(k, flat0.shape) * radius
+            noise = jax.random.normal(k, flat0.shape, dtype=flat0.dtype) * radius
             x_try = unrav(ravel_pytree(center)[0] + noise)
             if _is_usable(x_try):
                 return x_try

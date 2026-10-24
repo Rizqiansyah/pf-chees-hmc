@@ -86,9 +86,26 @@ def _position_sequence(position, names):
     return tuple(jax.tree_util.tree_leaves(position))      # last resort: a stable leaf order
 
 
+def _density(fn, sequence, values):
+    """``fn``'s scalar log-density at ``sequence`` (the position, in ``names`` order), in the position's dtype.
+
+    The graph of a model may hold a constant wider than the value variables: PyMC leaves a float64 NumPy array
+    float64 under ``floatX=float32``. With ``jax_enable_x64`` on, the log-density at a float32 position is then
+    float64, and BlackJAX's L-BFGS fails inside optax's ``lax.cond`` (the value its state keeps has the
+    position's dtype, a fresh evaluation has the density's: "cond branches must have equal output types").
+    So the value takes the dtype the position has. With ``jax_enable_x64`` off JAX narrows the constant itself,
+    and where the two already agree (every float64 run) this adds nothing to the program.
+    """
+    value = fn(sequence, values)[0]
+    dtypes = [jnp.result_type(x) for x in sequence]
+    if dtypes and all(jnp.issubdtype(t, jnp.floating) for t in dtypes) and jnp.issubdtype(value.dtype, jnp.floating):
+        return value.astype(jnp.result_type(*dtypes))
+    return value
+
+
 def _logdensity(fn, names, values) -> Callable:
     """``position -> scalar`` for a position that is a dict (by name) or a tuple (in ``names`` order)."""
-    return lambda position: fn(_position_sequence(position, names), values)[0]
+    return lambda position: _density(fn, _position_sequence(position, names), values)
 
 
 class LogDensity:
@@ -112,7 +129,7 @@ class LogDensity:
         self.fn, self.names, self.values = fn, tuple(names), tuple(values)
 
     def __call__(self, position):
-        return self.fn(_position_sequence(position, self.names), self.values)[0]
+        return _density(self.fn, _position_sequence(position, self.names), self.values)
 
 
 _STATIC = ("fn", "names")
