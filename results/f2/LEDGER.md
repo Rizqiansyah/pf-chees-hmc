@@ -234,3 +234,5 @@
 - 2026-10-24 12:01–12:04 — F2i GPU check (`results/f2/drivers/f2i_gpu.sh`; load 11–13 from the F2j task):
   warm wall and warm "rest" equal F2h's within noise on 8schools and GEV; radon's warm "rest" 0.02–0.04 s lower.
   The CPU rows remain the evidence. F2i checkout and branch removed.
+- 2026-10-24 — F2i → local `main` (owner's up-front yes for the follow-ups): merged with `--no-ff` (67f2820), tree
+  equal to `f2`'s fbc85ad. Not pushed.

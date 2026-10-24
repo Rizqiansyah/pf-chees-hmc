@@ -57,12 +57,12 @@ The owner wants **universal** improvements (any PyMC model), not benchmark tunin
   - follow-ups F2i, F2j, F2k, one task at a time, no default flips;
   - upstream bugs stay drafted;
   - never push.
-- **Local `main`:** beb3087 (= f2 152eaf8, which includes F2h). Not pushed.
+- **Local `main`:** 67f2820 (= f2 fbc85ad, which includes F2h and F2i). Not pushed.
 - **F2h:** done. Suite on 44a0556: 514 passed. GPU check: the host gather costs nothing measurable.
-  `results/f2/F2h/SUMMARY.md` is complete.
-- **F2i task** (widening memo): running in `~/pf/f2-i` (branch `f2-i` from 44a0556). Its stop rule is in the
-  plan.
-- **After F2i:** F2j (threshold teardown), then F2k (float32 probe), as planned in the plan doc. F2k's smoke
+- **F2i:** done as a cheaper widening, no memo (a7a4413). Suite: 575 passed. CPU: 0.016–0.046 s saved per call.
+  Checkout and branch removed.
+- **F2j task** (threshold teardown): running in `~/pf/f2-j` (branch `f2-j` from b71e71e).
+- **After F2j:** F2k (float32 probe), as planned in the plan doc. F2k's smoke
   test: float32 fails in `pathfinder_fit` on all models, also on pre-F2 main. For each task:
   - review, merge into `f2`, run the suite, write the SUMMARY and the ledger;
   - merge into local `main`;
