@@ -57,17 +57,21 @@ The owner wants **universal** improvements (any PyMC model), not benchmark tunin
   - follow-ups F2i, F2j, F2k, one task at a time, no default flips;
   - upstream bugs stay drafted;
   - never push.
-- **Local `main`:** 89721fd (tree = f2 2872ecb: F2h, F2i and F2j). Not pushed.
+- **Local `main`:** see below (0d7157f).
 - **F2h:** done. Suite on 44a0556: 514 passed. GPU check: the host gather costs nothing measurable.
 - **F2i:** done as a cheaper widening, no memo (a7a4413). Suite: 575 passed. CPU: 0.016–0.046 s saved per call.
 - **F2j:** done (6ade5b1). The tests release compiled programs only above `max_map_count // 2 - 16,000` mappings.
   Suite: 584 passed in 725 s, against 774 s before. Peak 22.7k mappings.
 - Checkouts and branches of F2h–F2j are removed. TASK-RULES now tell a task to sign with its own model (62c38a3).
-- **F2k task** (float32 probe, CPU): running in `~/pf/f2-k` (branch `f2-k` from 62c38a3). When it reports:
-  - review, merge into `f2`, run the suite, write the SUMMARY and the ledger;
-  - merge into local `main`.
-- **F2k GPU part (lead):** float32 warm/cold stages, and the R1 gate rows on the GPU.
-- **At the end:** a final F2 report to the owner.
+- **F2k:** done (58b5c93). float32 runs end to end. On the GPU, the warm call is 7.7× faster on logit and 3.1× on
+  radon at the same gate. GEV's step size collapses, and 8schools fails 2 of 13 seeds. Report only, in
+  `results/f2/F2k/SUMMARY.md`.
+- **Local `main` = 0d7157f** (tree = f2 25986e5, all of F2). Not pushed. No checkouts are left.
+- **The autonomous run is finished.** The final report is `results/f2/REPORT.md`. The owner's open decisions:
+  - pushing;
+  - a README float32 section;
+  - filing the upstream drafts;
+  - follow-ups.
 
 ## Next steps (as written before F2e; steps 1–2 are now done)
 1. **F2e: one fast-tier task**, in a checkout at `~/pf/f2-e` on branch `f2-e`. Git refs cannot nest
