@@ -35,6 +35,8 @@ import pymc as pm
 import pytest
 import scipy.special as sps
 
+from test_api_prune import without_removed
+
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent
 BASE_SHA = "62c38a3"             # the f2 head before F2k
@@ -166,7 +168,8 @@ def test_float64_draws_are_bit_identical_to_the_code_before(float64_jobs, name):
     for key in old:
         assert old[key].dtype == new[key].dtype and np.array_equal(old[key], new[key], equal_nan=True), key
     assert old_meta["dtypes"] == new_meta["dtypes"]
-    assert {s: json.loads(c) for s, c in new_meta["config"].items()} == {s: json.loads(c) for s, c in old_meta["config"].items()}
+    assert {s: json.loads(c) for s, c in new_meta["config"].items()} == {
+        s: without_removed(json.loads(c)) for s, c in old_meta["config"].items()}
     for key in new:
         if "/posterior/" in key:
             assert new[key].dtype == np.float64 and np.isfinite(new[key]).all(), key

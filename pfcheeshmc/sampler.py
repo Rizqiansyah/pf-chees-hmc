@@ -1471,7 +1471,8 @@ def sample_pf_chees_hmc(
         Forwarded to `PfCheesHMC.sample(...)`. ``pathfinder_kwargs["pm_chains"]`` (default 1, at most
         ``chains``) is how many PyMC start points are built; they are shared cyclically, chain c taking
         point ``c % pm_chains``, so 1 shares one point among all the chains and ``chains`` gives each its
-        own. The other Pathfinder keys are listed in `PfCheesHMC._run_pathfinder`.
+        own. The other Pathfinder keys are listed in `PfCheesHMC._run_pathfinder`, the warmup keys in
+        `PfCheesHMC._run_chees`. A key a stage does not read raises a TypeError that names it.
 
     Returns
     -------

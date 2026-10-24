@@ -41,6 +41,11 @@ REMOVED_CONFIG_KEYS = (
     "metric_refresh_warmup", "metric_refresh_pool", "metric_refresh_reseed", "metric_refresh_ridge",
     "metric_refresh_shrink", "metric_refresh_rank", "metric_refresh_eps_probes")
 
+def without_removed(config):
+    """A resolved config of a tree before C2 (the tag, or an older one) minus the keys of the removed options."""
+    return {k: v for k, v in config.items() if k not in REMOVED_CONFIG_KEYS}
+
+
 # removed option -> the dict of the stage that read it, and a value that was valid there
 REMOVED = {
     "imm_orientation": ("pathfinder_kwargs", "precision"),
@@ -159,7 +164,7 @@ def runs(tag_tree, tmp_path_factory):
     pool.shutdown(wait=True)
 
 
-def _config(array, drop):
+def _config(array, drop=()):
     cfg = json.loads(str(array))
     return {k: v for k, v in cfg.items() if k not in drop}
 

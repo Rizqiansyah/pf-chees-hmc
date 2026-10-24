@@ -46,6 +46,7 @@ from test_lifted import EXTRA, LADDER, LITERALS, LITERALS_INT_RV, _literal_model
 
 from pfcheeshmc import lifted  # noqa: E402
 from pfcheeshmc.lifted import lift_logp  # noqa: E402
+from test_api_prune import without_removed  # noqa: E402
 
 BASE_SHA = "44a0556"             # the f2 head before F2i
 SITES = ("logp", "initial_point", "transform")
@@ -303,7 +304,7 @@ def test_draws_of_a_rebuilt_model_are_bit_identical_to_the_old_code(base_tree, t
     assert not all(np.array_equal(old[k], old[k.replace("first", "second")]) for k in old if k.startswith("first/posterior/"))
     for key in old:
         if key.endswith("/config"):
-            assert json.loads(str(new[key])) == json.loads(str(old[key])), key
+            assert json.loads(str(new[key])) == without_removed(json.loads(str(old[key]))), key
         else:
             assert old[key].dtype == new[key].dtype and np.array_equal(old[key], new[key], equal_nan=True), key
     for key in new:
