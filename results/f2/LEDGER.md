@@ -228,3 +228,9 @@
   for well over the plan's 80-line budget. Lead suite running.
 - 2026-10-24 — F2j task launched (`~/pf/f2-j` from the `f2` head): release compiled programs in the tests
   only above a mapping-count threshold. `results/f2/probes/mapcount_plugin.py` (F2g's measurement plugin) added.
+- 2026-10-24 12:01 — Lead suite on merged `f2` (a7a4413): `575 passed, 64 warnings in 836.55s
+  (0:13:56)`, rc 0; the F2j task's per-module runs overlapped it (load 11–14). The real `~/.cache/pfcheeshmc`
+  was not created.
+- 2026-10-24 12:01–12:04 — F2i GPU check (`results/f2/drivers/f2i_gpu.sh`; load 11–13 from the F2j task):
+  warm wall and warm "rest" equal F2h's within noise on 8schools and GEV; radon's warm "rest" 0.02–0.04 s lower.
+  The CPU rows remain the evidence. F2i checkout and branch removed.
