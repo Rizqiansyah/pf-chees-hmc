@@ -30,6 +30,7 @@ import pytest
 
 from pfcheeshmc import compiled, sample_pf_chees_hmc
 from pfcheeshmc.sampler import PfCheesHMC
+from test_api_prune import without_removed
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent
@@ -255,7 +256,7 @@ def test_draws_for_a_fixed_seed_are_bit_identical_to_the_old_code(draws, name):
     assert any(k.startswith("posterior/") for k in old) and any(k.startswith("stats/") for k in old)
     for key in old:
         if key == "config":
-            assert json.loads(str(new[key])) == json.loads(str(old[key]))
+            assert json.loads(str(new[key])) == without_removed(json.loads(str(old[key])))
         else:
             assert old[key].dtype == new[key].dtype and np.array_equal(old[key], new[key], equal_nan=True), key
     for key in new:

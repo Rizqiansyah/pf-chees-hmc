@@ -111,9 +111,9 @@ def unconstrained_from_idata(idata, names, chains, draws):
     return unc
 
 
-def score_run(unc, ref, chains, draws, nested_limit=1.01):
+def score_run(unc, ref, chains, draws):
     """`r1_bias.score_ensemble` plus the `r1_bias.g_r1` verdict. The T3 scoring entry point."""
-    sc = rb.score_ensemble(unc, ref, chains, draws, None, nested_limit)
+    sc = rb.score_ensemble(unc, ref, chains, draws)
     sc["g_r1"] = rb.g_r1(sc["b2_max"], sc["b2_floor"], chains * draws)
     return sc
 

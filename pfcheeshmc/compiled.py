@@ -410,19 +410,17 @@ def integration_steps(random_generator_arg, trajectory_length_adjusted, jitter_a
         dtype=int)
 
 
-_ADAPTER = ("optim", "target_accept", "decay_rate", "jitter_amount", "max_leapfrog_steps", "iterate",
-            "single_step_iters")
+_ADAPTER = ("optim", "target_accept", "decay_rate", "jitter_amount", "max_leapfrog_steps", "single_step_iters")
 
 
-def _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, iterate,
-             single_step_iters, t0=None):
+def _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, single_step_iters):
     """The vendored ChEES adapter ``(init, update)``. ``optim`` is an Adam learning rate (a stable static
     argument: an optax object is a new value on every call) or an optax transformation."""
     if not hasattr(optim, "init"):
         optim = optax.adam(optim)
     return _chees_vendored.base(
         lambda i: halton_jitter(i, jitter_amount), _next_random_arg, optim, target_accept, decay_rate,
-        max_leapfrog_steps, iterate=iterate, t0=t0, single_step_iters=single_step_iters)
+        max_leapfrog_steps, single_step_iters=single_step_iters)
 
 
 def _strong(tree):
@@ -455,34 +453,33 @@ def _chunk_scan(step, carry, start, n, chunk):
     return lax.scan(body, carry, jnp.arange(chunk, dtype=jnp.int32))
 
 
-@partial(jax.jit, static_argnames=_STATIC + _ADAPTER + ("has_t0",))
-def warmup_init(fn, names, values, positions, initial_step_size, t0, *, optim, target_accept, decay_rate,
-                jitter_amount, max_leapfrog_steps, iterate, single_step_iters, has_t0):
+@partial(jax.jit, static_argnames=_STATIC + _ADAPTER)
+def warmup_init(fn, names, values, positions, initial_step_size, *, optim, target_accept, decay_rate,
+                jitter_amount, max_leapfrog_steps, single_step_iters):
     """The warmup's start: HMC states for a dict of ``(chains, ...)`` positions, and the adapter's state.
 
-    ``initial_step_size`` and ``t0`` are values (dynamic); whether there is a ``t0`` is a setting.
+    ``initial_step_size`` is a value (dynamic).
     """
     ld = _logdensity(fn, names, values)
-    init_adapt, _ = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, iterate,
-                             single_step_iters, t0=t0 if has_t0 else None)
+    init_adapt, _ = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps,
+                             single_step_iters)
     states = jax.vmap(lambda p: dynamic_hmc.init(p, ld, 0))(positions)
     return _strong(states), _strong(init_adapt(0, initial_step_size))
 
 
 @partial(jax.jit, static_argnames=_STATIC + _ADAPTER + ("chunk", "stack_positions"))
 def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *, chunk, stack_positions,
-                 optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, iterate,
-                 single_step_iters):
+                 optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, single_step_iters):
     """``chunk`` ChEES warmup steps (the first ``n`` real) from ``carry = (HMC states, adapter state)``.
 
     Step ``j`` is global step ``start + j``: its key is ``fold_in(key, start + j)`` and its Halton jitter
     index is the one carried in the state, so a run split into chunks of any size is the same run.
     Returns ``(carry, ys)``, ``ys`` the per-step stack (``chunk`` rows; rows ``>= n`` are zeros):
     ``(WarmupScanInfo, ChEESTrace)``, preceded by the positions when ``stack_positions`` (the stop rule
-    and the two-phase refresh read them; stacking them is the memory wall at C=1,024).
+    reads them; stacking them is the memory wall at C=1,024).
     """
     ld = _logdensity(fn, names, values)
-    _, update_adapt = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, iterate,
+    _, update_adapt = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps,
                                single_step_iters)
     kernel = dynamic_hmc.build_kernel(
         next_random_arg_fn=_next_random_arg,
@@ -591,13 +588,11 @@ class HostStack:
     """Per-step outputs of the chunks, gathered on the host (NumPy) into arrays of ``total`` rows.
 
     A chunk returns ``chunk`` rows of which ``n`` are real. The rows are cut with NumPy slicing: a device
-    slice with a W- or D-dependent bound is one XLA compile per bound. ``keep_last=k`` keeps only the last
-    ``k`` steps (the refresh needs the last few positions, not all of them).
+    slice with a W- or D-dependent bound is one XLA compile per bound.
     """
 
-    def __init__(self, total: int, keep_last: int | None = None):
+    def __init__(self, total: int):
         self.total = int(total)
-        self.lo = 0 if keep_last is None else max(0, self.total - int(keep_last))
         self._buf = None
         self._treedef = None
 
@@ -606,11 +601,11 @@ class HostStack:
         host = [np.asarray(x) for x in leaves]
         if self._buf is None:
             self._treedef = treedef
-            self._buf = [np.empty((self.total - self.lo,) + x.shape[1:], x.dtype) for x in host]
-        a, b = max(start, self.lo), start + n
+            self._buf = [np.empty((self.total,) + x.shape[1:], x.dtype) for x in host]
+        a, b = start, start + n
         if b > a:
             for buf, x in zip(self._buf, host):
-                buf[a - self.lo:b - self.lo] = x[a - start:b - start]
+                buf[a:b] = x[a - start:b - start]
 
     def result(self):
         return jax.tree_util.tree_unflatten(self._treedef, self._buf)

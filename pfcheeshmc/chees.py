@@ -1,5 +1,4 @@
-"""Vendored ChEES warmup adapter (BlackJAX `chees_adaptation.base`), with a paper-faithful
-iterate option.
+"""Vendored ChEES warmup adapter (BlackJAX `chees_adaptation.base`).
 
 Source
 ------
@@ -12,31 +11,20 @@ installed one.
 
 Why vendored (one-line justification for the library-first exception, A6)
 --------------------------------------------------------------------------
-The deviation being fixed is INSIDE the adapter's update loop: `base` feeds its
-t^-0.5-weighted moving average back into Adam as the operating point on log T
-(installed file, lines 473-474 and 490-493), whereas Hoffman et al. 2021
-(Algorithm 1) run Adam on the raw log-T iterate and apply the moving average
-only at the freeze. No BlackJAX option expresses that; the only available
-levers are a source edit of site-packages (forbidden) or a monkeypatch at call
-time (what tools/probes/tgrowth.py does, which is not shippable). So: vendor
-`base` and expose the choice as `iterate`.
+The adapter returns a per-step scalar trace (step, step_size, trajectory_length, harmonic_acceptance) beside its
+state, and can build its Adam optimiser from a learning rate. Neither is an option of `base`, and the only other
+levers are a source edit of site-packages (forbidden) or a monkeypatch at call time (not shippable). So: vendor
+`base`.
 
 Deliberate differences from the vendored upstream `base` (and nothing else)
 -----------------------------------------------------------------------------
-1. `iterate`: "ma" (default) reproduces the installed adapter's state
-   transitions bit-for-bit (pinned by tests/test_chees_vendored.py); "raw"
-   consumes the new Adam iterate as the trajectory length each step and keeps
-   the moving average only for the freeze -- the paper.
-2. `t0`: initial trajectory length (the paper uses pi/2). None keeps upstream's
-   `trajectory_length=step_size` initialisation, which is bit-identical to the
-   installed behaviour.
-3. `single_step_iters`: for the first N updates the consumed trajectory length
+1. `single_step_iters`: for the first N updates the consumed trajectory length
    is pinned to one leapfrog (L=1, which is already the state's clip minimum),
    i.e. the step size settles before the trajectory grows. SNAPER runs ~100
    such steps. 0 (default) is a Python-level no-op, not even a jnp.where.
-4. `optim=None` builds `optax.adam(adam_lr, b1=adam_b1, b2=adam_b2)`; callers
+2. `optim=None` builds `optax.adam(adam_lr, b1=adam_b1, b2=adam_b2)`; callers
    may still pass an optimiser positionally exactly as upstream.
-5. `update` returns `(new_state, ChEESTrace)` -- a per-step scalar trace
+3. `update` returns `(new_state, ChEESTrace)` -- a per-step scalar trace
    (step, step_size, trajectory_length, harmonic_acceptance) so a caller can
    plot or gate on the warmup without reconstructing it from the scan output.
    The state itself is untouched by this.
@@ -159,8 +147,6 @@ def base(
     decay_rate: float = 0.5,
     max_leapfrog_steps: int = 1000,
     *,
-    iterate: str = "ma",
-    t0: Optional[float] = None,
     single_step_iters: int = 0,
     adam_b1: float = 0.9,
     adam_b2: float = 0.999,
@@ -175,21 +161,14 @@ def base(
     `ChEESTrace` (see the module docstring for the full list of differences).
 
     Parameters are upstream's, plus:
-      iterate: "ma" (default; installed behaviour) or "raw" (paper-faithful).
-      t0: initial trajectory length in time units; None keeps upstream.
       single_step_iters: run with L=1 for this many updates before the
           trajectory is allowed to grow (SNAPER uses ~100).
       adam_b1/adam_b2/adam_lr: used only when `optim` is None.
     """
-    if iterate not in ("ma", "raw"):
-        raise ValueError(f"iterate must be 'ma' or 'raw', got {iterate!r}")
     if single_step_iters < 0:
         raise ValueError("single_step_iters must be >= 0")
     if optim is None:
         optim = optax.adam(adam_lr, b1=adam_b1, b2=adam_b2)
-    # Python-level decision, fixed at trace time: with iterate="ma" and the
-    # default options the generated graph is upstream's graph.
-    use_raw = iterate == "raw"
 
     da_init, da_update, _ = dual_averaging.dual_averaging()
 
@@ -336,10 +315,8 @@ def base(
         # log_trajectory_length)`. Because upstream sets
         # trajectory_length = exp(log_trajectory_length_moving_average), Adam's
         # operating point here is the t^-0.5-weighted moving average, not the
-        # raw iterate -- the deviation from Hoffman et al. 2021 Algorithm 1
-        # that `iterate="raw"` removes. In raw mode the state's
-        # trajectory_length IS exp(the raw iterate), so this same line reads
-        # the raw iterate and everything below is unchanged.
+        # raw iterate (Hoffman et al. 2021 Algorithm 1 differs here; this
+        # adapter keeps upstream's behaviour).
         log_trajectory_length = jnp.log(trajectory_length)
         updates, optim_state_ = optim.update(
             trajectory_gradient, optim_state, log_trajectory_length
@@ -361,13 +338,8 @@ def base(
             1.0 - update_weight
         ) * log_trajectory_length_ma + update_weight * new_log_trajectory_length
 
-        if use_raw:
-            # Paper Algorithm 1: the kernel consumes the raw iterate each step;
-            # the moving average is kept only for the freeze.
-            new_trajectory_length = jnp.exp(new_log_trajectory_length)
-        else:
-            # Installed behaviour: consume the moving average.
-            new_trajectory_length = jnp.exp(new_log_trajectory_length_ma)
+        # Upstream's behaviour: the kernel consumes the moving average.
+        new_trajectory_length = jnp.exp(new_log_trajectory_length_ma)
 
         # clip new trajectory length to avoid too large trajectories, also the
         # minimum trajectory length is one integrator step
@@ -395,18 +367,13 @@ def base(
         return state, harmonic_mean
 
     def init(random_generator_arg: Array, step_size: float):
-        t0_val = jnp.asarray(t0, dtype=jnp.asarray(step_size).dtype) if t0 is not None else step_size
         return ChEESAdaptationState(
             step_size=step_size,
             log_step_size_moving_average=0.0,
-            trajectory_length=t0_val,
-            # Kept at 0.0 exactly as upstream, including when t0 is set: the
-            # first update has update_weight = 1^(-decay_rate) = 1, so the
-            # moving average takes the first new iterate verbatim and this
-            # initial value never affects any state field.
+            trajectory_length=step_size,
             log_trajectory_length_moving_average=0.0,
             da_state=da_init(step_size),
-            optim_state=optim.init(t0_val),
+            optim_state=optim.init(step_size),
             random_generator_arg=random_generator_arg,
             step=1,
         )

@@ -50,8 +50,6 @@ _FIELDS = [
     ("b2_max", None),
     ("b2_floor", None),
     ("b2_argmax", None),
-    ("nested_rhat_max", None),
-    ("superchains", None),
     ("max_rhat", None),
     ("min_bulk_ess", None),
     ("min_tail_ess", None),
@@ -229,9 +227,8 @@ def env_json(path="results/env.json", extra=None):
         import arviz_stats
 
         avs = getattr(arviz_stats, "__version__", "installed")
-        nested = hasattr(arviz_stats, "rhat_nested")
     except ImportError:
-        avs, nested = None, False
+        avs = None
 
     env = {
         "python": sys.version.split()[0],
@@ -241,7 +238,6 @@ def env_json(path="results/env.json", extra=None):
         "pymc": pymc.__version__,
         "arviz": arviz.__version__,
         "arviz_stats": avs,
-        "arviz_stats_has_rhat_nested": nested,
         "numpy": numpy.__version__,
         "scipy": scipy.__version__,
         "xarray": xarray.__version__,

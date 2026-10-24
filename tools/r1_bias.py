@@ -8,8 +8,6 @@ measured the estimator, not the sampler (plan §2b). The gate here is bias again
 
     b2(f) = (mean_ens f - mean_ref f)^2 / var_ref f     for f in {x_i, x_i^2}, unconstrained space
 
-plus nested R-hat (arviz_stats.rhat_nested — library, never reimplemented) when superchains are on.
-
 It drives the PUBLIC `sample_pf_chees_hmc`. The only surgery is wrapping two methods in this process:
 _to_inference_data to return unconstrained samples, and _run_chees to capture the frozen step size,
 the frozen trajectory length and the exact warmup gradient counts. That is A8's stated contract for
@@ -19,7 +17,7 @@ Usage (timed cells must be under the GPU lock):
   tools/gpu_run.sh pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH=$WT \
       python $WT/tools/r1_bias.py --models 8schools --chains 1024 --draws 10 \
       --warmups 100,200,400 --seeds 1,2,3 --repeat 2 --arm legacy \
-      --pf-draws 1 --init-pick iid --superchains 8 --timed \
+      --pf-draws 1 --timed \
       --out results/runs/WP3__selftest.jsonl
 
 On-disk cache: OFF, so that `cold` rows are cold. The library switches a default compilation cache on in
@@ -33,30 +31,22 @@ G-R1 (plan §6): pass = b2_max < 0.01 on every seed with C*D >= 2,000. b2_max ha
 floor, max_f (mcse_f^2 / var_ref_f) * 2 ln(2d), which is printed with every cell: a cell whose floor
 is above 0.005 is NOT RESOLVABLE, not a pass.
 
-Rows (schema pf-r2/v1 = pf-r1/v1 plus `effective`, `pooled`, `step`, and the two refresh scalars
-`metric_refresh_T0` / `metric_refresh_lmax_whitened`, null without a refresh):
+Rows (schema pf-r2/v1 = pf-r1/v1 plus `effective`, `pooled`, `step`):
 
-  * Sampler defaults pass through. `--orientation --iterate --pf-draws --pf-pool-cap --init-pick
-    --imm-source --start-scale` default to None = not passed, the sampler decides. `effective` is
-    json.loads(idata.attrs["config"]), what the sampler RESOLVED; a flag that `effective`
-    contradicts raises ConfigMismatch (after the row is written). What the harness still injects on
-    its own: `progressbar=False` (display only), `keep_untransformed=True` (force_unconstrained: the
-    scoring space), and, with a refresh on, `metric_refresh_warmup = max(2, W // 2)` unless
-    --metric-refresh-warmup is given (the sampler's own default is a W-independent 50).
+  * Sampler defaults pass through. `--pf-draws --pf-pool-cap --imm-source` default to None = not
+    passed, the sampler decides. `effective` is json.loads(idata.attrs["config"]), what the sampler
+    RESOLVED; a flag that `effective` contradicts raises ConfigMismatch (after the row is written).
+    What the harness still injects on its own: `progressbar=False` (display only) and
+    `keep_untransformed=True` (force_unconstrained: the scoring space).
   * `--pool-seeds` adds one row per (model, arm, W, rep) with `pooled: true`, `seed: "pooled"`,
     chains = S*C: G-R1-pool, a diagnostic and never a gate.
 
 `grads_per_chain_total` is grads_per_chain_warmup + grads_per_chain_sampling, per chain. Each is an
 exact sum of HMCInfo.num_integration_steps (one leapfrog step = one gradient evaluation) divided by
-the chain count; the warmup count spans both phases of a two-phase (refresh) run. The accounting the
-plan asks for is warmup + sampling + step-size-search probes + refresh-pool gradients, per chain.
-The row's sum is the first two only. FLAG:
-  (a) the 32-probe step-size search (before warmup and, with a refresh, again at the swap) runs
-      inside blackjax's find_reasonable_step_size, which reports no count; it is C-independent, so
-      per chain it shrinks like 1/C;
-  (b) `fisher_diag` evaluates `metric_refresh_pool` gradients per chain at the swap
-      (`_pool_gradients`; effective.metric_refresh_pool, default min(W_A, 20)), also not in the sum.
-      The other estimators evaluate none.
+the chain count. The accounting the plan asks for is warmup + sampling + step-size-search probes, per
+chain. The row's sum is the first two only. FLAG: the 32-probe step-size search (before warmup) runs
+inside blackjax's find_reasonable_step_size, which reports no count; it is C-independent, so per chain
+it shrinks like 1/C.
 Pathfinder's own L-BFGS gradients are shared by all chains and belong in `pf_grads_total`; no
 harness fills that field in, so it is null in every row.
 """
@@ -67,7 +57,7 @@ import os
 import sys
 import time
 
-SCHEMA_R2 = "pf-r2/v1"      # pf-r1/v1 + `effective`, `pooled`, `step` (and the two refresh scalars)
+SCHEMA_R2 = "pf-r2/v1"      # pf-r1/v1 + `effective`, `pooled`, `step`
 
 os.environ.setdefault("PYTENSOR_FLAGS", "blas__ldflags=-llapack -lblas -lcblas -lm")
 os.environ.setdefault("PFCHEESHMC_COMPILATION_CACHE", "0")      # rep 0 is a COLD cell: see "On-disk cache" in the docstring
@@ -397,8 +387,8 @@ def force_unconstrained():
     sm.PfCheesHMC._to_inference_data = inner
 
 
-def score_ensemble(unc, ref, chains, draws, superchains, nested_limit):
-    """b2 / nested R-hat for one run. `unc` is {name: (chains, draws, leaves)}."""
+def score_ensemble(unc, ref, chains, draws):
+    """b2 for one run. `unc` is {name: (chains, draws, leaves)}."""
     import arviz_stats as AS
 
     ens, labels = flatten_run(unc, chains, draws)
@@ -415,15 +405,8 @@ def score_ensemble(unc, ref, chains, draws, superchains, nested_limit):
         np.asarray(AS.mcse(stacked, method="mean", chain_axis=0, draw_axis=1)),
         np.asarray(AS.mcse(stacked ** 2, method="mean", chain_axis=0, draw_axis=1)))
     argmax = argmax_name(labels, k)
-    nested = None
-    if superchains and superchains > 1 and draws >= 2:
-        ids = [i // (chains // superchains) for i in range(chains)]
-        nested = float(np.asarray(AS.rhat_nested(stacked, superchain_ids=ids,
-                                                 chain_axis=0, draw_axis=1)).max())
     return {"labels": labels, "d": int(d), "b2_max": b2_max,
-            "b2_argmax": argmax, "b2_floor": floor,
-            "nested_rhat_max": nested,
-            "nested_pass": None if nested is None else bool(nested < nested_limit)}
+            "b2_argmax": argmax, "b2_floor": floor}
 
 
 class ConfigMismatch(RuntimeError):
@@ -431,50 +414,24 @@ class ConfigMismatch(RuntimeError):
 
 
 # knob the harness passes -> key of the same knob in idata.attrs["config"] (PfCheesHMC._config_record)
-_PF_CONFIG_KEYS = {"draws": "pf_draws", "init_pick": "init_pick", "superchains": "superchains",
-                   "imm_orientation": "imm_orientation", "pf_pool_cap": "pf_pool_cap",
-                   "imm_source": "imm_source", "pf_start_scale": "pf_start_scale"}
-_CHEES_CONFIG_KEYS = {"draws": "num_warmup", "iterate": "iterate", "metric_refresh": "metric_refresh",
-                      "metric_refresh_warmup": "metric_refresh_warmup",
-                      "metric_refresh_reseed": "metric_refresh_reseed"}
+_PF_CONFIG_KEYS = {"draws": "pf_draws", "pf_pool_cap": "pf_pool_cap", "imm_source": "imm_source"}
+_CHEES_CONFIG_KEYS = {"draws": "num_warmup"}
 
 
 def pathfinder_kwargs_from(args):
     """`pathfinder_kwargs` for the sampler. A flag left at None adds NO key: the sampler decides.
 
-    Run 1 injected `--pf-draws 1`, `--orientation precision` and `--iterate ma` as harness defaults,
-    so "the default arm" was never the sampler's default arm (plan Part B 1.3). Anything the harness
-    does pass is checked against `idata.attrs["config"]` by `check_effective`.
+    Run 1 injected `--pf-draws 1` as a harness default, so "the default arm" was never the sampler's
+    default arm (plan Part B 1.3). Anything the harness does pass is checked against
+    `idata.attrs["config"]` by `check_effective`.
     """
-    pairs = (("pf_draws", "draws"), ("init_pick", "init_pick"), ("superchains", "superchains"),
-             ("orientation", "imm_orientation"), ("pf_pool_cap", "pf_pool_cap"),
-             ("imm_source", "imm_source"), ("start_scale", "pf_start_scale"))
+    pairs = (("pf_draws", "draws"), ("pf_pool_cap", "pf_pool_cap"), ("imm_source", "imm_source"))
     return {key: getattr(args, flag) for flag, key in pairs if getattr(args, flag, None) is not None}
 
 
-def refresh_warmup_for(args, W):
-    """Phase-A length of the metric refresh: `--metric-refresh-warmup`, else max(2, W // 2)."""
-    given = getattr(args, "metric_refresh_warmup", None)
-    return int(given) if given is not None else max(2, W // 2)
-
-
 def chees_kwargs_from(args, W):
-    """`chees_kwargs` for the sampler (`draws` is the warmup length W). None flags add no key.
-
-    One value is injected on purpose, plan item 3: with a refresh on, `metric_refresh_warmup` is
-    max(2, W // 2) unless --metric-refresh-warmup says otherwise, where the sampler's own default is
-    a W-independent 50. The resolved value is recorded in `effective.metric_refresh_warmup` and
-    checked by `check_effective`.
-    """
-    kw = {"draws": W}
-    if getattr(args, "iterate", None) is not None:
-        kw["iterate"] = args.iterate
-    if args.metric_refresh != "none":
-        kw["metric_refresh"] = args.metric_refresh
-        kw["metric_refresh_warmup"] = refresh_warmup_for(args, W)
-        if getattr(args, "metric_refresh_reseed", None) is not None:
-            kw["metric_refresh_reseed"] = args.metric_refresh_reseed
-    return kw
+    """`chees_kwargs` for the sampler: `draws` is the warmup length W."""
+    return {"draws": W}
 
 
 def effective_from(idata):
@@ -483,21 +440,15 @@ def effective_from(idata):
     return json.loads(cfg) if cfg else None
 
 
-def expected_config(pf_kw, ch_kw, chains=None, draws=None, seed=None, W=None):
+def expected_config(pf_kw, ch_kw, chains=None, draws=None, seed=None):
     """{config key: value} that `effective` must show, from the kwargs ACTUALLY passed.
 
-    A knob that was not passed is not constrained (the sampler decides), except that the harness
-    assumes "no refresh" and "no superchains" when it does not ask for them. `ch_kw=None` is a
+    A knob that was not passed is not constrained (the sampler decides). `ch_kw=None` is a
     Pathfinder-only check (the --starts-only rows).
     """
     want = {_PF_CONFIG_KEYS[k]: v for k, v in pf_kw.items()}
-    want.setdefault("superchains", None)
     if ch_kw is not None:
         want.update({_CHEES_CONFIG_KEYS[k]: v for k, v in ch_kw.items()})
-        want.setdefault("metric_refresh", "none")
-        if "metric_refresh_warmup" in want and W is not None:
-            # the sampler clamps phase A to [2, W - 2] (_run_chees_two_phase)
-            want["metric_refresh_warmup"] = max(2, min(int(want["metric_refresh_warmup"]), int(W) - 2))
     for key, val in (("chains", chains), ("num_draws", draws), ("seed", seed)):
         if val is not None:
             want[key] = val
@@ -515,10 +466,9 @@ def _same(a, b):
 def check_effective(effective, want):
     """Raise ConfigMismatch if the sampler's resolved config disagrees with what was asked for.
 
-    This is the guard that would have caught the run-1 `iterate` bug (LEDGER E13): single-phase
-    `_run_chees` ignored `chees_kwargs["iterate"]`, so every "raw" cell without a refresh silently ran
-    "ma", and nothing in the row said so. `effective is None` (a tree without the config attr) skips
-    the check; the row then carries `effective: null`.
+    This is the guard against a stage silently ignoring an option it was given: the row then says what
+    ran, not what was asked. `effective is None` (a tree without the config attr) skips the check; the
+    row then carries `effective: null`.
     """
     if effective is None:
         return
@@ -547,11 +497,8 @@ def run_cell(bl, model_name, args, W, seed, rep, cold, keep=None):
     pf_kw, ch_kw = pathfinder_kwargs_from(args), chees_kwargs_from(args, W)
     row = new_row(wp=args.wp, arm=args.arm, model=model_name, chains=args.chains,
                   draws_per_chain=args.draws, warmup=W, seed=seed, rep=rep, cold=cold,
-                  superchains=args.superchains, schema=SCHEMA_R2,
+                  schema=SCHEMA_R2,
                   kwargs=json.dumps({"sampler_fn": "sample_pf_chees_hmc",
-                                     "metric_refresh": args.metric_refresh,
-                                     "metric_refresh_reseed": getattr(args, "metric_refresh_reseed",
-                                                                      None),
                                      "chains": args.chains, "draws": args.draws, "warmup": W,
                                      "floatX": pytensor.config.floatX,
                                      # exactly what was passed: an absent key means "sampler decides"
@@ -560,10 +507,8 @@ def run_cell(bl, model_name, args, W, seed, rep, cold, keep=None):
                                      "ref_stats_check": "skipped"
                                      if args.allow_collapsed_reference_stats else "strict"},
                                     sort_keys=True))
-    # pf-r2/v1 = pf-r1/v1 + these. `effective` is what the sampler RESOLVED (idata.attrs["config"]);
-    # the two refresh scalars are null for a run without a refresh.
-    row.update(step=getattr(args, "step", None), pooled=False, effective=None,
-               metric_refresh_T0=None, metric_refresh_lmax_whitened=None)
+    # pf-r2/v1 = pf-r1/v1 + these. `effective` is what the sampler RESOLVED (idata.attrs["config"]).
+    row.update(step=getattr(args, "step", None), pooled=False, effective=None)
     INSTR["t"], INSTR["chees"] = {}, {}
     t0 = time.perf_counter()
     fatal = None
@@ -577,7 +522,7 @@ def run_cell(bl, model_name, args, W, seed, rep, cold, keep=None):
         if effective is None and (pf_kw or set(ch_kw) - {"draws"}):
             print("[r1_bias] WARNING: idata.attrs has no 'config' (a tree older than R2-WP2): the "
                   "flags cannot be checked against what ran", flush=True)
-        check_effective(effective, expected_config(pf_kw, ch_kw, args.chains, args.draws, seed, W))
+        check_effective(effective, expected_config(pf_kw, ch_kw, args.chains, args.draws, seed))
         import arviz as az
 
         unc = {}
@@ -586,9 +531,9 @@ def run_cell(bl, model_name, args, W, seed, rep, cold, keep=None):
             unc[n] = a.reshape(a.shape[0], a.shape[1], -1)
         sc = score_ensemble(unc, load_reference(model_name, names,
                                                 require_stats=not args.allow_collapsed_reference_stats),
-                            args.chains, args.draws, args.superchains, args.nested_limit)
+                            args.chains, args.draws)
         row.update(d=sc["d"], b2_max=sc["b2_max"], b2_floor=sc["b2_floor"],
-                   b2_argmax=sc["b2_argmax"], nested_rhat_max=sc["nested_rhat_max"])
+                   b2_argmax=sc["b2_argmax"])
 
         # split R-hat through arviz exactly as tools/bench_ladder.py does, for comparability.
         # INFORMATION ONLY in R1: §2b shows it inflates on short chains that are not biased.
@@ -603,8 +548,6 @@ def run_cell(bl, model_name, args, W, seed, rep, cold, keep=None):
         row.update(
             frozen_eps=attrs.get("frozen_step_size", ch.get("frozen_eps")),
             frozen_L_nominal=attrs.get("frozen_L_nominal"),   # ch-side thunk runs after wall_s
-            metric_refresh_T0=attrs.get("metric_refresh_T0"),
-            metric_refresh_lmax_whitened=attrs.get("metric_refresh_lmax_whitened"),
             steps_mean=float(steps.mean()) if steps.size else None,
             grads_per_chain_warmup=attrs.get(
                 "warmup_grad_evals_per_chain",
@@ -682,8 +625,7 @@ def run_cell(bl, model_name, args, W, seed, rep, cold, keep=None):
     eff = row["effective"] or {}
     print(f"  [{model_name} {args.arm} W={W} seed={seed} rep={rep}] b2_max={row['b2_max']} "
           f"floor={row['b2_floor']} argmax={row['b2_argmax']} G-R1={verdict} "
-          f"eff={eff.get('imm_source')}/{eff.get('imm_orientation')}/{eff.get('iterate')} "
-          f"nRhat={row['nested_rhat_max']} eps={row['frozen_eps']} L={row['frozen_L_nominal']} "
+          f"eff={eff.get('imm_source')} eps={row['frozen_eps']} L={row['frozen_L_nominal']} "
           f"grads/chain={row['grads_per_chain_warmup']}+{row['grads_per_chain_sampling']} "
           f"divs/1k={row['divs_per_1k']} splitRhat={row['max_rhat']} wall={row['wall_s']}s "
           f"peak={row['peak_mem_bytes']} err={row['error']}", flush=True)
@@ -694,17 +636,16 @@ def run_cell(bl, model_name, args, W, seed, rep, cold, keep=None):
     return row
 
 
-def pool_seed_scores(unc_by_seed, ref, draws, nested_limit):
+def pool_seed_scores(unc_by_seed, ref, draws):
     """G-R1-pool: concatenate the seeds' unconstrained draws along the chain axis, score ONCE.
 
     `unc_by_seed` is {seed: {name: (chains, draws, leaves)}}. Returns (score_ensemble dict, S*C).
-    Nested R-hat is not computed: the chains of different seeds are not one superchain layout.
     """
     seeds = sorted(unc_by_seed)
     pooled = {n: np.concatenate([unc_by_seed[s][n] for s in seeds], axis=0)
               for n in sorted(unc_by_seed[seeds[0]])}
     chains = int(next(iter(pooled.values())).shape[0])
-    return score_ensemble(pooled, ref, chains, draws, None, nested_limit), chains
+    return score_ensemble(pooled, ref, chains, draws), chains
 
 
 def run_pooled(model_name, args, W, rep, cold, kept):
@@ -724,7 +665,7 @@ def run_pooled(model_name, args, W, rep, cold, kept):
         return None
     names = sorted(kept[seeds[0]][0])
     ref = load_reference(model_name, names, require_stats=not args.allow_collapsed_reference_stats)
-    sc, chains = pool_seed_scores({s: kept[s][0] for s in seeds}, ref, args.draws, args.nested_limit)
+    sc, chains = pool_seed_scores({s: kept[s][0] for s in seeds}, ref, args.draws)
     effs = [kept[s][1]["effective"] for s in seeds]
     # the config the seeds share (the seed, stage seeds and frozen eps/L differ by construction)
     common = None if any(e is None for e in effs) else {
@@ -804,36 +745,10 @@ def build_parser():
                     help="bound the PF start pool to this many rows; 0 = uncapped. Default: not "
                          "passed (the sampler resolves it from --imm-source: 4C, or max(4C, 4d^2) "
                          "for mc)")
-    ap.add_argument("--init-pick", default=None, choices=["stratified", "iid"],
-                    help="how chain starts are picked from the pool. Default: not passed "
-                         "(the sampler's stratified)")
-    # WP1/WP2 knobs, forwarded so the R1 sweep can vary them without a per-arm harness.
-    ap.add_argument("--orientation", default=None, choices=["precision", "covariance"],
-                    help="imm_orientation. Default: not passed (the sampler's covariance)")
-    ap.add_argument("--iterate", default=None, choices=["ma", "raw"],
-                    help="ChEES iterate. Default: not passed (the sampler's default)")
     ap.add_argument("--imm-source", default=None,
                     choices=["mc", "pf_closed", "lbfgs_lowrank", "fisher_lowrank"],
                     help="where the inverse mass matrix comes from. Default: not passed "
                          "(the sampler's)")
-    ap.add_argument("--start-scale", type=float, default=None,
-                    help="pf_start_scale: chain starts become mu_pf + scale*(x - mu_pf). Default: "
-                         "not passed (the sampler's 1.0)")
-    ap.add_argument("--metric-refresh", default="none",
-                    choices=["none", "sample_diag", "fisher_diag", "dense_shrunk", "diag_lowrank"],
-                    help="WP4 two-phase ensemble metric refresh (none = the T1 single-phase arm; "
-                         "also the sampler's default, so nothing is passed for it)")
-    ap.add_argument("--metric-refresh-warmup", type=int, default=None,
-                    help="phase-A length (steps) of the metric refresh; needs --metric-refresh. "
-                         "Default None = max(2, W // 2) (the sampler clamps it to [2, W - 2]); the "
-                         "resolved value is in effective.metric_refresh_warmup")
-    ap.add_argument("--metric-refresh-reseed", dest="metric_refresh_reseed", default=None,
-                    action="store_const", const=True,
-                    help="re-seed phase-B trajectory length at (pi/2)*sqrt(l_max). Default: not "
-                         "passed (the sampler re-seeds)")
-    ap.add_argument("--no-metric-refresh-reseed", dest="metric_refresh_reseed",
-                    action="store_const", const=False,
-                    help="skip the trajectory-length re-seed on the metric swap (phase B starts at L=1)")
     ap.add_argument("--pool-seeds", action="store_true",
                     help="after the seeds of each (model, arm, W, rep) cell, concatenate their "
                          "unconstrained draws along the chain axis, score once with chains=S*C, and "
@@ -841,8 +756,6 @@ def build_parser():
                          "G-R1-pool: a DIAGNOSTIC that separates the method's bias from per-run "
                          "Monte-Carlo noise, never a gate -- summarise_rows.py keeps it out of the "
                          "every-seed test. Per-seed draws are held in memory only with this flag.")
-    ap.add_argument("--superchains", type=int, default=0, help="K (superchains); 0 = off")
-    ap.add_argument("--nested-limit", type=float, default=1.01)
     ap.add_argument("--cpu-contended", action="store_true",
                     help="tag rows taken while a CPU-heavy job (e.g. WP0.2 NUTS) was running")
     ap.add_argument("--timed", action="store_true", help="require the GPU lock (A5)")
@@ -859,11 +772,7 @@ def build_parser():
 
 def parse_args(argv=None):
     ap = build_parser()
-    args = ap.parse_args(argv)
-    args.superchains = args.superchains or None
-    if args.metric_refresh_warmup is not None and args.metric_refresh == "none":
-        ap.error("--metric-refresh-warmup needs --metric-refresh (there is no phase A without one)")
-    return args
+    return ap.parse_args(argv)
 
 
 def main():
@@ -887,7 +796,7 @@ def main():
     instrument()
     force_unconstrained()
     print(f"[r1_bias] pfcheeshmc={sys.modules['pfcheeshmc'].__file__} "
-          f"arm={args.arm} C={args.chains} D={args.draws} K={args.superchains}", flush=True)
+          f"arm={args.arm} C={args.chains} D={args.draws}", flush=True)
 
     for rep in range(args.repeat):
         cold = rep == 0

@@ -5,7 +5,7 @@ a 19.9-21.9 s call for 8 Schools at C=1,024) because jitted closures are rebuilt
 (data, priors, metric, step size) are compiled in as constants. Nothing in the draws would show it, so the
 only honest test counts compiles: `compile_counter.count_compiles` listens to JAX's backend-compile event.
 
-F2b-1 converted the non-loop sites (`pfcheeshmc.compiled`, plus the ensemble estimators): the start screening
+F2b-1 converted the non-loop sites (`pfcheeshmc.compiled`): the start screening
 and scoring, the Pathfinder fit and draws, the step-size search, the pool gradients, the warmup init, and the
 value -> problem-space transform. F2b-2 converted the two loops: the warmup (`compiled.warmup_chunk`) and the
 sampling loop (`compiled.sampling_chunk`) are chunk programs driven from the host with a dynamic active
@@ -17,8 +17,7 @@ Equivalence with the F2 head before F2c/F2d/eps0 (`BASE_SHA`, cdc4a55). The init
 the stratified start pick scores the whole pool whenever it has at most 4C rows (d <= sqrt(C)), so 8 Schools,
 GEV and logit at C=1,024 are BIT-identical to cdc4a55, every array. Radon's pool is 4d^2 = 122,500 rows, of
 which F2c now scores 4,084 instead of all: its picks, hence its draws, change by design, and it is compared on
-structure only (as is the refresh case, whose stream already differed from before F2b-2, see
-`test_chunked_loops.py`).
+structure only.
 
 Before that, F2b-2 versus c35fbba was NOT bit-for-bit: the loops are different XLA programs (a chunk of steps
 behind a conditional, the trajectory-length adjustment and the step size as arguments instead of constants),
@@ -46,9 +45,9 @@ import pytest
 
 from compile_counter import count_compiles, count_pytensor_functions
 from seeded_models import dims_model, hier
+from test_api_prune import REMOVED_CONFIG_KEYS
 
 from pfcheeshmc import compiled
-from pfcheeshmc.ensemble_metric import ENGLISH_NAMES, estimate_covariance, positions_to_draws
 from pfcheeshmc.lifted import lift_logp
 from pfcheeshmc.sampler import PfCheesHMC, sample_pf_chees_hmc
 
@@ -75,10 +74,13 @@ def run_sites(model, seed, chains=C, **pathfinder_kw):
         s._run_step_size_tune(pf, imm, seed=seed)
     with _site(counts, "usable_mask"):
         s._usable_mask(pf)
-    pool = {n: jnp.stack([pf[n]] * 3) for n in pf}                      # (3, chains, ...)
-    with _site(counts, "pool_gradients"):
-        s._pool_gradients(pool, positions_to_draws(pool, 3), {"score_chunk": 40})   # chunks of 40 and a rest
     ld = s._logdensity()
+    pool = {n: jnp.stack([pf[n]] * 3) for n in pf}                      # (3, chains, ...)
+    draws = jnp.concatenate([a.reshape(a.shape[0] * a.shape[1], -1) for a in jax.tree_util.tree_leaves(pool)], axis=1)
+    one = {n: pool[n][0, 0] for n in pool}
+    with _site(counts, "pool_gradients"):                                # chunks of 40 and a rest
+        for i in range(0, draws.shape[0], 40):
+            compiled.pool_gradients(ld.fn, ld.names, ld.values, one, draws[i:i + 40])
     with _site(counts, "batch_init"):
         compiled.batch_init(ld.fn, ld.names, ld.values, pf, 0)
     hist = types.SimpleNamespace(position={n: jnp.stack([pf[n]] * D) for n in pf})    # (draws, chains, ...)
@@ -302,57 +304,6 @@ def test_imm_sources_compile_nothing_on_a_second_invocation(imm_source):
     assert_no_compiles(run_sites(hier(2, 3), seed=2, **kw), imm_source)
 
 
-def test_superchains_compile_nothing_on_a_second_invocation():
-    kw = dict(superchains=4)
-    run_sites(hier(1, 1), seed=1, **kw)
-    assert_no_compiles(run_sites(hier(2, 3), seed=2, **kw), "superchains")
-
-
-@pytest.mark.parametrize("estimator", sorted(ENGLISH_NAMES))
-def test_every_ensemble_estimator_compiles_nothing_on_a_second_call(estimator):
-    d = 6
-    key = jax.random.key(0)
-    draws = jax.random.normal(key, (40, d), dtype=jnp.float64)
-    grads = -draws + 0.1 * jax.random.normal(jax.random.key(1), (40, d), dtype=jnp.float64)
-    estimate_covariance(estimator, draws, grads)
-    draws2, grads2 = 1.5 * draws + 0.2, 1.5 * grads - 0.1
-    with count_compiles() as cc:
-        estimate_covariance(estimator, draws2, grads2)
-    assert cc.count == 0, str(cc)
-
-
-def test_metric_refresh_path_second_call_compiles_nothing():
-    refresh = dict(metric_refresh="fisher_diag", metric_refresh_warmup=10)
-    sample_call(hier(1, 1), seed=1, **refresh)
-    idata, cc = sample_call(hier(5, 6), seed=2, **refresh)
-    assert cc.count == 0, str(cc)
-    assert idata.attrs["metric_refresh"] == "fisher_diag"
-
-
-@pytest.mark.parametrize("estimator", ["fisher_diag", "sample_diag"])
-def test_metric_refresh_with_another_W_and_W_A_compiles_nothing(estimator):
-    """W_A is a loop bound. The estimator's pool is min(W_A, 20) draws, so it is the same shape while W_A >= 20."""
-    kw = dict(metric_refresh=estimator)
-    sample_call(hier(1, 1), seed=1, warmup=60, metric_refresh_warmup=30, **kw)
-    idata, cc = sample_call(hier(2, 2), seed=2, warmup=83, metric_refresh_warmup=41, **kw)
-    assert cc.count == 0, str(cc)
-    assert idata.attrs["metric_refresh_warmup"] == 41 and idata.attrs["warmup_steps_used"] == 83
-
-
-def test_metric_refresh_in_the_multi_chunk_regime_compiles_nothing_for_another_W_A(small_chunks):
-    kw = dict(metric_refresh="fisher_diag")
-    sample_call(hier(1, 1), seed=1, warmup=3 * 6 + 20, metric_refresh_warmup=2 * 6 + 3 + 20, **kw)
-    _, cc = sample_call(hier(2, 2), seed=2, warmup=7 * 6 + 1 + 20, metric_refresh_warmup=6 + 1 + 20, **kw)
-    assert cc.count == 0, str(cc)
-
-
-def test_superchain_path_second_call_compiles_nothing():
-    kw = dict(pathfinder_kwargs={"superchains": 4})
-    sample_call(hier(1, 1), seed=1, **kw)
-    _, cc = sample_call(hier(5, 6), seed=2, **kw)
-    assert cc.count == 0, str(cc)
-
-
 def test_stop_rule_path_second_call_compiles_nothing_also_for_another_W():
     """The block and window are settings (one program per rule); the last, shorter block is the same program."""
     rule = {"block": 8, "window": 8, "rhat": 0.0}            # never fires: every block runs
@@ -514,16 +465,10 @@ EQUIV_CASES = {                  # name -> (model, extra args for compile_equiv_
     "gev": ("gev", ["--chains", "1024"]),
     "logit_1000x25": ("logit_1000x25", ["--chains", "1024"]),
     "radon_noncentered": ("radon_noncentered", []),
-    "8schools+refresh": ("8schools", ["--chees", json.dumps(
-        {"metric_refresh": "fisher_diag", "metric_refresh_warmup": 10})]),
-    "8schools+pf_closed+superchains": ("8schools", ["--pathfinder", json.dumps(
-        {"imm_source": "pf_closed", "superchains": 4})]),
+    "8schools+pf_closed": ("8schools", ["--pathfinder", json.dumps({"imm_source": "pf_closed"})]),
 }
-# The refresh path's phase A and B were keyed `split(fold_in(key, 0), n)`: a stream that depended on the block
-# length. They are keyed `fold_in(key, global_step)` now, so that run is a different realisation of the same
-# algorithm. It is compared on structure here, and statistically in test_chunked_loops.py. Radon's start picks
-# changed with F2c (a pool of 122,500 rows is scored on 4,084 of them), at C=8 too (the refresh case as well).
-STRUCTURE_ONLY_CASES = {"8schools+refresh", "radon_noncentered"}
+# Radon's start picks changed with F2c (a pool of 122,500 rows is scored on 4,084 of them), at C=8 too.
+STRUCTURE_ONLY_CASES = {"radon_noncentered"}
 # d <= sqrt(C): the whole 4C-row pool is scored, as before; nothing in the run differs.
 BIT_IDENTICAL_CASES = {"8schools", "gev", "logit_1000x25"}
 EQUIV_RTOL = 1e-7        # relative to (1 + |x|), for the other cases (observed worst 1.9e-10 across F2b-2)
@@ -592,6 +537,7 @@ def test_draws_match_the_f2_head_before_this_task(equivalence, case):
         worst = max(worst, float(np.nanmax(rel)))
         assert np.all(rel <= EQUIV_RTOL), f"{key}: worst relative difference {np.nanmax(rel):.3e}"
     old_cfg, new_cfg = json.loads(str(old["config"])), json.loads(str(new["config"]))
+    old_cfg = {k: v for k, v in old_cfg.items() if k not in REMOVED_CONFIG_KEYS}     # C2 removed these options
     assert old_cfg.keys() == new_cfg.keys()
     for k, v in old_cfg.items():                        # every resolved setting; floats only up to the ulp
         if case in STRUCTURE_ONLY_CASES and k in ("eps0", "frozen_step_size", "frozen_L_nominal"):

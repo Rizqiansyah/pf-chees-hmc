@@ -51,7 +51,7 @@ def _idata(unc, tuned=None):
 def test_floor_is_squared_through_score_ensemble(seed):
     """Within +-30% of 2 ln(10)/(C*D) in SQUARED units. The T3 bug (MCSE/sd, unsquared) gives
     2 ln(10)/sqrt(C*D) ~ 0.0455, about 100x this, so the band cannot pass it."""
-    sc = rb.score_ensemble({"x": _iid(seed)}, _ref(), C, D, None, 1.01)
+    sc = rb.score_ensemble({"x": _iid(seed)}, _ref(), C, D)
     exp = _expected_floor()
     assert 0.7 * exp <= sc["b2_floor"] <= 1.3 * exp, (sc["b2_floor"], exp, sc["b2_floor"] / exp)
     assert not 0.7 * exp <= 2.0 * np.log(2.0 * DIM) / np.sqrt(C * D) <= 1.3 * exp   # band has teeth
@@ -69,15 +69,14 @@ def test_floor_is_squared_through_the_t3_scorer(seed):
 def test_t3_scorer_calls_score_ensemble_and_g_r1_not_its_own_scorer(monkeypatch):
     seen = {}
 
-    def fake_score(unc, ref, chains, draws, superchains, nested_limit):
-        seen["score"] = (sorted(unc), chains, draws, superchains)
-        return {"b2_max": 0.5, "b2_floor": 0.123, "d": 5, "b2_argmax": "x", "labels": ["x"],
-                "nested_rhat_max": None, "nested_pass": None}
+    def fake_score(unc, ref, chains, draws):
+        seen["score"] = (sorted(unc), chains, draws)
+        return {"b2_max": 0.5, "b2_floor": 0.123, "d": 5, "b2_argmax": "x", "labels": ["x"]}
 
     monkeypatch.setattr(rb, "score_ensemble", fake_score)
     monkeypatch.setattr(rb, "g_r1", lambda b2, floor, cd: seen.setdefault("gate", (b2, floor, cd)) and "G")
     sc = t3.score_run({"x": _iid(0)}, _ref(), C, D)
-    assert seen["score"] == (["x"], C, D, None)
+    assert seen["score"] == (["x"], C, D)
     assert seen["gate"] == (0.5, 0.123, C * D)
     assert (sc["b2_floor"], sc["g_r1"]) == (0.123, "G")
 

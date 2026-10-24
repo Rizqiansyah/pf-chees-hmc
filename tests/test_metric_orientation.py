@@ -1,7 +1,6 @@
-"""G-ORDER: the metric must be applied in the kernel's coordinate order, and the orientation is a
-measured choice, not an assumption.
+"""G-ORDER: the metric must be applied in the kernel's coordinate order, and it is the posterior covariance.
 
-Two separate questions were tangled in Part B §WP1, and they are answered differently here:
+Two separate questions, answered differently here:
 
 **Ordering (a bug, unconditional).** The metric is built by ravelling Pathfinder's position tree, a
 *tuple* in `model.value_vars` order, while the kernel ravels the *dict* state and JAX sorts dict keys
@@ -10,20 +9,15 @@ Two separate questions were tangled in Part B §WP1, and they are answered diffe
 metric applied through the wrong permutation is a different preconditioner, and nothing raises. Every
 ordering test below fails on `ecd9ba1`.
 
-**Orientation (a measurement, not an assertion).** Both orientations are valid HMC and preserve the
-target, so no array-inspection test can decide them; `test_posterior_moments_recovered` decides it by
-asking whether the sampler recovers a known posterior at a practical budget. What the wheel fixes is
-only the *convention*: the array (call it A) is the matrix multiplying the momentum in the kinetic
-energy, `KE = 1/2 p.(A p)` (`mcmc/metrics.py:262-270`), so `p ~ N(0, A^-1)` and `q'' = -A grad U`;
-with target Hessian H the squared frequencies are `eig(A H)`, which is why `A = Cov(q)` makes every
-coordinate unit-frequency and `A = Cov(q)^-1` makes them 1/var. That convention is pinned by
-`test_kernel_convention_...`, which is orientation-agnostic.
-
-One finding this file forced: `imm_source="mc"` inverted its covariance while `lbfgs_lowrank` and
-`fisher_lowrank` passed their expansion un-inverted, so the three sources ran in *opposite*
-orientations. Every published `mc`-vs-low-rank comparison in `docs/ladder-results.md` is confounded by
-it, independent of the permutation. `imm_orientation` now makes the choice explicit and applies it to
-all three sources.
+**Orientation (a convention, then a measurement).** What the wheel fixes is the *convention*: the array
+(call it A) is the matrix multiplying the momentum in the kinetic energy, `KE = 1/2 p.(A p)`
+(`mcmc/metrics.py:262-270`), so `p ~ N(0, A^-1)` and `q'' = -A grad U`; with target Hessian H the squared
+frequencies are `eig(A H)`, which is why `A = Cov(q)` makes every coordinate unit-frequency and
+`A = Cov(q)^-1` makes them 1/var. That convention is pinned by `test_kernel_convention_...`. The sampler
+hands the kernel the covariance, for every `imm_source` (the inverse, and the Pathfinder-order metric, were
+options until C2 removed them: both reproduced known bugs), and
+`test_the_default_metric_mixes_the_anisotropic_target` asks whether that recovers a known posterior at a
+practical budget.
 """
 import jax
 import jax.numpy as jnp
@@ -49,7 +43,6 @@ def _scalar(x):
     return float(a.reshape(-1)[0]) if a.size == 1 else float(a)
 
 Z_INDEX_IN_KERNEL_ORDER = 3
-ORIENTATIONS = ["precision", "covariance"]
 
 
 # --------------------------------------------------------------------------- fixtures
@@ -82,8 +75,7 @@ def anisotropic_model():
     and "read a permuted precision" are nearly the same array, so two of the 2x2 cells came back
     good and ordering and orientation looked interchangeable. Here value_vars order is
     [delta, beta, zeta, alpha] against kernel order [alpha, beta, delta, zeta], variances
-    (1, 1e-2, 3, 1e2): no symmetry to hide behind, and exactly one 2x2 cell is well-conditioned
-    (see results/WP1/SUMMARY.md section 6).
+    (1, 1e-2, 3, 1e2): no symmetry to hide behind.
     """
     rng = np.random.default_rng(3)
     specs = [("delta", 3.0, 3), ("beta", 1.0, 100), ("zeta", 10.0, 1), ("alpha", 1.0, 1)]
@@ -109,7 +101,7 @@ def _inject_pool_with_known_covariance(monkeypatch, var_by_leaf, seed=1234):
     Only the draw generator is replaced; `_run_pathfinder` still computes the covariance, the ridge,
     the orientation and the reordering, which is the code under test. Needed because Pathfinder's own
     pool on a prior-only model is identity (zero gradient at the initial point -> no curvature pairs),
-    so a pool-comparison test on such a model passes on the broken code. See results/WP1/SUMMARY.md.
+    so a pool-comparison test on such a model passes on the broken code.
     """
     rng = np.random.default_rng(seed)
 
@@ -155,13 +147,11 @@ def _imm(model, **pathfinder_kwargs):
 
 
 # ------------------------------------------------------------------- ordering (unconditional)
-@pytest.mark.parametrize("orientation", ORIENTATIONS)
 @pytest.mark.parametrize("imm_source", ["mc", "lbfgs_lowrank", "fisher_lowrank"])
-def test_every_imm_source_hands_the_kernel_the_same_ordered_array(odd_order_model, monkeypatch, imm_source, orientation):
-    """Whatever the orientation, the array must arrive in the kernel's coordinate order.
+def test_every_imm_source_hands_the_kernel_the_same_ordered_array(odd_order_model, monkeypatch, imm_source):
+    """The array must arrive in the kernel's coordinate order.
 
-    Expected array is derived from the injected covariance by the arm's own definition: covariance
-    -> P C P^T, precision -> P C^-1 P^T. Nothing here prefers one orientation.
+    Expected array is derived from the injected covariance: covariance -> P C P^T.
     """
     _inject_pool_with_known_covariance(monkeypatch, PF_ORDER_VAR)
     if imm_source != "mc":
@@ -173,12 +163,11 @@ def test_every_imm_source_hands_the_kernel_the_same_ordered_array(odd_order_mode
     # (~18% SE), which is at the tolerance below -- the arm would then fail on estimator noise, not on
     # a permutation defect, and a test that cannot resolve its own signal has no teeth. Tolerance is
     # NOT loosened; the pool is pinned instead.
-    diag = np.diag(_imm(odd_order_model, imm_source=imm_source, max_rank=1,
-                        imm_orientation=orientation, pf_pool_cap=0))
-    expected = KERNEL_ORDER_VAR if orientation == "covariance" else 1.0 / KERNEL_ORDER_VAR
+    diag = np.diag(_imm(odd_order_model, imm_source=imm_source, max_rank=1, pf_pool_cap=0))
+    expected = KERNEL_ORDER_VAR
     rel = np.abs(diag - expected) / expected
     assert rel.max() < 0.2, (
-        f"{imm_source}/{orientation}: diag(imm)={diag}, expected {expected} "
+        f"{imm_source}: diag(imm)={diag}, expected {expected} "
         f"(max rel err {rel.max():.3f}). Correct values but the 1e4 at index 0 = the tuple->dict "
         "permutation was never applied."
     )
@@ -214,11 +203,6 @@ def test_permutation_rejects_a_tree_that_does_not_match_the_model(odd_order_mode
     sampler = PfCheesHMC(odd_order_model, seed=0)
     with pytest.raises(ValueError, match="value_vars"):
         sampler._kernel_permutation((jnp.zeros((4, 1)), jnp.zeros((4, 3)), jnp.zeros((4,))))
-
-
-def test_unknown_orientation_raises(odd_order_model):
-    with pytest.raises(ValueError, match="imm_orientation"):
-        _imm(odd_order_model, imm_orientation="whatever")
 
 
 def test_kernel_flat_matches_the_kernels_own_ravel(odd_order_model):
@@ -258,7 +242,7 @@ def test_kernel_convention_is_ke_half_p_A_p_and_momentum_cov_is_A_inverse(odd_or
     squared frequencies are eig(A H)) is what the moment test below is sensitive to.
     """
     _inject_pool_with_known_covariance(monkeypatch, PF_ORDER_VAR)
-    A = _imm(odd_order_model, imm_orientation="covariance")
+    A = _imm(odd_order_model)
     metric = bj.mcmc.metrics.default_metric(A)
     base = {"z": jnp.asarray(0.0), "a": jnp.zeros(3)}
     for idx in range(4):
@@ -298,68 +282,21 @@ def _mixing_report(anisotropic_model, **pathfinder_kwargs):
     return idata, max_rhat, min_ess, per, steps, mcse_mean, mean, var
 
 
-def test_covariance_orientation_mixes_the_anisotropic_target(anisotropic_model):
-    """permuted + covariance: the well-conditioned cell of the 2x2, measured at R-hat 1.002.
+def test_the_default_metric_mixes_the_anisotropic_target(anisotropic_model):
+    """The covariance, in kernel order: measured at R-hat 1.002 on this fixture.
 
     Mean within 4 MCSE of the analytic posterior for every coordinate, max R-hat under the 1.01
     bar, and worst-variable bulk ESS per gradient above 1.0. Squared frequencies are eig(A H) with
     A the array the kernel is handed and H the target Hessian, so A = Cov(q) puts every coordinate
-    at unit frequency and one global eps serves a 1e4 variance spread.
+    at unit frequency and one global eps serves a 1e4 variance spread. (The inverse of the covariance,
+    which was an option until C2, froze at eps 0.013 with max R-hat 12-13 on it: a moment test alone
+    cannot tell the two apart, which is why this one asks for mixing.)
     """
-    idata, max_rhat, min_ess, per, steps, mcse_mean, mean, var = _mixing_report(
-        anisotropic_model, imm_orientation="covariance")
+    idata, max_rhat, min_ess, per, steps, mcse_mean, mean, var = _mixing_report(anisotropic_model)
     for name in mean:
         got = float(idata.posterior[name].mean())
         assert abs(got - mean[name]) <= 4 * float(np.asarray(mcse_mean[name]).reshape(-1)[0]), (
             f"{name}: mean {got:.4g} != {mean[name]:.4g}")
     assert max_rhat < 1.01, f"max R-hat {max_rhat:.4f}, per-variable ESS {per}"
     assert min_ess / (steps * 1000) > 1.0, f"ESS per gradient {min_ess / (steps * 1000):.3f}"
-
-
-def test_precision_orientation_does_not_mix_the_anisotropic_target(anisotropic_model):
-    """permuted + inv(cov): the deciding cell. Ordering is correct here, only the orientation differs.
-
-    Measured (this fixture, 32 chains, 500 warmup, 1,000 draws, seeds 5-7): eps 0.0130-0.0140,
-    max R-hat 12.10-13.08, bulk ESS 32-38 on alpha, delta and zeta and ~33,000 on beta. With
-    A = Cov^-1 the frequency of a coordinate is 1/var, so the tightest coordinate caps the single
-    global eps and every wider coordinate stops moving. This is why the orientation is not merely a
-    tuning preference: at a practical budget it fails the project's own G-A bar (R-hat <= 1.01).
-
-    Asserted as a failure so the finding cannot be silently undone. If it ever passes, the
-    orientation no longer matters on anisotropic targets and WP1's conclusion must be re-examined.
-    """
-    _, max_rhat, min_ess, per, *_ = _mixing_report(
-        anisotropic_model, imm_orientation="precision")
-    assert max_rhat > 2.0 or min_ess < 200.0, (
-        f"precision arm now mixes (max R-hat {max_rhat:.4f}, ESS {per}); re-examine WP1 section 6")
-
-
-def test_ordering_error_collapses_one_coordinate(anisotropic_model):
-    """unpermuted + covariance: the ordering factor in isolation, which is the WP1 P0.
-
-    Same orientation as the good cell, metric left in Pathfinder's tuple order. Measured:
-    max R-hat 1.0069-1.1451 and bulk ESS 166-3,176 on zeta (variance 1e2) while the other three
-    coordinates stay near 30,000. The signature is the opposite of the orientation failure: a wrong
-    permutation misplaces specific coordinates, a wrong orientation flattens every wide one. Both
-    are silent, and both survive a moment test, which is why G-ORDER is a permanent gate.
-    """
-    _, max_rhat, min_ess, per, *_ = _mixing_report(
-        anisotropic_model, imm_orientation="covariance", imm_order="pathfinder")
-    assert max_rhat > 1.01 or min_ess < 10_000, (
-        f"unpermuted metric now mixes (max R-hat {max_rhat:.4f}, ESS {per}); "
-        "the ordering fixture has become insensitive, not that the bug is fixed")
-
-
-def test_default_orientation_is_covariance_and_mixes(anisotropic_model):
-    """The shipped default is the covariance orientation (owner decision, 2026-10-20).
-
-    Pinned by behaviour, not by a string: the default arm must mix an anisotropic target. Evidence
-    behind the flip, all in results/LEDGER.md -- gradients/ESS better on 4 of 4 real models,
-    posterior-mean error halved on GEV (0.059 -> 0.028 sd), R-hat <= 1.01 on GEV in 3 of 5 seeds
-    where precision gives 0 of 5, and G-R1 at C=1,024 passing on 3 of 4 models vs 2 of 4. Accepted
-    cost: GEV divergences 0.025 -> 0.400 per 1k, seed-stable, mechanism still open.
-    If this test goes red the default moved again; change it with the G3 trail, not alone.
-    """
-    _, max_rhat, min_ess, per, *_ = _mixing_report(anisotropic_model)   # no imm_orientation passed
-    assert max_rhat < 1.05, f"default arm is not mixing: max R-hat {max_rhat:.4f}, per-var ESS {per}"
-    assert min_ess > 10_000, f"default arm is not mixing: min bulk ESS {min_ess:.0f}, per-var {per}"
+    assert min_ess > 10_000, f"min bulk ESS {min_ess:.0f}, per-var {per}"

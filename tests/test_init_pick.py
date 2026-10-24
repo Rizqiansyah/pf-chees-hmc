@@ -1,4 +1,4 @@
-"""Tests for stratified chain-start selection.
+"""Tests for stratified chain-start selection (the only start pick since C2 removed ``init_pick="iid"``).
 
 What could silently break: the rank arithmetic running off the end of the subset, duplicates in the
 scored log-densities collapsing the picks onto one row, or the pool index being applied to the wrong
@@ -10,7 +10,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pymc as pm
-import pytest
 
 import pfcheeshmc
 from pfcheeshmc.sampler import _stratified_pool_idx
@@ -41,25 +40,15 @@ def test_more_picks_than_subset_rows_stays_in_bounds():
     assert idx.min() >= 0 and idx.max() < 8
 
 
-def _fit(init_pick):
+def test_the_stratified_pick_produces_the_contract():
     with pm.Model() as model:
         pm.Normal("x", shape=(4,))
-        return pfcheeshmc.sample_pf_chees_hmc(
+        idata = pfcheeshmc.sample_pf_chees_hmc(
             model, draws=30, chains=6, random_seed=3, progressbar=False,
-            chees_kwargs={"draws": 10}, pathfinder_kwargs={"draws": 500, "init_pick": init_pick})
-
-
-def test_stratified_and_iid_both_produce_the_contract():
-    for pick in ("stratified", "iid"):
-        idata = _fit(pick)
-        assert idata.posterior["x"].shape == (6, 30, 4)
-        assert set(["acceptance_rate", "diverging", "energy", "is_accepted", "lp",
-                    "num_integration_steps"]) <= set(idata.sample_stats.data_vars)
-
-
-def test_bad_pick_name_raises():
-    with pytest.raises(ValueError, match="init_pick"):
-        _fit("psis_with_replacement")
+            chees_kwargs={"draws": 10}, pathfinder_kwargs={"draws": 500})
+    assert idata.posterior["x"].shape == (6, 30, 4)
+    assert set(["acceptance_rate", "diverging", "energy", "is_accepted", "lp",
+                "num_integration_steps"]) <= set(idata.sample_stats.data_vars)
 
 
 if __name__ == "__main__":
