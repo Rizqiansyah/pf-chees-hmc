@@ -55,7 +55,9 @@ pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" python -m pytest
    - measurement numbers, with the exact command that produced them;
    - the full-suite result line, **copied from the command's own output**;
    - anything you could not verify, marked `UNVERIFIED`.
-3. **Your final reply is the header only, at most 15 lines.** Do not paste the SUMMARY or diffs; the lead
+   - If the write step refuses the SUMMARY file, do not work around it: put the SUMMARY after the header in your
+     final reply, under a line `--- SUMMARY ---`. The lead commits it verbatim.
+3. **Your final reply is the header only, at most 15 lines** (plus the SUMMARY if the write step refused it). Do not paste the SUMMARY or diffs; the lead
    reads the file only where it needs to. The header has:
    - the branch head sha;
    - the suite line, verbatim;
