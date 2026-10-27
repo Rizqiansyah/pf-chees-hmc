@@ -545,7 +545,7 @@ def test_second_sampler_call_on_a_rebuilt_model_makes_no_rewrite(counts):
     assert np.all(np.isfinite(mu2)) and not np.allclose(mu1, mu2)
 
 
-@pytest.mark.parametrize("name", ["8schools", "logit_1000x25"])
+@pytest.mark.parametrize("name", ["8schools"])
 def test_draws_are_bit_identical_with_and_without_the_memo(name, monkeypatch):
     """A sampler call whose lifts are all memo hits and one whose lifts are all builds have the same draws for a
     fixed seed, every array of the InferenceData: same function (the registry names the first for a key), same

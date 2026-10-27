@@ -28,7 +28,8 @@ from pymc.sampling.jax import get_jaxified_logp
 pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from _helpers import EXTRA, LADDER, LITERALS, LITERALS_INT_RV, literal_models  # noqa: E402
+from _helpers import (  # noqa: E402
+    EXTRA, LADDER, LITERALS, LITERALS_INT_RV, literal_models, m_int_priors, m_mvnormal, m_pm_data, m_poisson, m_truncnorm)
 from benchmarks.models import build_model  # noqa: E402
 
 from pfcheeshmc import lifted  # noqa: E402

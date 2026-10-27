@@ -29,7 +29,7 @@ import blackjax as bj
 from blackjax.mcmc.metrics import LowRankInverseMassMatrix
 from jax.flatten_util import ravel_pytree
 
-from _helpers import PF_ORDER_VAR, mixing_report as _mixing_report
+from _helpers import KERNEL_ORDER_VAR, PF_ORDER_VAR, mixing_report as _mixing_report
 from pfcheeshmc.sampler import PfCheesHMC
 
 

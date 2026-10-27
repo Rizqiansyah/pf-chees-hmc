@@ -13,12 +13,12 @@ of the suite). A case here is one `sample_pf_chees_hmc` call (or a few, or one s
   * chunked loops: several warmup, sampling and transform chunks (the draws do not depend on the chunk sizes, so this file
     is also what the default chunks give);
   * the warmup stop rule firing, the four `imm_source` values, the pool cap;
-  * float32, each in a fresh process with ``floatX=float32``.
+  * float32 (`float32_<model>`: the four ladder models, both init sources): in a fresh process with ``floatX=float32``, run and
+    compared in `test_float32.py` with `assert_golden` below.
 
 What is compared is every posterior and sample_stats array, the numeric attributes (``frozen_step_size``,
 ``frozen_L_nominal``, the gradient counts) and the resolved config, exactly (`np.array_equal`, dtype and shape included).
 """
-import json
 import pathlib
 
 import numpy as np
@@ -29,31 +29,12 @@ import make_golden
 DATA = pathlib.Path(__file__).resolve().parent / "data"
 
 
-def _same(want, got):
-    assert sorted(want) == sorted(got), (sorted(set(want) ^ set(got)))
-    different = []
-    for key in sorted(want):
-        a, b = want[key], got[key]
-        if key.endswith("config"):
-            ok = json.loads(str(a)) == json.loads(str(b))
-        else:
-            ok = a.dtype == b.dtype and a.shape == b.shape and np.array_equal(a, b, equal_nan=True)
-        if not ok:
-            different.append(key)
-    return different
+FLOAT64 = [c for c in make_golden.CASES if make_golden._spec()[c][0] == "float64"]
 
 
-@pytest.mark.parametrize("case", make_golden.CASES)
+@pytest.mark.parametrize("case", FLOAT64)
 def test_the_draws_are_those_of_the_golden_file(case):
-    z = np.load(DATA / f"golden_{case}.npz")
-    want = {k: z[k] for k in z.files}
-    floatx = make_golden._spec()[case][0]
-    got = make_golden.compute(case) if floatx == "float64" else make_golden.compute_in_child(case)
-    different = _same(want, got)
-    assert not different, (
-        f"{len(different)} of {len(want)} arrays of {case} differ from tests/data/golden_{case}.npz: {different[:6]}. "
-        "If the change is meant to alter the draws, regenerate with `python tests/make_golden.py` (all cases, or name them) "
-        "and say in the commit message why the draws change; if not, the change is a bug.")
+    make_golden.assert_golden(case, make_golden.compute(case))
 
 
 def test_every_golden_file_has_a_case_and_every_case_a_file():

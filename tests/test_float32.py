@@ -32,6 +32,8 @@ import pymc as pm
 import pytest
 import scipy.special as sps
 
+import make_golden
+
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent
@@ -104,6 +106,13 @@ def test_the_ladder_model_samples_under_float32(float32_jobs, name):
             assert np.isfinite(value).all(), key
         assert arrays[f"{source}/stats/lp"].dtype == np.float32 and np.isfinite(arrays[f"{source}/stats/lp"]).all()
         assert set(meta["dtypes"][source].values()) <= {"float32", "bool", "int32"}, meta["dtypes"][source]
+
+
+@pytest.mark.parametrize("name", LADDER)
+def test_the_float32_draws_are_those_of_the_golden_file(float32_jobs, name):
+    """The same children, both init sources: every posterior and sample_stats array, the attributes and the config."""
+    _, arrays = float32_jobs[name]
+    make_golden.assert_golden(f"float32_{name}", arrays)
 
 
 @pytest.mark.parametrize("name", LADDER)

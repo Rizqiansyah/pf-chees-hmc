@@ -3,14 +3,16 @@
     python float32_run.py TREE MODEL OUT.npz [--init-sources pf,adapt_diag] [--chains N] [--warmup W]
                           [--x64-after-build]
 
-TREE is the source tree that provides `pfcheeshmc/` and `benchmarks/` (this checkout).
+TREE is the source tree that provides `pfcheeshmc/` and `benchmarks/` (this checkout; `tests/make_golden.py` also runs it on the
+tag `archive/pre-cleanup`, whose models are built by its own ``tools/r1_bias``).
 
 The caller sets ``PYTENSOR_FLAGS`` (``floatX=float32``, or nothing for float64) in this process's environment: PyTensor's
 JAX dispatch sets ``jax_enable_x64 = (floatX == "float64")`` when it is imported, so the type cannot be chosen from
 inside a process that has imported it.
 
 For each init source, one `sample_pf_chees_hmc` call on the model (``benchmarks.models.build_model``). OUT.npz holds every posterior (unconstrained
-variables too) and sample_stats array as ``SOURCE/posterior/NAME`` and ``SOURCE/stats/NAME``, and ``meta`` as JSON:
+variables too) and sample_stats array as ``SOURCE/posterior/NAME`` and ``SOURCE/stats/NAME``, the numeric attributes as
+``SOURCE/attrs/NAME`` and the config as ``SOURCE/config`` (these are the golden files), and ``meta`` as JSON:
 
     floatX, x64_start (after the imports), x64_built (after ``build_model``), x64_end,
     dtypes {SOURCE: {posterior/NAME: dtype}}, config {SOURCE: idata.attrs["config"]},
@@ -42,7 +44,11 @@ import pytensor  # noqa: E402
 
 from pfcheeshmc import sample_pf_chees_hmc  # noqa: E402
 
-from benchmarks.models import build_model  # noqa: E402
+if os.path.isdir(os.path.join(tree, "benchmarks")):  # the tree decides, not an ImportError: PYTHONPATH can put THIS benchmarks/ on an older tree's path
+    from benchmarks.models import build_model
+else:                                                    # a tree before benchmarks/ (the tag): the notebooks' models, built by tools/r1_bias
+    sys.path.insert(0, os.path.join(tree, "tools"))
+    from r1_bias import build_model
 
 meta = {"floatX": pytensor.config.floatX, "x64_start": bool(jax.config.jax_enable_x64), "dtypes": {},
         "warnings": [], "x64_warnings": [], "config": {}, "errors": {}}
@@ -74,5 +80,9 @@ for source in option("--init-sources", "pf").split(","):
             arrays[f"{source}/{label}/{k}"] = np.asarray(v.values)
             meta["dtypes"][source][f"{label}/{k}"] = str(v.dtype)
     meta["config"][source] = idata.attrs["config"]
+    arrays[f"{source}/config"] = np.array(idata.attrs["config"])
+    for k, v in idata.attrs.items():
+        if k != "config":
+            arrays[f"{source}/attrs/{k}"] = np.asarray(v)
 meta["x64_end"] = bool(jax.config.jax_enable_x64)
 np.savez(out, meta=np.array(json.dumps(meta)), **arrays)

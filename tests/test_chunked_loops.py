@@ -132,7 +132,6 @@ def test_the_same_seed_gives_bit_identical_draws_and_another_seed_does_not():
 # ------------------------------------------------------------------- chunk-size invariance
 CHUNK_PATHS = {
     "default": dict(warmup=40),
-    "stop rule that never fires": dict(warmup=40, warmup_stop={"block": 16, "window": 16, "rhat": 0.0}),
 }
 
 

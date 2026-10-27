@@ -14,8 +14,9 @@ TREE is the source tree whose `pfcheeshmc/` is run (default: this checkout). A t
 `archive/pre-cleanup`, a `git archive` of it) builds the ladder models with its own ``tools/r1_bias.build_model``; the tree
 decides which (``os.path.isdir(TREE/benchmarks)``), not an ImportError, because PYTHONPATH can put this checkout's
 `benchmarks/` on an older tree's path. Only options the current sampler keeps are passed, so the cases run on both.
-The float32 cases run in a child process with ``PYTENSOR_FLAGS=floatX=float32`` (PyTensor's JAX dispatch sets
-``jax_enable_x64`` from floatX when it is imported, so the type cannot be chosen from inside a process that has imported it).
+The float32 cases are `tests/float32_run.py` in a child process with ``PYTENSOR_FLAGS=floatX=float32`` (PyTensor's JAX dispatch
+sets ``jax_enable_x64`` from floatX when it is imported, so the type cannot be chosen from inside a process that has imported
+it); `tests/test_float32.py` compares the children it runs anyway with these files.
 """
 import argparse
 import json
@@ -94,8 +95,8 @@ def _spec():
             "warmup_stop": {"block": 10, "window": 10, "rhat": 1e9, "eps_stability": 1e9}}})]),
         "8schools_imm_source": ("float64", [("8schools", 1, pf(imm_source=s)) for s in ("mc", "lbfgs_lowrank", "fisher_lowrank", "pf_closed")]),
         "8schools_pf_pool_cap": ("float64", [("8schools", 1, pf(pf_pool_cap=64, draws=100))]),
-        "float32_8schools": ("float32", [("8schools", 3, pf(init_source=s)) for s in ("pf", "adapt_diag")]),
-        "float32_gev": ("float32", [("gev", 3, pf(init_source=s)) for s in ("pf", "adapt_diag")]),
+        # float32: `tests/float32_run.py` in a child (seed 3, both init sources); compared in `tests/test_float32.py`
+        **{f"float32_{name}": ("float32", None) for name in LADDER},
         # the start repair on its own: a backtrack, a restart, the search from the origin, and GEV's rows on the singularity
         "start_repair": ("float64", None),
     })
@@ -159,6 +160,7 @@ def compute(case, tree=REPO):
     from pfcheeshmc import compiled, sample_pf_chees_hmc
 
     floatx, calls = _spec()[case]
+    assert floatx == "float64", f"{case} is a float32 case: `compute_float32` runs it in a child"
     assert pytensor.config.floatX == floatx, f"{case} needs floatX={floatx}, this process has {pytensor.config.floatX}"
     out = {}
     if calls is None:
@@ -180,24 +182,53 @@ def compute(case, tree=REPO):
     return {k: np.asarray(v) for k, v in out.items()}
 
 
-def compute_in_child(case, tree=REPO):
-    """`compute` in a fresh process with the case's floatX in ``PYTENSOR_FLAGS`` (and a CPU-only environment)."""
+def compute_float32(case, tree=REPO):
+    """A float32 case: `float32_run.py` in a fresh process with ``floatX=float32`` in ``PYTENSOR_FLAGS`` (and a CPU-only
+    environment); its arrays without ``meta``."""
     import tempfile
     import numpy as np
-    floatx = _spec()[case][0]
+    name = case[len("float32_"):]
     flags = [f for f in os.environ.get("PYTENSOR_FLAGS", "").split(",") if f and not f.startswith("floatX=")]
     if not any(f.startswith("blas__ldflags=") for f in flags):
         flags.append(BLAS)
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", JAX_PLATFORMS="cpu", OMP_NUM_THREADS="4", PFCHEESHMC_COMPILATION_CACHE="0",
-               PYTENSOR_FLAGS=",".join([*flags, f"floatX={floatx}"]), PYTHONPATH=str(tree))
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", JAX_PLATFORMS="cpu", OMP_NUM_THREADS="2", PFCHEESHMC_COMPILATION_CACHE="0",
+               PYTENSOR_FLAGS=",".join([*flags, "floatX=float32"]), PYTHONPATH=str(tree))
     env.pop("JAX_PLATFORM_NAME", None)
     with tempfile.TemporaryDirectory() as tmp:
-        done = subprocess.run([sys.executable, str(HERE / "make_golden.py"), "--tree", str(tree), "--out-dir", tmp, case],
-                              env=env, capture_output=True, text=True)
+        out = pathlib.Path(tmp) / "out.npz"
+        done = subprocess.run([sys.executable, str(HERE / "float32_run.py"), str(tree), name, str(out),
+                               "--init-sources", "pf,adapt_diag"], env=env, capture_output=True, text=True)
         if done.returncode != 0:
             raise RuntimeError(done.stderr[-3000:])
-        z = np.load(pathlib.Path(tmp) / f"golden_{case}.npz")
-        return {k: z[k] for k in z.files}
+        z = np.load(out)
+        return {k: z[k] for k in z.files if k != "meta"}
+
+
+def _same(want, got):
+    import numpy as np
+    assert sorted(want) == sorted(got), (sorted(set(want) ^ set(got)))
+    different = []
+    for key in sorted(want):
+        a, b = want[key], got[key]
+        if key.endswith("config"):
+            ok = json.loads(str(a)) == json.loads(str(b))
+        else:
+            ok = a.dtype == b.dtype and a.shape == b.shape and np.array_equal(a, b, equal_nan=True)
+        if not ok:
+            different.append(key)
+    return different
+
+
+def assert_golden(case, got):
+    """`got` (the arrays of a run of `case`) is the golden file of `case`, to the last bit."""
+    import numpy as np
+    z = np.load(DATA / f"golden_{case}.npz")
+    want = {k: z[k] for k in z.files}
+    different = _same(want, got)
+    assert not different, (
+        f"{len(different)} of {len(want)} arrays of {case} differ from tests/data/golden_{case}.npz: {different[:6]}. "
+        "If the change is meant to alter the draws, regenerate with `python tests/make_golden.py` (all cases, or name them) "
+        "and say in the commit message why the draws change; if not, the change is a bug.")
 
 
 def main():
@@ -210,13 +241,8 @@ def main():
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     wanted = args.cases or list(CASES)
-    floatx = os.environ.get("PYTENSOR_FLAGS", "")
     for case in wanted:
-        want32 = _spec()[case][0] == "float32"
-        if want32 != ("floatX=float32" in floatx):                      # another floatX: a child of its own
-            arrays = compute_in_child(case, args.tree)
-        else:
-            arrays = compute(case, args.tree)
+        arrays = compute_float32(case, args.tree) if _spec()[case][0] == "float32" else compute(case, args.tree)
         np.savez_compressed(out_dir / f"golden_{case}.npz", **arrays)
         print(case, len(arrays), "arrays", flush=True)
 
