@@ -73,7 +73,7 @@ def _inject_low_rank_metric(monkeypatch, sigma, rank=1):
                         lambda *a, **k: metric)
 
     def fake_fisher(gdraws, ggrads, max_rank, **kwargs):
-        # Part B's claim: gdraws/ggrads are internally consistent in tuple order, so only the
+        # The claim: gdraws/ggrads are internally consistent in tuple order, so only the
         # *result* may be permuted. Pinned here, not just the output.
         assert jnp.ndim(gdraws) == 2 and gdraws.shape[1] == d
         assert jnp.ndim(ggrads) == 2 and ggrads.shape[1] == d
@@ -158,7 +158,7 @@ def test_kernel_flat_matches_the_kernels_own_ravel(odd_order_model):
 
 
 def test_permuting_factors_equals_permuting_the_expansion():
-    """WP1 permutes the expanded dense matrix; Part B's wording permutes sigma/U first.
+    """WP1 permutes the expanded dense matrix; the alternative wording permutes sigma/U first.
 
     Same map (conjugation by a permutation matrix commutes with D(I + U(L-1)U^T)D), pinned so the
     single code path cannot drift from the spec.
@@ -180,7 +180,7 @@ def test_permuting_factors_equals_permuting_the_expansion():
 def test_kernel_convention_is_ke_half_p_A_p_and_momentum_cov_is_A_inverse(odd_order_model, monkeypatch):
     """Pin the convention, orientation-agnostic: the passed array multiplies p in KE.
 
-    This is the measurement behind the LEDGER entry that challenged Part B §0.1: with A =
+    This is the measurement behind the metric convention (docs/design.md): with A =
     inv(Cov) the sampled momentum variance came out equal to Cov. That fixes what A *means*; it does
     not say which A is the better preconditioner. The frequency consequence (q'' = -A grad U, so
     squared frequencies are eig(A H)) is what the moment test below is sensitive to.

@@ -20,7 +20,7 @@ Releasing compiled programs (F2g, F2j)
 
     The threshold is ``limit // 2 - MODULE_GROWTH``: a module that starts at or under it ends under half the limit.
     ``MODULE_GROWTH`` is the largest growth of the count inside one test module, with a margin. Measured with
-    ``results/f2/probes/mapcount_modules.py``, each of the 32 modules alone in a fresh process (so from empty caches),
+    a probe (``mapcount_modules.py`` at the tag ``archive/pre-cleanup``), each of the 32 modules alone in a fresh process (so from empty caches),
     as its peak minus its start: test_pf_closed_form.py 12,589, test_compile_once.py 12,582, test_chunked_loops.py
     8,584, test_lift_memo.py 6,349, all others under 5,100. In the suite, after a release, the same modules grew 12,286,
     12,271, 8,326 and 6,020. The constant is 16,000, 27% above the largest. At 65,530 the threshold is 16,765. It is

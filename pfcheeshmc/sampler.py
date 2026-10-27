@@ -97,11 +97,11 @@ def default_pool_cap(chains, d):
 
     * Too many rows is a hard failure. The pool is materialised as one operand: 4,096,000 x 175 x 8 B
       = 5,734,400,000 B, exactly the allocation XLA refuses on a 6 GB card at C=1,024 with the
-      production 4,000-draw pool (`results/runs/T1__prodpool.jsonl`: it fits at d=8, not at d=25).
+      production 4,000-draw pool (measured: it fits at d=8, not at d=25).
     * Too few rows is a correctness failure. The same pool is the sample the Monte-Carlo covariance is
       estimated from, so rows must stay large relative to d^2. Capping radon (d=175) at 4C=128 rows at
       C=32 read b2 2.34860 against a 0.07689 floor with split R-hat 1.2121 -- a rank-deficient metric,
-      not merely a slower one (`results/runs/T1__r2_poolcap.jsonl`).
+      not merely a slower one (measured).
 
     `max(4C, 4d^2)` closes both without touching the regime that already works: at C=32, d=175 it is
     122,500 rows, essentially the historical 128,000, while at C=1,024, d=175 it cuts the pool from
@@ -1005,8 +1005,8 @@ class PfCheesHMC:
             # utils.WarmupInfo (the vendored-adapter path) wraps the stacked HMCInfo together with
             # the per-step scalar trace. Everything downstream reads HMCInfo fields
             # (num_integration_steps, is_divergent), so unwrap once at the seam and keep the trace
-            # for whoever wants the growth curve. Found by the integration smoke cell on
-            # pf-r1-int: 'WarmupInfo' object has no attribute 'num_integration_steps'.
+            # for whoever wants the growth curve. Without it:
+            # 'WarmupInfo' object has no attribute 'num_integration_steps'.
             self._warmup_trace = getattr(chees_info, "trace", None)
             chees_info = chees_info.info
 
@@ -1479,7 +1479,7 @@ def sample_pf_chees_hmc(
     arviz.InferenceData
     """
     # Keep the compiled programs on disk for the next Python process, unless the user opted out or set a JAX cache of
-    # their own (README, "Keeping the compiled programs between Python processes"); does nothing after the first call.
+    # their own (README, "Compile once, and the disk cache"); does nothing after the first call.
     ensure_default_compilation_cache()
     _warn_if_x64_contradicts_floatx()
 

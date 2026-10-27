@@ -491,10 +491,11 @@ packages:
   requires_dist:
   - blackjax>=1.7.0
   - pymc>=5.0,<6.0
-  - jax[cuda13]>=0.9.0
+  - jax>=0.9.0
   - optax>=0.2.3
   - arviz>=0.17.0
   - tqdm>=4.66.0
+  - jax[cuda13]>=0.9.0 ; extra == 'cuda13'
   requires_python: '>=3.11'
 - pypi: https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl
   name: defusedxml

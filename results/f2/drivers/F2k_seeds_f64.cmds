@@ -1,3 +1,0 @@
-# F2k: 8schools at W=25 over 10 more seeds, float64, to tell a float32
-# effect from the short warmup's own seed failures. Pair: F2k_seeds_f32.cmds.
-f64 --models 8schools --chains 1024 --draws 10 --warmups 25 --seeds 4,5,6,7,8,9,10,11,12,13 --repeat 1 --arm f2k:float64 --wp F2 --step F2k

@@ -98,7 +98,7 @@ def chees_warmup_with_progress(
     stop_rule=None,            # None = fixed num_steps, identical to the previous behaviour.
                              #     Measured net negative on all four ladder models (block
                              #     boundaries cost 6.7-9.0 s, more than any warmup saving);
-                             #     kept opt-in for instrumentation, see docs/ladder-results.md
+                             #     kept opt-in for instrumentation
     single_step_iters=0,       # run L=1 for this many steps while the step size settles
 ):
     """ChEES warmup, as host-driven chunks of ONE jitted program (`compiled.warmup_chunk`).
