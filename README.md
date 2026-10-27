@@ -1,159 +1,145 @@
 # pf-chees-hmc
-A Pathfinder-ChEES-HMC sampler using BlackJAX backend, compatible with PyMC model.
 
-# ChEES-HMC vs. NUTS (or Why Use ChEES-HMC?)
-The No-U-Turn sampler (NUTS) is a common and ubiquotous general purpose posterior sampling method that is the default if you use a PyMC model with continuous priors and likelihood.
-It's a variant of the Hamiltonian Monte Carlo (HMC), with a main advantage that it avoids the need to tune the step size ($\epsilon$) and trajectory length ($L$) parameters in HMC, which is notoriously difficult and time consuming to do.
-However, NUTS require substantial overhead in its computation, and it is not suitable for GPU acceleration.
+A Pathfinder-ChEES-HMC sampler for PyMC models, built on JAX and BlackJAX. `sample_pf_chees_hmc` takes a PyMC model with continuous variables and returns an `arviz.InferenceData`.
 
-ChEES-HMC, proposed in [1], tunes the HMC step size ($\epsilon$) and trajectory length ($L$) automatically during the warm up phase. *ChEES* is the **Ch**ange in the **E**stimator of the **E**xpected **S**quare criterion that the method maximises (section 2.2 and Algorithm 1 of [1]). Note that ChEES adapts $\epsilon$ and $L$ only — it does not adapt the mass matrix, which is why this implementation takes that from Pathfinder. That statement is about the part of BlackJAX this package calls: it uses BlackJAX's private `chees_adaptation.base()`, which adapts step size and trajectory length and holds the metric fixed. BlackJAX's public `chees_adaptation(...)` builder has an optional `mass_matrix_estimation="diagonal"` (a Welford estimator that engages over the latter part of warmup) which this package does not use.
-HMC itself is suitable for GPU acceleration, and has less computational overhead compared to NUTS.
-This allows posterior sampling efficiently using GPU(s).
+## Why ChEES-HMC, and why many short chains
 
-NUTS is usually run over a small number of long chains, usually with the number of chains equal to the number of CPU cores available.
-In contrast, ChEES-HMC can be run over a lot of short chains simultaneously in a GPU (or multiple GPUs).
-This means that ChEES-HMC has the potential to sample much faster as the chains are shorter (for the same amount of effective sample size compared to NUTS).
+NUTS adapts the trajectory length of every transition by branching, which is hard to run in lock step on a GPU. ChEES-HMC [1] instead tunes the step size and one trajectory length during warmup (ChEES, the Change in the Estimator of the Expected Square, is the criterion it maximises), then runs plain HMC with those values. Every chain does the same work at each step, so thousands of chains cost little more than a few. ChEES adapts the step size and trajectory length only, not the metric; this package takes the metric from Pathfinder. It calls BlackJAX's `chees_adaptation.base()`, not the public `chees_adaptation(...)` builder.
 
-# Implementation
-The Pathfinder-ChEES-HMC sampler follows these steps:
-1. Initialize the starting point using `adapt_diag` from `pymc` (the default initialization for NUTS in PyMC)
-2. Use the Pathfinder algorithm (with some jitter) to find a better initial starting point and mass matrix.
-3. Perform short HMC runs to tune the $\epsilon$ parameter.
-4. Perform ChEES adaptation to tune the $\epsilon$, $L$, initial starting point, and other HMC parameters.
-5. Run a Dynamic HMC using the tuned parameters from ChEES (Step 4) and mass matrix from the Pathfinder algorithm (Step 2)
+The sampler runs these steps:
+1. Start points from PyMC's `adapt_diag` initialisation, repaired where the log-density or its gradient is not finite.
+2. Pathfinder (with jitter) for better starts and a mass matrix.
+3. A short search for the initial step size.
+4. ChEES warmup: step size, trajectory length and starts.
+5. Dynamic HMC with the frozen step size, the trajectory length, and the Pathfinder metric.
 
-# Installation
+## Install
 
-Requires Python 3.11+ (the floor set by BlackJAX 1.7). The repository ships a [pixi](https://pixi.sh) workspace that pins the GPU stack:
+Python 3.11+ (the floor of BlackJAX 1.7). The repository ships a [pixi](https://pixi.sh) workspace that pins the GPU stack:
 
 ```
 pixi install          # solve and create ./.pixi/envs/default
-pixi run gpu-check    # must print: [CudaDevice(id=0)]
-pixi run vram         # GPU name and memory
-pixi run python       # or: pixi run jupyter lab
+pixi run gpu-check    # prints the JAX version and the devices
 ```
 
-With pip instead, install the package and then a CUDA-enabled JAX:
+With pip: `pip install .` gives CPU JAX; `pip install ".[cuda13]"` installs `jax[cuda13]` (driver >= 580, SM 7.5+ GPU). BlackJAX >= 1.7 is required (the sampler uses its internals). `pixi.toml` keeps numpy below 2.5 and numba at 0.66.0.
 
-```
-pip install .
-pip install -U "jax[cuda13]"      # GPU on Linux
-```
+## Quick start
 
-# Versions and pins
+```python
+import pymc as pm
+from pfcheeshmc import sample_pf_chees_hmc
 
-- **jax / jaxlib >= 0.9, `cuda13` extra.** Needs driver >= 580 and an SM 7.5+ GPU. CUDA 12 wheels also work (driver >= 525, SM 5.2+) but are on the documented deprecation path. No system CUDA toolkit is required; the runtime ships inside the wheels.
-- **blackjax >= 1.7.0.** This sampler calls BlackJAX internals (`chees_adaptation.base`, `dynamic_hmc.build_kernel`, `dynamic_hmc.halton_sequence`, `mcmc.dynamic_hmc.as_top_level_api`). BlackJAX 1.7 changed the ChEES `update()` signature (it now requires the diagonal inverse mass matrix) and replaced the kernel's `trajectory_length_adjusted` kwarg with `integration_steps_params`.
-- **numpy is held below 2.5.** NumPy 2.5 removed `np.row_stack` and `np.trapz`; numba <= 0.66 registers overloads for them at import time, and numba >= 0.67 (which guards them) is outside PyTensor's `numba<=0.66` cap. Without this pin the resolver silently picks the pre-release `numba 0.63.0b1` and PyMC fails to import. See the comments in `pixi.toml`.
-
-# Testing
-
-```
-pixi run python tests/test_inference_data.py
+with pm.Model() as model:
+    ...                                   # priors and likelihood
+    idata = sample_pf_chees_hmc(draws=10, chains=1024, random_seed=42)
 ```
 
-A few seconds, CPU only, no MCMC. It pins the `sample_stats` contract in `# Output` below.
+`idata` is a normal `arviz.InferenceData`. Pass `random_seed`: without it the seed is the current date. Stage options are forwarded as dicts: `pathfinder_kwargs`, `step_size_tune_kwargs`, `chees_kwargs`, `dynamic_hmc_kwargs`; a key a stage does not read raises a `TypeError` that names it. `progressbar=False` silences the bars. The examples are in `examples/`.
 
-The whole suite runs in one process (`pytest tests`, about 12 minutes on CPU). `tests/conftest.py` releases the compiled programs after a test module once the process holds more than 16,765 memory mappings (a process may hold at most `vm.max_map_count`, 65,530 by default, and every compiled XLA program takes dozens; the threshold is half the limit less the largest growth of one module, and the suite's peak is about 23,000) and switches the default compilation cache off for the session (see "Keeping the compiled programs between Python processes").
+**Output.** `posterior` is in problem space, including `pm.Deterministic` variables. `sample_stats` has exactly `lp`, `diverging`, `acceptance_rate`, `is_accepted`, `energy` and `num_integration_steps`; `lp` is the log-density of the sampled state, as PyMC's JAX samplers emit it. `idata.attrs` records the resolved configuration, `frozen_step_size` and `frozen_L_nominal` (`tests/test_inference_data.py` pins the contract).
 
-# Use
-See the `examples/` folder for some examples. In short
-```
-# Define your PyMC model here
-with pymc.Model() as model:
-  # Define prior ...
-  # Define likelihood
-  # Call the sampler
-  trace = sample_pf_chees_hmc(draws=2000, chains=128, random_seed=42)
+## Choosing chains, draws and warmup
 
-#Postprocess the trace with arviz, as usual
-```
+With many short chains (about 1,024 chains and 10 draws) split R-hat measures the estimator, not the sampler, so the acceptance test here is **bias against a long NUTS run**: `b2_max < 0.01`, where `b2` is the squared difference of the ensemble mean and the reference mean over the reference variance, for `x` and `x^2` in the unconstrained space (`benchmarks/README.md`, "The R1 gate"). The warmup length is `chees_kwargs={"draws": W}` (default 2,000); the number of chains and of draws are the arguments `chains` and `draws`.
 
-Pass `random_seed`: if it is omitted the seed defaults to the current date, so the run is not reproducible.
+At 1,024 chains and 10 draws these warmups pass on seeds 1 to 3 (RTX A2000, 2026-10-23):
 
-**Chain count is the cheapest performance lever.** On an RTX A2000 the wall time per transition is flat from 32 to 256 chains (+2%), while ESS grows linearly with the number of chains, so more chains are nearly free until memory runs out. Measured on the 8 Schools example (2000 draws, 2,000 ChEES warmup, warm median of 5 seeds): 45,614 ESS/s at 32 chains and 134,898 ESS/s at 128. Sample histories are kept as `chains × draws × dim`, so raise `chains` with the model dimension in mind. **pf-r1 caveat:** the ESS/s values predate the RNG stage-key fix (superseded by 41,568 / 133,824 in `docs/ladder-results.md`, "Measurement caveats that matter") and the GPU arm ran on the shipped metric, which fails the R̂ ≤ 1.01 bar on GEV (LEDGER `c2993cf`; `a03dc0f`); the flat-wall fact is metric-independent throughput, the ESS/s and chain-scaling statements are re-measurement pending.
-
-**How that compares to `pm.sample` on the same machine.** Best CPU configuration we could build on a 32-core box was 32 chains of NUTS: 37,494 ESS/s on 8 Schools and 6,733 on the GEV example. So the GPU is about 3.6x and 2.6x at 128 chains, and only ~1.2x at 32. For a small one-shot job CPU still finishes sooner (9.5 s versus 15.0 s), and its cold start is far lower — the GPU advantage is samples per second, not time-to-first-answer on tiny models. **pf-r1 caveat:** every GPU number in this comparison is on the shipped metric arm, which fails the project's own R̂ ≤ 1.01 bar on GEV (LEDGER `c2993cf`; orientation retraction `a03dc0f`); the direction of the device recommendation may move per model once the corrected arm lands, and the equal-draw walls are re-measurement pending.
-
-**Compile once per model structure.** A call compiles its XLA programs the first time it meets a model structure, set of array shapes, chain count and sampler settings, and nothing after that in the same Python process. A new seed, new data values, new prior values, a longer or shorter warmup (`chees_kwargs={"draws": ...}`) or another number of draws, all at the same shapes, compile nothing: data, priors, the metric, the step size and the trajectory length are runtime arguments of the compiled programs, not constants inside them (`tests/test_compile_once.py` counts 0 XLA compiles and 0 PyTensor function compiles on a second call). Rebuilding the model object for each dataset is fine: a rebuilt model is recognised as the same structure, which costs 0.05-0.14 s per call on the four example models instead of 0.16-0.54 s. A new array shape (more observations, more groups), another chain count or another model structure compiles once. Measured on CPU (JAX CPU backend, 32-core host), 1,024 chains, 10 draws, 25 warmup, with `pixi run python benchmarks/warm_stages.py . MODEL 1024 10 25 --calls 3`: the first call in a process, then the mean of calls 2-3 with a new seed each:
-
-| model | first call | calls 2-3 |
+| model | W | `b2_max`, seeds 1 / 2 / 3 |
 |---|---|---|
-| 8 Schools | 13.5 s | 0.39 s |
-| GEV | 17.8 s | 1.0 s |
-| logistic 1000x25 | 11.9 s | 3.2 s |
-| radon non-centered | 16.9 s | 4.6 s |
+| 8 Schools | 25 | 0.0007 / 0.0007 / 0.0018 |
+| GEV (Port Pirie) | 25 | 0.0014 / 0.0003 / 0.0002 |
+| logistic regression, 1000 x 25 | 50 | 0.0039 / 0.0045 / 0.0011 |
+| radon, non-centered | 300 | 0.0032 / 0.0025 / 0.0031 |
 
-Most of the first call is XLA compilation, and most of the later calls is the sampler's own work; radon's later calls depend on the trajectory length ChEES settles on for that seed (3.6-5.5 s). GPU figures for the same shapes are pending the F2f measurement. Quote first-call or later-call timings, not both interchangeably.
+Command, one model (`gpu_run.sh` is the GPU lock; on the CPU drop it and set `JAX_PLATFORMS=cpu`): `benchmarks/gpu_run.sh pixi run python benchmarks/bias.py --models 8schools --chains 1024 --draws 10 --warmups 25 --seeds 1,2,3`. To scan warmups for your own model, pass `--warmups 10,25,50`; a model of your own needs its own NUTS reference (`benchmarks/make_reference.py`).
 
-**Optional metric upgrade:** `pathfinder_kwargs={"imm_source": "fisher_lowrank"}` builds the metric from Pathfinder draws and their gradients (BlackJAX's Fisher score, low-rank) instead of the draw covariance. It is not a default, because it is not uniformly better — measured at 32 GPU chains, 2,000 draws: **1.22×** on 8 Schools, **1.96×** on logistic 1000x25, and **0.19×** on radon non-centered, with R-hat unchanged on the healthy models. The tell is `num_integration_steps` in `sample_stats`: if the realised trajectory length jumps from tens of steps to hundreds, the metric is wrong for the model and you are paying for it. `lbfgs_lowrank` reuses the L-BFGS factors Pathfinder already fitted at no extra cost. **pf-r1 caveat:** that A/B compared arms that never shared a metric orientation — `mc` feeds M⁻¹ while the low-rank arms feed ≈Σ into the same kernel slot (LEDGER `9f892b2`) — from a baseline on the orientation the 2×2 fixture shows failing (LEDGER `a03dc0f`, confirmed on GEV at `c2993cf`); the ratios and the step-jump tell are re-measurement pending on one explicit convention. The option itself stands; the numbers do not.
+## Performance
 
-**Turn the progress bars off in scripts:** `sample_pf_chees_hmc(..., progressbar=False)` silences the bars, which is what you want in scripts and logs. The bars are drawn by the host between chunks of the compiled warmup and sampling loops, not from inside them, so on or off the compiled programs are the same and the flag does not change compile cost (`tests/test_compile_once.py`, `tests/test_progressbar.py`).
+One call of the sampler against one call of PyMC NUTS with 32 chains on 32 cores, each at settings that pass the gate above on three seeds (NUTS: 200 tuning steps, and 250, 100, 250 and 800 draws per chain for the four models). GPU: RTX A2000 6 GB, 1,024 chains, 10 draws, calls 2 and 3 of one process (nothing compiles; new data costs the same). Both sides 2026-10-23.
 
-**Warmup length: 2,000 is enough for these models; 10,000 was not.** Measured on both examples (2000 draws, 32 chains, warm median of 5 seeds, RTX A2000):
+| model | GPU, one call | CPU NUTS, one call | ratio |
+|---|---|---|---|
+| 8 Schools | 0.23 s | 3.42 s | 15x |
+| GEV | 0.55 s | 5.16 s | 9.4x |
+| logistic 1000 x 25 | 1.43 s | 9.68 s | 6.8x |
+| radon, non-centered | 4.8 to 7.4 s | 18.3 s | 2.5 to 3.8x |
 
-| model | warmup | wall | ESS/s | max R-hat | divs /1k draws | tail-ESS |
-|---|---|---|---|---|---|---|
-| 8 Schools | 1,000 | 10.4 s | 48,014 | 1.0011 | 0.008 | 30,227 |
-| 8 Schools | 2,000 | 12.1 s | 39,624 | 1.0012 | 0.024 | 31,743 |
-| 8 Schools | 10,000 | 22.4 s | 21,082 | 1.0014 | 0.008 | 32,436 |
-| GEV | 1,000 | 12.1 s | 1,469 | **1.0680** | 0.039 | **583** |
-| GEV | 2,000 | 16.2 s | 6,486 | 1.0052 | 0.125 | 8,163 |
-| GEV | 10,000 | 50.9 s | 3,672 | 1.0009 | 0.438 | 24,048 |
+Commands. GPU: `benchmarks/gpu_run.sh pixi run python benchmarks/warm_stages.py . MODEL 1024 10 W --calls 3` (W from the table above). CPU NUTS: `pixi run python benchmarks/nuts_cpu.py --models MODEL --tune 200 --draws N --seeds 1,2,3`, the `wall_s` of one `pm.sample` call. Radon's GPU time is the range of four warm calls: it depends on the trajectory length ChEES settles on for the seed. In a **fresh process** the first call matters: with the disk cache warm (next section) the first GPU call took 3.6 s (8 Schools), 6.2 s (GEV), 4.9 s (logistic) and 9.6 s (radon) on 2026-10-24, with the command under "Disk cache" on the GPU and `--new-data 100`, against 4.2, 5.9, 10.0 and 18.9 s for the first NUTS call of a fresh process whose PyTensor C cache is warm (2026-10-23, the first row of `nuts_cpu.py`).
 
-**pf-r1 caveat on this table and the heading's conclusion:** the quality columns (R̂, tail-ESS) and the walls were measured on the shipped metric arm, which fails the R̂ ≤ 1.01 bar on GEV itself (LEDGER `c2993cf`; orientation retraction `a03dc0f`), and the GEV rows additionally carry a coordinate permutation. The numbers stand as measured; the heading's "2,000 is enough; 10,000 was not" and the floor guidance below are re-measurement pending, with the warmup floor to be re-derived by the bias gate (b²_max < 0.01 against the CPU NUTS reference) rather than split-R̂. The 2,000-versus-10,000 posterior comparison (0.49 / 0.70 sigma, sds within 0.6%) is a same-metric A/B and stands.
+## Compile once, and the disk cache
 
-Do not go as low as 1,000: on GEV the frozen trajectory length collapsed to 6.2 leapfrog steps, R-hat went to 1.068 and tail-ESS to 583 — ChEES had not learned the trajectory length (pf-r1: CONFOUNDED with the mechanism now stated — that GEV cell ran on the failing metric, LEDGER `c2993cf`; `a03dc0f`, and the frozen-L collapse is adapter-dependent, plan §0.3; re-measurement pending). At 2,000 the posterior is indistinguishable from 10,000: worst per-variable difference 0.49 sigma (8 Schools) and 0.70 sigma (GEV), posterior sds within 0.6%. More chains also means less needed warmup, since ChEES pools statistics across all chains — **retracted (pf-r1)**: the plan's superseded-beliefs list (A2) removes this claim, and the warmup × chains grid it leaned on measures the short-chain split-R̂ artifact (plan §2b) on the failing metric arm (LEDGER `c2993cf`; `a03dc0f`). The replacement, pending, is the bias-based W: plan §2e reaches b²_max < 0.01 at W=100 on 8 Schools through the public API at 1024 × 10 chains.
+A call compiles its XLA programs the first time it meets a model structure, a set of array shapes, a chain count and sampler settings, and nothing after that in the same Python process. A new seed, new data, new prior values, a longer or shorter warmup or another number of draws, at the same shapes, compile nothing: data, priors, the metric, the step size and the trajectory length are arguments of the compiled programs. Rebuilding the model object for each dataset is fine; a rebuilt model is recognised as the same structure. A new shape, chain count or model structure compiles once (design: `docs/design.md`; test: `tests/test_compile_once.py`).
 
-Stage-specific options are forwarded as dicts: `pathfinder_kwargs`, `step_size_tune_kwargs`, `chees_kwargs`, `dynamic_hmc_kwargs`.
+`benchmarks/warm_stages.py . MODEL 1024 10 W --calls 3` prints, per call, the wall time and the XLA programs and PyTensor functions compiled. CPU (Xeon Platinum 8280L, `OMP_NUM_THREADS=4`, load below 1, 2026-10-28); calls 2 and 3 compile 0 and 0:
 
-For use with GPU sampling, see also the `examples/` folder.
+| model | W | first call | call 2 / call 3 |
+|---|---|---|---|
+| 8 Schools | 25 | 10.2 s | 0.29 / 0.31 s |
+| GEV | 25 | 12.3 s | 1.33 / 1.71 s |
+| logistic 1000 x 25 | 50 | 11.3 s | 4.46 / 4.41 s |
+| radon, non-centered | 300 | 43.4 s | 33.6 / 23.2 s (varies with the trajectory length) |
 
-## Keeping the compiled programs between Python processes (on by default)
+**The disk cache is on by default.** The first call in a new Python process compiles everything again unless JAX can read the programs from disk. The cached programs hold no data and no prior values, so a new dataset at the same shapes reads the old one's entries. Fresh processes, CPU, 8 Schools, 1,024 chains, 10 draws, W=25, same host and date, running `benchmarks/warm_stages.py . 8schools 1024 10 25 --calls 1 --cache-dir DIR` twice with an empty `DIR`: 10.8 s writing the cache, then 2.8 s reading it (123 of 123 hits; 1.4 MB, 122 files). Without a cache the first call was 10.2 s (table above). On the GPU, run the same command under `gpu_run.sh` with `PFCHEESHMC_COMPILATION_CACHE=1 XDG_CACHE_HOME=DIR`, no `--cache-dir`, and `--new-data 0` the first time, `--new-data 100` the second.
 
-Compile-once holds inside one Python process. The first call in a new process compiles every program again, 10.6 s of a 13.5 s first call for 8 Schools at 1,024 chains on CPU. JAX can keep the compiled programs in a directory and read them back in the next process, and since F2g `sample_pf_chees_hmc` does so **by default**, the way PyTensor keeps its compiled C code in a per-user directory (`~/.pytensor`):
+- **Where:** `pfcheeshmc.default_compilation_cache_dir()`, `${XDG_CACHE_HOME:-~/.cache}/pfcheeshmc/jax`, created mode 0700. It is set at the start of each `sample_pf_chees_hmc` call, not at import and not by the class API. If the directory belongs to someone else, is group- or world-writable, or cannot be created, the cache stays off with a `RuntimeWarning`. A compilation cache is trusted code: do not point it at a directory others can write to.
+- **It is process-wide.** After the first sampler call every JAX program compiled in the process, yours or another library's, is cached there.
+- **Your choice wins.** If a JAX cache directory is set (`JAX_COMPILATION_CACHE_DIR`, `jax.config`, `set_cache_dir`) or `jax_enable_compilation_cache` is off, no JAX setting is touched. Turn the default off with `PFCHEESHMC_COMPILATION_CACHE=0`, read at the call. `pfcheeshmc.enable_compilation_cache(path)` picks a directory and also sets JAX's two thresholds to 0 s and no minimum size, because JAX otherwise writes only programs that took over a second.
+- **Size and cleaning:** no limit is set (with JAX's `jax_compilation_cache_max_size` JAX scans the whole directory on every write). The directory grows by one model structure's programs per set of shapes and chain count, not per dataset. It is safe to delete at any time. If a process was killed while writing, JAX warns `Error reading persistent compilation cache entry` and compiles instead.
+- **Measuring:** `benchmarks/warm_stages.py` and `benchmarks/bias.py` turn the default off (unless `PFCHEESHMC_COMPILATION_CACHE` is set) so that a first call is cold.
 
-- **Where:** `${XDG_CACHE_HOME:-~/.cache}/pfcheeshmc/jax` (`pfcheeshmc.default_compilation_cache_dir()` returns it; a relative or empty `XDG_CACHE_HOME` is ignored, as the XDG convention says). It is created owner-only (mode 0700). If it exists already and belongs to someone else or can be written by group or others, or cannot be created, the cache stays off and a `RuntimeWarning` says why; a failure to cache never fails a sampler call.
-- **When:** at the start of each `sample_pf_chees_hmc` call, once per process. **Importing `pfcheeshmc` changes no JAX setting** (`tests/test_compilation_cache.py` diffs `jax.config`), and the class API (`PfCheesHMC(...).sample`) does not switch it on.
-- **The global effect:** JAX's compilation cache is process-wide. The call sets `jax_compilation_cache_dir` to the directory above and the two thresholds below, so **after the first sampler call every other JAX program compiled in the process, yours or another library's, is cached there too** (the thresholds make that include the very small ones), and is read back by the next process that uses the directory. Programs compiled before the first sampler call are not cached (they have compiled already); JAX takes the directory at the next compile, whatever was compiled before (tested).
-- **Your own choice always wins.** If a JAX cache directory is set already (`JAX_COMPILATION_CACHE_DIR`, `jax.config.update("jax_compilation_cache_dir", ...)` or `jax.experimental.compilation_cache.set_cache_dir`), or `jax_enable_compilation_cache` is off, **no JAX setting is touched**: your directory, thresholds and size limit stay as they are, and our directory is not created. The default moves a threshold only if it is still at JAX's own default, and never sets `jax_compilation_cache_max_size`. (With JAX's default thresholds only 3 of 134 programs of a first call are kept, so a directory set without the thresholds below helps little; see the next paragraph.)
-- **Turn it off:** set the environment variable `PFCHEESHMC_COMPILATION_CACHE=0` (`false`, `no` and `off` also count, in any case) before the sampler call: in the shell, or in a script with `os.environ["PFCHEESHMC_COMPILATION_CACHE"] = "0"` anywhere before the first call. It is read at the call, not at import. Nothing is created and no JAX setting is touched. `tests/conftest.py` sets it for the whole test session, so the tests are hermetic and write nothing into your home directory.
-- **Choose the directory yourself:** `pfcheeshmc.enable_compilation_cache("/some/writable/dir")`, at any time, whatever the variable says. It replaces the default if a call has switched that on already. It sets three JAX settings and nothing else: `jax_compilation_cache_dir`, `jax_persistent_cache_min_compile_time_secs = 0` and `jax_persistent_cache_min_entry_size_bytes = -1` (no minimum size, and no platform override of it). JAX's own environment variables do exactly the same without code: `JAX_COMPILATION_CACHE_DIR=/some/writable/dir JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0 JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES=-1`. The directory alone is not enough: JAX writes a program only if it took at least 1 s to compile, and nearly all of this sampler's programs take less (8 Schools at 1,024 chains: 3 of 134 programs reach 1 s, so the directory alone gives 8.2 s for the warm first call against 3.4 s with all three settings, `JAX_COMPILATION_CACHE_DIR` alone on `benchmarks/warm_stages.py . 8schools 1024 10 25 --calls 1`).
+## Other metric sources
 
-Measured on CPU, one first call in a fresh process, 1,024 chains, 10 draws, 25 warmup (`benchmarks/warm_stages.py . MODEL 1024 10 25 --calls 1 --cache-dir DIR`, run three times: without `--cache-dir`, then twice with a new empty `DIR`; `warm_stages` turns the default cache off so that its first call is cold, see its docstring):
+`pathfinder_kwargs={"imm_source": ...}` chooses how the mass matrix is built. The default, `mc`, is the covariance of the Pathfinder draws, and it is the one the bias gate above covers. The alternatives are `pf_closed` (the closed-form Pathfinder covariance), `lbfgs_lowrank` (the L-BFGS factors Pathfinder already fitted) and `fisher_lowrank` (a low-rank metric from the gradients at Pathfinder draws, BlackJAX's `fisher_score_low_rank`). All hand the kernel a posterior covariance. No performance claim is made for them. If you try one, watch `num_integration_steps` in `sample_stats`: a jump from tens of steps to hundreds means the metric does not suit the model.
 
-| model | no cache | cache cold (writes it) | cache warm | cache size |
+## float32 on the GPU: opt-in, and check the result
+
+float32 is **off by default and is not a safe replacement for float64.** It is much faster on some models and fails on others, and the failure can be silent. Use it only after comparing it with float64 on your model.
+
+**Switch it on** with PyTensor's flag, set before PyTensor is imported (in the shell, or in Python before `import pymc`):
+
+```
+PYTENSOR_FLAGS="floatX=float32,blas__ldflags=-llapack -lblas -lcblas -lm" python my_script.py
+```
+
+The `blas__ldflags` part is for a checkout whose path contains a space; the benchmark scripts add it themselves. PyTensor's JAX backend then turns `jax_enable_x64` off. **Do not enable `jax_enable_x64` yourself**: the log-density becomes float64 at a float32 position, L-BFGS can fail with "cond branches must have equal output types", and the sampler warns ("floatX is float32 but jax_enable_x64 is on", a `RuntimeWarning`). A notebook that starts with `jax.config.update("jax_enable_x64", True)` must drop that line.
+
+**Measured speed-ups**, one call at 1,024 chains and 10 draws, calls 2 and 3 of one process, RTX A2000, 2026-10-24:
+
+| model | W | float64 | float32 | ratio |
 |---|---|---|---|---|
-| 8 Schools | 13.5 s | 14.0 s | 3.4 s | 1.5 MB, 133 files |
-| radon non-centered | 16.9 s | 17.6 s | 9.5 s | 1.8 MB, 138 files |
+| logistic 1000 x 25 | 50 | 1.39 s | 0.18 s | 7.7x |
+| radon, non-centered | 300 | 6.42 s | 2.06 s | 3.1x |
 
-XLA compile time in the warm run is 0.6 s (8 Schools) and 1.0 s (radon) instead of 10.6 s and 8.6 s. Radon's warm call is dominated by running the warmup and the sampler (4.0 s and 1.7 s for this seed), not by compiling. The default cache gives the same: 8 Schools, one fresh process after another with an empty `XDG_CACHE_HOME=DIR PFCHEESHMC_COMPILATION_CACHE=1 benchmarks/warm_stages.py . 8schools 1024 10 25 --calls 1` (the tool turns the default off unless the variable is set), 13.8 s for the first (130 compile requests, 129 written, 1.3 MB), 3.4 s for the second (130 of 130 hits), and 3.5 s for a process with new observed data at the same shapes (`--new-data`, 130 of 130 hits). On the GPU (RTX A2000, 1,024 chains, 10 draws, each model at its smallest passing warmup: 25, 25, 50 and 300), a fresh process with new observed data and the default directory warm makes its first call in 3.6 s (8 Schools), 6.2 s (GEV), 4.9 s (logit, 1,000 x 25) and 9.6 s (radon non-centered), every compile request a hit, against 17.0-44.5 s without the cache (`results/f2/F2g/SUMMARY.md`; the explicit helper gives the same, F2f).
+Command, once with and once without the `PYTENSOR_FLAGS` above: `benchmarks/gpu_run.sh pixi run python benchmarks/warm_stages.py . MODEL 1024 10 W --calls 3`. On these two models the bias gate passes on seeds 1 to 3 with step size and trajectory length like float64's (same date and card, the `bias.py` command under "Choosing chains", with the flag).
 
-What it covers, and what it does not:
+**Where it fails** (same `bias.py` command, with the flag):
+- **GEV, `--models gev --warmups 25`:** the step size collapses. The frozen step size was 3e-5 to 9e-3 on seeds 1 to 3 (float64: about 0.5) and max R-hat 57 to 112. The chains barely move from their Pathfinder starts, so `b2_max` can pass although the sampler is not sampling. The warm call is slower than float64 (0.75 s against 0.47 s).
+- **8 Schools, `--warmups 25 --seeds 1,2,...,13`:** 2 of 13 seeds failed the gate with float32 (seeds 1 and 4, `b2_max` 0.014 and 0.019, trajectories of 14 to 15 steps, max R-hat 2.4), against 0 of 13 with float64.
 
-- **Covered:** the XLA compilation of every program of a sampler call (the warmup and sampling loops, the Pathfinder fit, the step-size search, the log-density, the transform). The cached programs hold no data and no prior values, so a **new dataset or new priors at the same shapes use the cache of the old ones**; a new shape, chain count or model structure writes new entries. A fresh-process test pins this (`tests/test_compilation_cache.py`): the second process rebuilds the model with new data and priors, and every one of its compile requests but one (see *Order* below) is a cache hit.
-- **Not covered:** JAX still traces each function and lowers it to StableHLO in every new process (about 2 s for 8 Schools), and PyMC and PyTensor still build their graphs (0.05-0.14 s per call). The warm 8 Schools call above is 3.4 s for these reasons and for running the sampler.
-- **Size:** the default directory has **no size limit**. It grows by about 1.5-4.6 MB per distinct model structure, set of array shapes and chain count (133-138 files each on the CPU examples; 2.9-4.6 MB per model on the GPU, F2f), not per dataset. JAX can bound a cache (`jax_compilation_cache_max_size`, bytes; least recently used entries go first, and it evicts correctly on JAX 0.11.2), but it scans every file in the directory at every write: 33 microseconds per file already there, measured, so writing the 135 programs of one new model costs 4.5 s per 1,000 files in the directory (22 s at 5,000, which is about 37 models) on top of the compile. A limit large enough to be useful would slow the first call of every new model, so none is set for you; set JAX's if you want one, before the first sampler call (JAX reads it when it opens the directory, at the first compile after the directory is set), and we leave it alone. To see the size and to clear: `du -sh "$(python -c 'import pfcheeshmc; print(pfcheeshmc.default_compilation_cache_dir())')"`, then delete the directory. On a GPU, JAX also keeps its XLA autotune results in a subdirectory of the same directory.
-- **Safe to delete:** the directory only holds copies. Delete it at any time (or after upgrading JAX, a GPU driver or the device count: entries are keyed by the lowered program, the jaxlib version, the backend, the devices and the XLA flags, so a change misses and compiles again rather than misbehaving). If a process was killed while writing an entry, JAX warns `Error reading persistent compilation cache entry` on every later use of that entry and compiles instead; delete the directory (or that file) then. Several processes can share the directory; an entry that fails to read is compiled instead, with that warning.
-- **Trust:** a JAX compilation cache is trusted code: whoever can write to the directory can make your process run code. The default directory is created owner-only for that reason, and is not used if others can write to it. Do not point `enable_compilation_cache` or `JAX_COMPILATION_CACHE_DIR` at a directory shared with users you do not trust.
-- **Order:** with the default, nothing to arrange. A program compiled while the packages are imported (a 0.04 s `jit(log)`) comes before any call can set the directory, so it is not cached; JAX's environment variables, set before the process starts, cache it too.
-- **Measuring:** a "cold" first call that reads this cache is a warm one. `benchmarks/warm_stages.py` and `benchmarks/bias.py` set `PFCHEESHMC_COMPILATION_CACHE=0` unless it is in the environment already, and `benchmarks/warm_stages.py` prints which cache it ran with; if `JAX_COMPILATION_CACHE_DIR` is in your environment, JAX's cache is used by everything, including them.
+**Checks to run on every float32 result:**
+1. The frozen step size (`idata.attrs["frozen_step_size"]`): a value orders of magnitude smaller than float64 gives for the same model is the GEV failure.
+2. R-hat on every parameter. A collapsed step size gives values far above 1.01.
+3. `num_integration_steps` in `sample_stats`: a collapsed step size comes with trajectories of hundreds of steps.
 
-# Output
+The examples in `examples/` show how to switch it on, where it helps, and what a failed run looks like.
 
-`sample_pf_chees_hmc` returns an `arviz.InferenceData` with:
+## Common issues
 
-- `posterior` in **problem space**, including `pm.Deterministic` variables;
-- `sample_stats` with exactly `lp`, `diverging`, `acceptance_rate`, `is_accepted`, `energy`, `num_integration_steps`. `lp` is the logdensity of the *sampled* state, matching what PyMC's own JAX samplers emit.
+1. The sampler is not converging: raise the warmup (`chees_kwargs={"draws": 2_000}`), and compare with `benchmarks/bias.py` on a model that has a NUTS reference.
+2. On a shared GPU JAX pre-allocates most of the memory at import. Set `XLA_PYTHON_CLIENT_PREALLOCATE=false` (the pixi environment does).
+3. Divergence counts can differ by one between identical runs at the same seed: XLA reductions are not bitwise reproducible.
 
-# Common Issues
-1. If the sampler is not converging, try increasing the number of ChEES draws using the argument
+## Testing and benchmarks
+
 ```
-sample_pf_chees_hmc(chees_kwargs={"draws": 2_000})
+pixi run python -m pytest tests -q
 ```
-2. On a shared GPU, JAX pre-allocates most of the device memory at import. Set `XLA_PYTHON_CLIENT_PREALLOCATE=false` (the pixi env already does) so other users' jobs are not starved.
-3. Divergence counts can differ by one between identical runs at the same seed. XLA does not guarantee bitwise-identical reductions, so a near-threshold divergence may flip; this is not a sampler change.
 
+The suite runs in one process on the CPU: 8 min 40 s on a loaded shared host (542 tests). `tests/test_golden.py` pins the draws of the default path on the ladder models. `benchmarks/README.md` lists the harness and its exact commands: the bias gate, references, warm-stage timing and CPU NUTS.
 
-# References
-[1] Matthew Hoffman, Alexey Radul, Pavel Sountsov "An Adaptive-MCMC Scheme for Setting Trajectory Lengths in Hamiltonian Monte Carlo", in Proceedings of The 24th International Conference on Artificial Intelligence and Statistics, PMLR 130:3907-3915, 2021. Available: https://proceedings.mlr.press/v130/hoffman21a.html
+## References
+
+[1] M. Hoffman, A. Radul, P. Sountsov, "An Adaptive-MCMC Scheme for Setting Trajectory Lengths in Hamiltonian Monte Carlo", AISTATS, PMLR 130:3907-3915, 2021. https://proceedings.mlr.press/v130/hoffman21a.html
+
+Maintainer notes: `docs/design.md`. Upstream bug drafts, not filed: `docs/upstream-drafts.md`.

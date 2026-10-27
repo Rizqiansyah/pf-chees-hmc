@@ -1479,7 +1479,7 @@ def sample_pf_chees_hmc(
     arviz.InferenceData
     """
     # Keep the compiled programs on disk for the next Python process, unless the user opted out or set a JAX cache of
-    # their own (README, "Keeping the compiled programs between Python processes"); does nothing after the first call.
+    # their own (README, "Compile once, and the disk cache"); does nothing after the first call.
     ensure_default_compilation_cache()
     _warn_if_x64_contradicts_floatx()
 
