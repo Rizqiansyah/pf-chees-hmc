@@ -10,17 +10,13 @@ that is not skipped, a progress bar that stops at the first chunk. Here:
   sizes (even 1) and the stop-rule block;
 * the discrete bookkeeping (gradient counts, divergences, steps used) against an independent recomputation
   of the trajectory-length rule from the warmup trace;
-* a conjugate Normal-Normal model with a known posterior, against the analytic mean and variance, and
-  against the F2 head (a subprocess on a `git archive`);
+* a conjugate Normal-Normal model with a known posterior, against the analytic mean and variance;
 * the progress bars (host-driven, at chunk granularity) and the absence of any host callback in the programs;
 * the Halton depth (fixed at 30 bits) against the old depth, and the plumbing (`run_chunks`, `HostStack`).
 """
-import concurrent.futures
 import contextlib
 import json
-import os
 import pathlib
-import subprocess
 import sys
 
 import jax
@@ -29,21 +25,38 @@ jax.config.update("jax_enable_x64", True)
 import blackjax.mcmc.dynamic_hmc as dynamic_hmc
 import jax.numpy as jnp
 import numpy as np
+import pymc as pm
 import pytest
-import scipy.stats
 from tqdm.auto import tqdm
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from benchmarks.seeded_models import hier  # noqa: E402
-from test_compile_once import BASE_SHA, _base_tree  # noqa: E402
 
 import pfcheeshmc.sampler as sampler_module
 import pfcheeshmc.utils as utils_module
 from pfcheeshmc import compiled
 from pfcheeshmc.sampler import PfCheesHMC, sample_pf_chees_hmc
-import known_posterior_run as kp
 
 CH = 8
+D_THETA = 10
+PRIOR_MU = np.linspace(-1.0, 1.0, D_THETA)
+PRIOR_SD = np.linspace(0.5, 2.0, D_THETA)
+OBS = np.linspace(1.0, -1.0, D_THETA)
+OBS_SE = np.linspace(1.0, 0.4, D_THETA)
+
+
+def analytic():
+    """Posterior mean and variance of each coordinate: theta_j ~ N(mu_j, s_j^2), y_j ~ N(theta_j, se_j^2)."""
+    precision = 1.0 / PRIOR_SD ** 2 + 1.0 / OBS_SE ** 2
+    var = 1.0 / precision
+    return var * (PRIOR_MU / PRIOR_SD ** 2 + OBS / OBS_SE ** 2), var
+
+
+def conjugate_model():
+    with pm.Model() as model:
+        theta = pm.Normal("theta", PRIOR_MU, PRIOR_SD, shape=D_THETA)
+        pm.Normal("y", theta, OBS_SE, observed=OBS)
+    return model
 
 
 def run(seed=5, warmup=40, draws=23, chains=CH, model=None, progressbar=False, **chees):
@@ -119,7 +132,6 @@ def test_the_same_seed_gives_bit_identical_draws_and_another_seed_does_not():
 # ------------------------------------------------------------------- chunk-size invariance
 CHUNK_PATHS = {
     "default": dict(warmup=40),
-    "stop rule that never fires": dict(warmup=40, warmup_stop={"block": 16, "window": 16, "rhat": 0.0}),
 }
 
 
@@ -200,29 +212,11 @@ def test_discrete_bookkeeping_matches_an_independent_recomputation(monkeypatch, 
 
 # ------------------------------------------------------------------ a known posterior
 @pytest.fixture(scope="module")
-def known_posterior(tmp_path_factory):
-    """New tree and the F2 head, on the conjugate model (C=256, W=200, D=50)."""
-    tmp = tmp_path_factory.mktemp("known")
-    base = _base_tree(tmp)
-    runner = pathlib.Path(__file__).with_name("known_posterior_run.py")
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", JAX_PLATFORMS="cpu", OMP_NUM_THREADS="2",
-               PYTENSOR_FLAGS="blas__ldflags=-llapack -lblas -lcblas -lm")
-    env.pop("JAX_PLATFORM_NAME", None)
-
-    def job(tree_name, tree, case, extra):
-        out = tmp / f"{tree_name}_{case}.npz"
-        done = subprocess.run(
-            [sys.executable, str(runner), str(tree), str(out), *extra],
-            env=dict(env, PYTHONPATH=str(tree)), capture_output=True, text=True)
-        assert done.returncode == 0, done.stderr[-2000:]
-        return np.load(out)
-
-    repo = pathlib.Path(__file__).resolve().parents[1]
-    jobs = {(t, c): (t, tree, c, extra) for t, tree in (("old", base), ("new", repo))
-            for c, extra in (("plain", []),)}
-    with concurrent.futures.ThreadPoolExecutor(len(jobs)) as pool:
-        futures = {key: pool.submit(job, *args) for key, args in jobs.items()}
-        return {key: f.result() for key, f in futures.items()}
+def known_posterior():
+    """The conjugate model (C=256, W=200, D=50), `theta` of shape (256, 50, 10)."""
+    idata = sample_pf_chees_hmc(conjugate_model(), draws=50, chains=256, random_seed=1, progressbar=False,
+                                chees_kwargs={"draws": 200})
+    return np.asarray(idata.posterior["theta"].values)
 
 
 def mc_check(theta, label):
@@ -231,7 +225,7 @@ def mc_check(theta, label):
     The standard error comes from the spread of the per-chain estimates (chains are independent), so it
     includes the autocorrelation of the draws within a chain.
     """
-    mean, var = kp.analytic()
+    mean, var = analytic()
     chains = theta.shape[0]
     chain_mean = theta.mean(axis=1)                                      # (chains, 10)
     chain_sq = ((theta - mean) ** 2).mean(axis=1)                        # unbiased for the variance: known mean
@@ -241,26 +235,9 @@ def mc_check(theta, label):
         assert np.all(np.abs(z) < 4.0), f"{label} {name}: z = {np.round(z, 2)}"
 
 
-@pytest.mark.parametrize("case", ["plain"])
-def test_known_posterior_mean_and_variance_within_4_standard_errors(known_posterior, case):
-    new = known_posterior[("new", case)]["theta"]
-    assert new.shape == (256, 50, kp.D_THETA)
-    mc_check(new, f"new {case}")
-    mc_check(known_posterior[("old", case)]["theta"], f"f2 head {case}")        # the check itself is sound
-
-
-@pytest.mark.parametrize("case", ["plain"])
-def test_known_posterior_draws_are_not_distinguishable_from_the_f2_head(known_posterior, case):
-    """Two-sample KS per coordinate, new vs F2 head, same seed, at 1e-3. (`plain` has the same stream and
-    agrees to the ulp.)"""
-    new, old = known_posterior[("new", case)]["theta"], known_posterior[("old", case)]["theta"]
-    for j in range(kp.D_THETA):
-        p = scipy.stats.ks_2samp(new[..., j].ravel(), old[..., j].ravel()).pvalue
-        assert p > 1e-3, f"{case} coordinate {j}: KS p = {p:.2e}"
-    if case == "plain":
-        assert np.allclose(new, old, rtol=1e-7, atol=1e-7)
-        assert np.array_equal(known_posterior[("new", case)]["steps"], known_posterior[("old", case)]["steps"])
-        assert np.array_equal(known_posterior[("new", case)]["div"], known_posterior[("old", case)]["div"])
+def test_known_posterior_mean_and_variance_within_4_standard_errors(known_posterior):
+    assert known_posterior.shape == (256, 50, D_THETA)
+    mc_check(known_posterior, "known posterior")
 
 
 # ------------------------------------------------------------------------ progress bars

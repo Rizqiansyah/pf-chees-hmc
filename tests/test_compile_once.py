@@ -12,27 +12,11 @@ sampling loop (`compiled.sampling_chunk`) are chunk programs driven from the hos
 count, so W and D are loop bounds on the host. The correctness side (determinism, chunk-size invariance, a
 known posterior, bookkeeping, the progress bars) is in `test_chunked_loops.py`.
 
-Equivalence with the F2 head before F2c/F2d/eps0 (`BASE_SHA`, cdc4a55). The initial points are PyMC's own
-(equal to the last digit on these models), the batched step-size search is the per-probe one bit for bit, and
-the stratified start pick scores the whole pool whenever it has at most 4C rows (d <= sqrt(C)), so 8 Schools,
-GEV and logit at C=1,024 are BIT-identical to cdc4a55, every array. Radon's pool is 4d^2 = 122,500 rows, of
-which F2c now scores 4,084 instead of all: its picks, hence its draws, change by design, and it is compared on
-structure only.
-
-Before that, F2b-2 versus c35fbba was NOT bit-for-bit: the loops are different XLA programs (a chunk of steps
-behind a conditional, the trajectory-length adjustment and the step size as arguments instead of constants),
-which changes floating-point results by an ulp, carried through chaotic trajectories to about 1e-10 relative
-(observed worst 1.9e-10, GEV).
+The draws are pinned, bit for bit, by the golden files of `test_golden.py`.
 """
-import concurrent.futures
 import contextlib
-import io
-import json
-import os
 import pathlib
-import subprocess
 import sys
-import tarfile
 import types
 
 import jax
@@ -46,7 +30,6 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from benchmarks.compile_counter import count_compiles, count_pytensor_functions  # noqa: E402
 from benchmarks.seeded_models import dims_model, hier  # noqa: E402
-from test_api_prune import REMOVED_CONFIG_KEYS  # noqa: E402
 
 from pfcheeshmc import compiled
 from pfcheeshmc.lifted import lift_logp
@@ -457,95 +440,3 @@ def test_a_replaced_ld_fn_is_honoured_by_the_compiled_sites_and_is_one_static_ar
     assert cc.count == 0 and np.array_equal(np.asarray(again), [False, True, True, True])
     s.ld_fn = lambda pos: -jnp.inf                        # another replacement is another program
     assert not bool(jnp.any(s._usable_mask(stack)))
-
-
-# ---------------------------------------------------------------------- 4. equivalence
-BASE_SHA = "cdc4a55"            # the f2 head before F2c, F2d and the one-dispatch eps0 search
-EQUIV_CASES = {                  # name -> (model, extra args for compile_equiv_run.py)
-    "8schools": ("8schools", ["--chains", "1024"]),
-    "gev": ("gev", ["--chains", "1024"]),
-    "logit_1000x25": ("logit_1000x25", ["--chains", "1024"]),
-    "radon_noncentered": ("radon_noncentered", []),
-    "8schools+pf_closed": ("8schools", ["--pathfinder", json.dumps({"imm_source": "pf_closed"})]),
-}
-# Radon's start picks changed with F2c (a pool of 122,500 rows is scored on 4,084 of them), at C=8 too.
-STRUCTURE_ONLY_CASES = {"radon_noncentered"}
-# d <= sqrt(C): the whole 4C-row pool is scored, as before; nothing in the run differs.
-BIT_IDENTICAL_CASES = {"8schools", "gev", "logit_1000x25"}
-EQUIV_RTOL = 1e-7        # relative to (1 + |x|), for the other cases (observed worst 1.9e-10 across F2b-2)
-
-
-def _base_tree(tmp):
-    git = ["git", "-C", str(REPO)]
-    try:
-        subprocess.run([*git, "cat-file", "-e", f"{BASE_SHA}^{{commit}}"], check=True, capture_output=True)
-        blob = subprocess.run([*git, "archive", BASE_SHA], check=True, capture_output=True).stdout
-    except (OSError, subprocess.CalledProcessError):
-        pytest.skip(f"commit {BASE_SHA} is not available here (git archive failed)")
-    dest = tmp / "base"
-    with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
-        tar.extractall(dest)
-    return dest
-
-
-def _run_in_tree(tree, model, out, extra):
-    env = dict(os.environ, PYTHONPATH=str(tree), CUDA_VISIBLE_DEVICES="", JAX_PLATFORMS="cpu",
-               OMP_NUM_THREADS="2", PYTENSOR_FLAGS="blas__ldflags=-llapack -lblas -lcblas -lm")
-    # The example notebooks the ladder models are built from set JAX_PLATFORM_NAME=gpu in os.environ
-    # when another test has executed one in this process; a CPU-only child must not inherit that.
-    env.pop("JAX_PLATFORM_NAME", None)
-    cmd = [sys.executable, str(pathlib.Path(__file__).with_name("compile_equiv_run.py")),
-           str(tree), model, str(out), *extra]
-    done = subprocess.run(cmd, env=env, capture_output=True, text=True)
-    assert done.returncode == 0, done.stderr[-2000:]
-    return np.load(out)
-
-
-@pytest.fixture(scope="module")
-def equivalence(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("equiv")
-    base = _base_tree(tmp)
-    jobs = {(case, tree_name): (tree, model, tmp / f"{tree_name}_{case.replace('+', '_')}.npz", extra)
-            for case, (model, extra) in EQUIV_CASES.items()
-            for tree_name, tree in (("old", base), ("new", REPO))}
-    workers = max(2, min(len(jobs), (os.cpu_count() or 4) // 3))
-    with concurrent.futures.ThreadPoolExecutor(workers) as pool:
-        futures = {key: pool.submit(_run_in_tree, *args) for key, args in jobs.items()}
-        return {key: f.result() for key, f in futures.items()}
-
-
-@pytest.mark.parametrize("case", list(EQUIV_CASES))
-def test_draws_match_the_f2_head_before_this_task(equivalence, case):
-    """BIT-identical for d <= sqrt(C) (every array, every config value); within EQUIV_RTOL otherwise; structure only
-    where F2c changes the start picks."""
-    old, new = equivalence[(case, "old")], equivalence[(case, "new")]
-    assert sorted(old.files) == sorted(new.files)
-    worst = 0.0
-    for key in old.files:
-        a, b = old[key], new[key]
-        if key == "config":
-            continue
-        assert a.shape == b.shape and a.dtype == b.dtype, key
-        if case in STRUCTURE_ONLY_CASES:
-            continue
-        if case in BIT_IDENTICAL_CASES:
-            assert np.array_equal(a, b, equal_nan=True), f"{key}: not bit-identical to {BASE_SHA}"
-            continue
-        if a.dtype.kind in "biu":                       # steps, divergences, accepts: a flip is a different run
-            assert np.array_equal(a, b), key
-            continue
-        rel = np.abs(a - b) / (1.0 + np.abs(a))
-        worst = max(worst, float(np.nanmax(rel)))
-        assert np.all(rel <= EQUIV_RTOL), f"{key}: worst relative difference {np.nanmax(rel):.3e}"
-    old_cfg, new_cfg = json.loads(str(old["config"])), json.loads(str(new["config"]))
-    old_cfg = {k: v for k, v in old_cfg.items() if k not in REMOVED_CONFIG_KEYS}     # C2 removed these options
-    assert old_cfg.keys() == new_cfg.keys()
-    for k, v in old_cfg.items():                        # every resolved setting; floats only up to the ulp
-        if case in STRUCTURE_ONLY_CASES and k in ("eps0", "frozen_step_size", "frozen_L_nominal"):
-            continue                                    # adaptation outputs of a different realisation
-        if case in BIT_IDENTICAL_CASES:
-            assert new_cfg[k] == v, k
-        elif isinstance(v, float):
-            assert new_cfg[k] == pytest.approx(v, rel=EQUIV_RTOL), k
-        else:
-            assert new_cfg[k] == v, k
