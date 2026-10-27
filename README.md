@@ -128,7 +128,7 @@ The examples in `examples/` show how to switch it on, where it helps, and what a
 
 1. The sampler is not converging: raise the warmup (`chees_kwargs={"draws": 2_000}`), and compare with `benchmarks/bias.py` on a model that has a NUTS reference.
 2. On a shared GPU JAX pre-allocates most of the memory at import. Set `XLA_PYTHON_CLIENT_PREALLOCATE=false` (the pixi environment does).
-3. Divergence counts can differ by one between identical runs at the same seed: XLA reductions are not bitwise reproducible.
+3. On the GPU, divergence counts can differ by one between identical runs at the same seed: GPU reductions are not bitwise reproducible. On the CPU, runs at the same seed are identical (`tests/test_golden.py`).
 
 ## Testing and benchmarks
 
