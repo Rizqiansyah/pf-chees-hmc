@@ -49,3 +49,4 @@
   now pick the builder by the tree, and the proofs pass. For the integrator: stale paths left at
   `pfcheeshmc/compiled.py:323`, `sampler.py:100,104`, `tests/conftest.py:23`, `README.md:130` (C5/C6).
   **Paused per the owner: next is the C4 integrator, step 1.**
+- 2026-10-27 C4 merged (8446a28): benchmarks/ is the harness (bias.py bit-identical to the tag's r1_bias on 8schools; references.json; README), tools/ gone, git-archive runners pick the tag builder by tree. Suite: 573 passed, 56 warnings in 913.23s (0:15:13). Carried: README lift-cost citation (C6); stale paths in compiled.py:323, sampler.py:100,104, conftest.py:23, README.md:130 (C5/C6).

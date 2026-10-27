@@ -85,3 +85,8 @@ seed 1 `80c0d1e867096fb71f8ccf57d74ded01dd633f5aff521b9e3e417c9964b4c152`, seed 
 ## Full suite (CPU, head 58cb898)
 `pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" python -m pytest "$WT/tests" -q --rootdir "$WT" -p no:cacheprovider`
 `573 passed, 56 warnings in 848.38s (0:14:08)`
+
+## Integrator
+Integrator suite on merged `cleanup` (8446a28): `573 passed, 56 warnings in 913.23s (0:15:13)`, rc 0, load 35.21 36.07 34.70 → 38.44 39.48 37.69.
+Step-1 verdicts: scope OK; default path OK (8schools C=64 D=10 W=25 seed 1: b2_max 0.04526053008332175 equal to the tag's `r1_bias`, floor, eps, L, grads equal); acceptance OK; must-fail OK (read); dangling references OK (list complete; the four known stale ones go to C5/C6, plus `workflow-skill dir`, `docs/*`, `results/f2/drivers/new_data.py` which C5 deletes); code quality OK; SUMMARY accurate. Git-archive runners verified to build the tag side from the tag's own `tools/r1_bias.py` and `pfcheeshmc`. C4-touched modules: 106 passed.
+Carried findings (none blocking): (1) `bias.py` takes the GPU lock automatically (a non-CPU backend needs `PF_GPU_LOCK=1`; was opt-in `--timed`): informational. (2) README lost the `tools/lift_cost.py` citation, so the "0.05-0.14 s per call" number cites no command: C6. (3) `with_new_data` is copied in `benchmarks/seeded_models.py`; the original in `results/f2/drivers/new_data.py` goes in C5: informational.
