@@ -101,3 +101,8 @@ Tests: 573 -> 542 (-31 net: the archive proofs and the redundancies above out, 2
 ## UNVERIFIED
 - The ~5 min goal on a quiet host (see DEVIATION 1).
 - The golden files are exact on this CPU/JAX/XLA build; another CPU or XLA version may change a float bit (the old proofs compared two runs of one host, so they could not see that). If it does, the failure message says what to do.
+
+## Integrator (merged `cleanup` cd2206b)
+Integrator suite on merged `cleanup` (cd2206b): `542 passed, 48 warnings in 520.33s (0:08:40)`, rc 0, load 32.14 → 34.45 (1-min).
+Step-1 verdicts: scope OK; no behaviour change OK (golden 40 passed; must-fail `adam_lr` 0.05 -> 0.051 gave 3 failed; gev and start_repair regenerate byte-identical and equal the tag's arrays, other 16 files rely on the task); acceptance OK; dangling references: TASK-RULES.md:33 stale; quality OK; SUMMARY OK. Coverage method credible (children included).
+Findings, accepted by the lead: (1) goldens are exact only on this CPU/JAX/XLA build, informational; (2) TASK-RULES.md:33 is stale, the lead fixes it; (3) the cold-compile comparison against old code is gone, accepted as a minor gap; (4) the 5-min goal is missed, timing accepted (8 min 40 s at load ~33-34).
