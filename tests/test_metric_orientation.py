@@ -180,7 +180,7 @@ def test_permuting_factors_equals_permuting_the_expansion():
 def test_kernel_convention_is_ke_half_p_A_p_and_momentum_cov_is_A_inverse(odd_order_model, monkeypatch):
     """Pin the convention, orientation-agnostic: the passed array multiplies p in KE.
 
-    This is the measurement behind the LEDGER entry that challenged Part B §0.1: with A =
+    This is the measurement behind the metric convention (docs/design.md): with A =
     inv(Cov) the sampled momentum variance came out equal to Cov. That fixes what A *means*; it does
     not say which A is the better preconditioner. The frequency consequence (q'' = -A grad U, so
     squared frequencies are eig(A H)) is what the moment test below is sensitive to.
