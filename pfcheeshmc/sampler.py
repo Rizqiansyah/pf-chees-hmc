@@ -17,10 +17,6 @@ from . import compiled
 from .compiled import LogDensity
 from .compilation_cache import ensure_default_compilation_cache
 from .lifted import lift_graph, lift_initial_point, lift_logp
-from .ensemble_metric import (
-    estimate_covariance, reseed_trajectory_length, whitened_lambda_max, positions_to_draws,
-    ENGLISH_NAMES as _METRIC_REFRESH_NAMES,
-)
 
 from typing import Tuple, Optional, Dict, Any, NamedTuple
 import numpy as np
@@ -41,6 +37,31 @@ START_SCORE_PER_CHAIN = 4
 # PyMC's default (`pm.init_nuts(jitter_max_retries=...)`): redraws of the jitter of a chain whose point has a
 # non-finite log-density.
 JITTER_MAX_RETRIES = 10
+
+# The keys each stage reads from its dict of options (`pathfinder_kwargs`, `step_size_tune_kwargs`, `chees_kwargs`,
+# `dynamic_hmc_kwargs`). `PfCheesHMC.sample` adds ``chains`` to every dict, ``draws`` to the sampling one. A key outside
+# the set raises a TypeError: an option that was removed, or a typo, is never ignored.
+_COMMON_OPTIONS = frozenset({"chains", "seed"})
+_PATHFINDER_OPTIONS = _COMMON_OPTIONS | frozenset({
+    "draws", "ridge", "init_source", "imm_source", "pf_pool_cap", "score_chunk",
+    "pm_init", "pm_tune", "pm_seed", "pm_chains",
+    "pf_jitter_eps", "pf_max_backtracks", "pf_max_restarts", "pf_restart_radius",
+    "fisher_draws", "max_rank", "fisher_gamma", "fisher_cutoff"})
+_STEP_SIZE_OPTIONS = _COMMON_OPTIONS | frozenset({"eps0_probes"})
+_CHEES_OPTIONS = _COMMON_OPTIONS | frozenset({
+    "draws", "adam_lr", "target_accept", "max_leapfrog_steps", "warmup_stop", "progressbar"})
+_DYNAMIC_HMC_OPTIONS = _COMMON_OPTIONS | frozenset({"draws", "progressbar"})
+_SAMPLE_OPTIONS = frozenset({"chains", "draws"})
+
+
+def _check_options(where, given, allowed):
+    """Raise a TypeError naming every key of ``given`` that is not in ``allowed``."""
+    unknown = sorted(set(given) - set(allowed), key=str)
+    if unknown:
+        names = ", ".join(repr(k) for k in unknown)
+        raise TypeError(
+            f"{where} got an unknown option {names} (an option that was removed raises as well). "
+            f"The options are: {', '.join(sorted(allowed))}")
 
 
 def _warn_if_x64_contradicts_floatx():
@@ -76,11 +97,11 @@ def default_pool_cap(chains, d):
 
     * Too many rows is a hard failure. The pool is materialised as one operand: 4,096,000 x 175 x 8 B
       = 5,734,400,000 B, exactly the allocation XLA refuses on a 6 GB card at C=1,024 with the
-      production 4,000-draw pool (`results/runs/T1__prodpool.jsonl`: it fits at d=8, not at d=25).
+      production 4,000-draw pool (measured: it fits at d=8, not at d=25).
     * Too few rows is a correctness failure. The same pool is the sample the Monte-Carlo covariance is
       estimated from, so rows must stay large relative to d^2. Capping radon (d=175) at 4C=128 rows at
       C=32 read b2 2.34860 against a 0.07689 floor with split R-hat 1.2121 -- a rank-deficient metric,
-      not merely a slower one (`results/runs/T1__r2_poolcap.jsonl`).
+      not merely a slower one (measured).
 
     `max(4C, 4d^2)` closes both without touching the regime that already works: at C=32, d=175 it is
     122,500 rows, essentially the historical 128,000, while at C=1,024, d=175 it cuts the pool from
@@ -145,33 +166,6 @@ def _stratified_pool_idx(logp_subset, subset_idx, n_pick):
     m = int(finite.sum()) or int(order.shape[0])
     ranks = (np.arange(n_pick) * m) // n_pick
     return subset_idx[order[ranks]]
-
-
-def _concat_warmup_info(a, b):
-    """Concatenate two warmup-info stacks (phase A then phase B) along the step axis.
-
-    Returns a WarmupInfo whose ``info`` (the HMCInfo stack) and ``trace`` are concatenated so a
-    downstream reader sees one warmup of length ``a_steps + b_steps``. ``positions`` is set to
-    None: it is consumed only to build the refreshed estimator and is not read downstream, and
-    keeping it would hold the (steps, C, ...) position stack for no reason.
-
-    The stacks are host (NumPy) arrays and are joined with NumPy: a device concatenate has a W-dependent
-    shape, which is one XLA compile per W.
-    """
-    from .utils import WarmupInfo
-    ainfo = getattr(a, "info", a)
-    binfo = getattr(b, "info", b)
-    info = jax.tree_util.tree_map(
-        lambda x, y: np.concatenate([np.asarray(x), np.asarray(y)], axis=0), ainfo, binfo)
-    atr, btr = getattr(a, "trace", None), getattr(b, "trace", None)
-    if atr is not None and btr is not None:
-        # trace is a ChEESTrace named tuple (one (steps,) array per field), not a 2-D array,
-        # so concatenate field-wise through the pytree, not with a single concatenate.
-        trace = jax.tree_util.tree_map(
-            lambda x, y: np.concatenate([np.asarray(x), np.asarray(y)], axis=0), atr, btr)
-    else:
-        trace = None
-    return WarmupInfo(info=info, trace=trace, positions=None)
 
 
 def _frozen_nominal_L(integration_steps_fn, warmup_steps_used):
@@ -323,40 +317,6 @@ class PfCheesHMC:
         labelled = dict(zip(self.rvs, jax.tree_util.tree_leaves(unravel_tuple(jnp.arange(d)))))
         return ravel_pytree(labelled)[0].astype(int)
 
-    @staticmethod
-    def _pathfinder_mean(pf_state):
-        """Mean of Pathfinder's Gaussian, as a pytree shaped like ``pf_state.position`` (tuple order).
-
-        The ``mu`` that ``blackjax.optimizers.lbfgs.bfgs_sample`` draws around (lbfgs.py:429):
-        ``position + alpha * grad + beta (gamma (beta^T grad))``, i.e. ``position + formula_1 @ grad``
-        without forming the d x d matrix. Not the stored ``position``: the fit stops at the L-BFGS
-        iterate and the Gaussian is centred one Newton step away from it.
-        """
-        pos, unravel = ravel_pytree(pf_state.position)
-        g, _ = ravel_pytree(pf_state.grad_position)
-        return unravel(pos + pf_state.alpha * g + pf_state.beta @ (pf_state.gamma @ (pf_state.beta.T @ g)))
-
-    def _scale_starts(self, starts, pf_state, scale):
-        """``x_i -> mu_pf + scale * (x_i - mu_pf)`` for every chain start; ``mu_pf`` = Pathfinder mean.
-
-        Acts on chain starts only; the covariance handed to the kernel is not touched. ``starts`` is
-        the tuple (``self.rvs`` order) the pool pick produces or the dict the adapt_diag fallback
-        produces; the result has the same structure. A scale that carries a start to a point with a
-        non-finite log-density or gradient raises instead of leaving a NaN chain.
-        """
-        mu = dict(zip(self.rvs, self._pathfinder_mean(pf_state)))
-        if isinstance(starts, dict):
-            out = {n: mu[n] + scale * (starts[n] - mu[n]) for n in self.rvs}
-        else:
-            out = tuple(mu[n] + scale * (x - mu[n]) for n, x in zip(self.rvs, starts))
-        as_dict = out if isinstance(out, dict) else dict(zip(self.rvs, out))
-        bad = int((~self._usable_mask(as_dict)).sum())
-        if bad:
-            raise ValueError(
-                f"pf_start_scale={scale} puts {bad} of {next(iter(as_dict.values())).shape[0]} chain "
-                "starts at a point with a non-finite log-density or gradient; use a smaller scale")
-        return out
-
     def _metric_to_kernel_order(self, imm, perm):
         """Reorder a dense metric from Pathfinder's tuple order into the kernel's dict order.
 
@@ -386,15 +346,14 @@ class PfCheesHMC:
         jitter_eps: float = 1e-8,
         max_backtracks: int = 16,
         max_restarts: int = 64,
-        center=None,
         restart_radius: float = 0.05,
     ):
         """
         Make a bad start usable without changing the model. A start must have a finite
         log-density AND a finite gradient. Order of repair:
         1) tiny relative jitter (fixes exact singularities like xi=0),
-        2) backtrack toward `center` (default zeros in unconstrained space),
-        3) random restarts around center with growing radius.
+        2) backtrack toward the origin of the unconstrained space,
+        3) random restarts around the origin with growing radius.
         Returns a pytree, or raises RuntimeError if nothing usable is found.
         """
         from jax.flatten_util import ravel_pytree
@@ -438,16 +397,15 @@ class PfCheesHMC:
         if _is_usable(x):
             return x
 
-        # (2) backtrack toward safe center (default zeros)
-        if center is None:
-            center = unrav(jnp.zeros_like(flat0))
+        # (2) backtrack toward the safe center (zeros)
+        center = unrav(jnp.zeros_like(flat0))
         for _ in range(max_backtracks):
             x_try = _interp(x, center, 0.5)
             if _is_usable(x_try):
                 return x_try
             x = x_try
 
-        # (3) random restarts around center
+        # (3) random restarts around the center
         radius = restart_radius
         for _ in range(max_restarts):
             key, k = jax.random.split(key)
@@ -600,7 +558,6 @@ class PfCheesHMC:
         jitter_eps=1e-8,
         max_backtracks=16,
         max_restarts=64,
-        center=None,
         restart_radius=0.05,
     ):
         """
@@ -631,7 +588,6 @@ class PfCheesHMC:
                     jitter_eps=jitter_eps,
                     max_backtracks=max_backtracks,
                     max_restarts=max_restarts,
-                    center=center,
                     restart_radius=restart_radius,
                 )
             except RuntimeError:
@@ -642,7 +598,6 @@ class PfCheesHMC:
                     jitter_eps=jitter_eps,
                     max_backtracks=max_backtracks,
                     max_restarts=max_restarts,
-                    center=center,
                     restart_radius=restart_radius,
                 )
             for n in self.rvs:
@@ -671,10 +626,15 @@ class PfCheesHMC:
         ridge: float covariance ridge (default 1e-6; the "mc" covariance only)
         imm_source: "mc" (default) | "pf_closed" | "lbfgs_lowrank" | "fisher_lowrank"
         pf_pool_cap: pool row cap; None -> see resolve_pool_cap (depends on imm_source), 0 = uncapped
-        pf_start_scale: float > 0 (default 1.0). Chain starts become mu_pf + scale * (x - mu_pf), with
-            mu_pf the Pathfinder mean; the covariance is not scaled and 1.0 skips the transform
-        pf_jitter_eps, pf_max_backtracks, pf_max_restarts, pf_center, pf_restart_radius
+        score_chunk: block size of the vmapped log-density scorings (default 1024)
+        fisher_draws, max_rank, fisher_gamma, fisher_cutoff: the "fisher_lowrank" metric only
+        pf_jitter_eps, pf_max_backtracks, pf_max_restarts, pf_restart_radius: the start repair
+        chains, draws, seed, ridge: the number of chains, the Pathfinder draws per chain (the pool is
+            ``chains * draws`` rows before the cap), the stage seed and the covariance ridge
+
+        Any other key raises a TypeError that names it.
         """
+        _check_options("pathfinder_kwargs", kwargs, _PATHFINDER_OPTIONS)
         # ---- Defaults
         chains = kwargs.get("chains", 32)
         draws  = kwargs.get("draws", 4000)
@@ -714,11 +674,12 @@ class PfCheesHMC:
         pf_jitter_eps     = kwargs.get("pf_jitter_eps", 1e-8)
         pf_max_backtracks = kwargs.get("pf_max_backtracks", 16)
         pf_max_restarts   = kwargs.get("pf_max_restarts", 64)
-        pf_center         = kwargs.get("pf_center", None)
         pf_restart_radius = kwargs.get("pf_restart_radius", 0.05)
 
         key = jax.random.key(seed)
-        key_fix, key_pf, key_samp, key_pick, key_choose = jax.random.split(key, 5)
+        # five children, as ever: the key of the start pick is no longer drawn on (the pick is stratified), but
+        # the other four keys are the same ones they were
+        key_fix, key_pf, key_samp, _, key_choose = jax.random.split(key, 5)
 
         # 0) Ask PyMC for feasible-ish starts -- one point shared by all chains by default
         init_stack = self._pymc_adapt_diag_start(
@@ -735,7 +696,6 @@ class PfCheesHMC:
             jitter_eps=pf_jitter_eps,
             max_backtracks=pf_max_backtracks,
             max_restarts=pf_max_restarts,
-            center=pf_center,
             restart_radius=pf_restart_radius,
         )
         if pm_chains < chains:
@@ -794,44 +754,25 @@ class PfCheesHMC:
 
         # 5) Choose *chain* initial positions
         if init_source == "pf":
-            pick = kwargs.get("init_pick", "stratified")
-            if pick == "iid":
-                pick_global = jax.random.randint(key_pick, shape=(chains,), minval=0, maxval=total)
-            elif pick == "stratified":
-                # Score a strided subset of at most START_SCORE_PER_CHAIN * C rows -- ranking the whole
-                # pool would cost more than the benefit, which only exists at short warmup, and the
-                # default pool is max(4C, 4d^2) rows (122,500 evaluations at d=175, 1,000,000 at d=500).
-                # With a pool of at most 4C rows the stride is 1 and the whole pool is scored, chunked to
-                # keep the vmapped log-density activation at O(score_chunk) rows (a single 65,536-row vmap
-                # was the second R1 OOM, ~500 MiB at d=25).
-                stride = start_score_stride(total, chains)
-                subset_idx = jnp.arange(0, total, stride)
-                def _score_pool(idx):
-                    return compiled.score_pool(ld.fn, ld.names, ld.values, samples_flat, idx)
-                first = _score_pool(subset_idx[: min(score_chunk, subset_idx.shape[0])])
-                lp_sub = jnp.empty(subset_idx.shape, dtype=first.dtype)
-                lp_sub = lp_sub.at[: first.shape[0]].set(first)
-                for s0 in range(score_chunk, subset_idx.shape[0], score_chunk):
-                    lp_sub = lp_sub.at[s0:s0 + score_chunk].set(_score_pool(
-                        subset_idx[s0:s0 + score_chunk]))
-                pick_global = _stratified_pool_idx(lp_sub, subset_idx, chains)
-            else:
-                raise ValueError(f"init_pick must be 'iid' or 'stratified', got {pick!r}")
+            # Stratified pick: score a strided subset of at most START_SCORE_PER_CHAIN * C rows -- ranking the
+            # whole pool would cost more than the benefit, which only exists at short warmup, and the default
+            # pool is max(4C, 4d^2) rows (122,500 evaluations at d=175, 1,000,000 at d=500). With a pool of at
+            # most 4C rows the stride is 1 and the whole pool is scored, chunked to keep the vmapped
+            # log-density activation at O(score_chunk) rows (a single 65,536-row vmap was the second R1 OOM,
+            # ~500 MiB at d=25).
+            stride = start_score_stride(total, chains)
+            subset_idx = jnp.arange(0, total, stride)
+            def _score_pool(idx):
+                return compiled.score_pool(ld.fn, ld.names, ld.values, samples_flat, idx)
+            first = _score_pool(subset_idx[: min(score_chunk, subset_idx.shape[0])])
+            lp_sub = jnp.empty(subset_idx.shape, dtype=first.dtype)
+            lp_sub = lp_sub.at[: first.shape[0]].set(first)
+            for s0 in range(score_chunk, subset_idx.shape[0], score_chunk):
+                lp_sub = lp_sub.at[s0:s0 + score_chunk].set(_score_pool(
+                    subset_idx[s0:s0 + score_chunk]))
+            pick_global = _stratified_pool_idx(lp_sub, subset_idx, chains)
             # samples_flat is the whole pool in (chains, draws) chunk order; the chunk axis is just
             # how Pathfinder emitted the draws, so any row may seed any chain.
-            #
-            # superchains=K (WP3, nested R-hat): keep the first K picks and replicate each C//K times,
-            # so the C chains form K equal-sized superchains that start at K *distinct* Pathfinder
-            # points -- which is what makes between-superchain variation a real signal (arXiv
-            # 2110.13017). Absent (default) leaves pick_global byte-identical to the previous pick.
-            K = kwargs.get("superchains")
-            if K is not None:
-                K = int(K)
-                if K < 1 or K > chains:
-                    raise ValueError(f"superchains must be in [1, chains={chains}], got {K}")
-                if chains % K:
-                    raise ValueError(f"chains={chains} must be divisible by superchains={K}")
-                pick_global = jnp.repeat(pick_global[:K], chains // K)
             pf_inits_tree = jax.tree_util.tree_map(lambda x: x[pick_global], samples_flat)
         elif init_source == "adapt_diag":
             # use the repaired adapt_diag starts as chain inits. With shared base points
@@ -857,18 +798,8 @@ class PfCheesHMC:
         else:
             raise ValueError("init_source must be 'pf' or 'adapt_diag'")
 
-        # 5b) Start dispersion. Rescale the picked starts about the Pathfinder mean; the covariance
-        # (6, 6b) is never scaled. Exactly 1.0 skips the transform, so the default is bit-identical
-        # to the code before this knob existed (x + 1.0 * (y - x) is not bitwise y in floating point).
-        pf_start_scale = float(kwargs.get("pf_start_scale", 1.0))
-        if not (pf_start_scale > 0.0 and jnp.isfinite(pf_start_scale)):
-            raise ValueError(f"pf_start_scale must be a finite number > 0, got {pf_start_scale!r}")
-        if pf_start_scale != 1.0:
-            pf_inits_tree = self._scale_starts(pf_inits_tree, pf_state, pf_start_scale)
-
         # 6) Dense covariance from ALL PF samples. This is a COVARIANCE in Pathfinder's own tuple
-        # order; whether it is handed to the kernel as-is or inverted is the `imm_orientation` choice
-        # decided in step 6c, and the reorder to kernel order happens in step 8.
+        # order; it is handed to the kernel as it is (step 6c), after the reorder to kernel order in step 8.
         # (samples_total is samples_flat, already (total, ...); the old reshape round trip
         # through (chains, draws) was a no-op.)
         def _flatten_i(i):
@@ -881,8 +812,7 @@ class PfCheesHMC:
         covariance = (X.T @ X) / (total - 1) + ridge * jnp.eye(X.shape[1], dtype=X.dtype)
 
         # 6b) Optional alternative metric (E4). Default "mc" keeps the empirical covariance above.
-        # A low-rank source produces the same kind of object -- a COVARIANCE estimate -- so the
-        # orientation is not its property, it is chosen once in 6c.
+        # Every source produces the same kind of object -- a COVARIANCE estimate (see 6c).
         if imm_source != "mc":
             if imm_source == "pf_closed":
                 # The exact covariance Pathfinder's own sampler draws with: bfgs_sample builds
@@ -891,7 +821,7 @@ class PfCheesHMC:
                 # (formula II.1 of zhang2022pathfinder). So the MC pool covariance above is a noisy
                 # estimate of this matrix; here it is taken in closed form, from the one fit made in
                 # step 3. It is in Pathfinder's flat (tuple, self.rvs) order and goes through the
-                # same orientation (6c) and kernel-order choke point (8) as "mc". No ridge: it is
+                # same kernel-order choke point (8) as "mc". No ridge: it is
                 # positive definite by construction, which is asserted instead of patched over.
                 covariance = bj.optimizers.lbfgs.lbfgs_inverse_hessian_formula_1(
                     pf_state.alpha, pf_state.beta, pf_state.gamma)
@@ -928,49 +858,22 @@ class PfCheesHMC:
                 D = jnp.diag(lr.sigma)
                 covariance = (D @ (jnp.eye(lr.sigma.shape[0], dtype=lr.sigma.dtype)
                                    + lr.U @ jnp.diag(lr.lam - 1.0) @ lr.U.T) @ D)
-            # Note: rescaling this metric to the empirical covariance's geometric mean was tried and
-            # is NOT implemented -- it made every measured model worse (8 Schools 50,626 -> 13,628
-            # ESS/s, radon centered R-hat 2.10 -> 5.69). See docs/ladder-results.md. That comparison
-            # is now known to be confounded: see 6c.
 
         # 6c) Orientation. The array the kernel calls `inverse_mass_matrix` (call it A) is the matrix
         # that multiplies the momentum in the kinetic energy, KE = 1/2 p.(A p) (mcmc/metrics.py:
         # 262-270), so momentum ~ N(0, A^-1) and leapfrog gives q'' = -A * grad U. For a target with
         # Hessian H, the squared frequencies are eig(A H): A = H^-1 = Cov(q) makes every coordinate
         # oscillate at unit frequency (dimensionless eps), while A = H makes them 1/var, so one global
-        # eps cannot serve narrow and wide coordinates at once.
+        # eps cannot serve narrow and wide coordinates at once. So every metric source hands the kernel
+        # a posterior COVARIANCE, as it is (never its inverse).
         #
-        # Historically the pipeline was NOT internally consistent here: "mc" passed inv(covariance)
-        # while the two low-rank sources passed their expansion un-inverted, i.e. "mc" ran in
-        # "precision" and "lbfgs_lowrank"/"fisher_lowrank" in "covariance". Every published
-        # mc-vs-low-rank comparison in docs/ladder-results.md therefore compared opposite
-        # orientations. The knob now applies to all three arms identically, which makes the low-rank
-        # sources behave consistently with `mc` for the first time (a behaviour change for them).
-        #
-        # The default is "covariance" (owner decision, 2026-10-20; the flip and the coordinate
-        # permutation land in the same merge because holding "precision" next to a fixed
-        # permutation would ship a state that fails R-hat <= 1.01 on GEV in 5 of 5 seeds).
-        # Measured reason: the slot array is M^-1 in KE = 0.5 p^T A p, and leapfrog frequencies are
-        # eig(A H) with H = Sigma^-1, so the well-conditioned value of A is the posterior
-        # covariance. Accepted cost: GEV's divergence rate rises 0.025 -> 0.400 per 1k, seed-stable.
-        # One measured caveat to carry into WP4 (which owns the metric), from CPU runs on a 3-scalar
-        # conjugate Gaussian with posterior variances 1e1 / 1e0 / 1e-2 and reverse-sorted names
-        # (32 chains, 500 warmup, 1,000 draws, seeds 5-7): "precision" froze at eps=0.0138 with
-        # max R-hat 10.10 and bulk ESS 33 / 41 / 27,221, while "covariance" gave eps=1.14,
-        # max R-hat 1.0024 and ESS 24,664 / 24,377 / 25,117 -- worst-variable ESS per gradient 0.012
-        # vs 6.6-13.9. Both arms pass a 4-MCSE moment check, because Pathfinder's starts already
-        # sample that Gaussian posterior: the ensemble mean is right whether or not the chains move,
-        # so a moment test alone cannot arbitrate orientation. See results/WP1/SUMMARY.md section 6
-        # and test_precision_orientation_does_not_mix_an_anisotropic_target.
-
-        orientation = kwargs.get("imm_orientation", "covariance")
-        if orientation == "precision":
-            inverse_mass_matrix = jnp.linalg.inv(covariance)
-        elif orientation == "covariance":
-            inverse_mass_matrix = covariance
-        else:
-            raise ValueError(
-                f"imm_orientation must be 'precision' or 'covariance', got {orientation!r}")
+        # Measured, on a 3-scalar conjugate Gaussian with posterior variances 1e1 / 1e0 / 1e-2 and
+        # reverse-sorted names (32 chains, 500 warmup, 1,000 draws, seeds 5-7): the inverse (the
+        # precision) froze at eps=0.0138 with max R-hat 10.10 and bulk ESS 33 / 41 / 27,221, while the
+        # covariance gave eps=1.14, max R-hat 1.0024 and ESS 24,664 / 24,377 / 25,117. Both pass a 4-MCSE
+        # moment check, because Pathfinder's starts already sample that Gaussian posterior: the ensemble
+        # mean is right whether or not the chains move, so a moment test alone cannot arbitrate.
+        inverse_mass_matrix = covariance
         self.last_covariance = covariance      # diagnostics only (WP1 A/B), never read by the sampler
 
         # 7) Return dict-of-arrays keyed by variable (leading axis = chains)
@@ -985,29 +888,17 @@ class PfCheesHMC:
         # Everything downstream (find_reasonable_step_size, the ChEES whitening diagonal, and the
         # dynamic-HMC kernel) ravels the dict state, so the reorder happens here and nowhere else.
         perm = self._kernel_permutation(samples_flat)
-        # imm_order="pathfinder" skips the reorder. It exists only so the 2x2 (ordering x
-        # orientation) can be measured in ONE tree with one key stream; nothing in a production run
-        # should set it, and test_metric_orientation.py pins the default.
-        order = kwargs.get("imm_order", "kernel")
-        if order == "kernel":
-            inverse_mass_matrix = self._metric_to_kernel_order(inverse_mass_matrix, perm)
-        elif order != "pathfinder":
-            raise ValueError(f"imm_order must be 'kernel' or 'pathfinder', got {order!r}")
+        inverse_mass_matrix = self._metric_to_kernel_order(inverse_mass_matrix, perm)
 
         self._resolved["pathfinder"] = {
             "seed": int(seed),
             "imm_source": imm_source,
-            "imm_orientation": orientation,
-            "imm_order": order,
             # the ridge is added to the Monte-Carlo covariance only; every other source overwrites it
             "ridge": float(ridge) if imm_source == "mc" else 0.0,
             "pf_draws": int(draws),
             "pf_pool_cap": 0 if cap is None else int(cap),     # 0 = uncapped, as the kwarg
             "pf_pool_rows": int(total),
-            "pf_start_scale": pf_start_scale,
             "init_source": init_source,
-            "init_pick": kwargs.get("init_pick", "stratified"),
-            "superchains": kwargs.get("superchains", None),
             "pm_chains": pm_chains,
             "pm_init": pm_init,
             "pm_tune": int(pm_tune),
@@ -1044,6 +935,7 @@ class PfCheesHMC:
         float-limit stopping rule; raise the probe count if a model shows acceptance
         problems in the first ChEES iterations.
         """
+        _check_options("step_size_tune_kwargs", kwargs, _STEP_SIZE_OPTIONS)
         ld = self._logdensity()
         num_probes = int(kwargs.get("eps0_probes", 32))
         seed = kwargs.get("seed", self.seed)
@@ -1061,6 +953,15 @@ class PfCheesHMC:
         return eps0 if np.isfinite(eps0) else 1e-2      # nothing usable; ChEES dual averaging still runs
 
     def _run_chees(self, pf_samples, inverse_mass_matrix, init_step_size, **kwargs):
+        """The ChEES warmup (`chees_warmup_with_progress`) from the Pathfinder starts and metric.
+
+        chees_kwargs you can pass: ``draws`` (the warmup steps, default 2000), ``adam_lr`` (0.05),
+        ``target_accept`` (0.651), ``max_leapfrog_steps`` (1000), ``warmup_stop`` (a stop rule, e.g.
+        ``{"block": 250, "window": 100, "rhat": 1.01}``; absent by default, so the warmup runs exactly
+        ``draws`` steps), ``progressbar``, ``seed`` and ``chains``. Any other key raises a TypeError that
+        names it.
+        """
+        _check_options("chees_kwargs", kwargs, _CHEES_OPTIONS)
         #Default values
         kwargs.setdefault("chains", 32)
         kwargs.setdefault("draws", 2000)
@@ -1072,33 +973,15 @@ class PfCheesHMC:
         # The Adam learning rate, not an optax object: it is a static argument of the warmup program, and
         # a fresh optax object would be a new value (hence a new program) on every call.
         optim = float(kwargs["adam_lr"])
-        refresh = kwargs.get("metric_refresh", "none")
-        refreshing = refresh in _METRIC_REFRESH_NAMES
-        # What this stage resolved, for idata.attrs["config"]. The three estimator defaults below
-        # repeat the ones in _run_chees_two_phase (a refresh is only applied when `refresh` names an
-        # estimator, so anything else is recorded as "none"); tests/test_pf_closed_form.py spies on
-        # estimate_covariance so the two cannot drift apart unnoticed.
+        # What this stage resolved, for idata.attrs["config"].
         self._resolved["warmup"] = {
             "seed": int(kwargs["seed"]),
             "num_warmup": int(kwargs["draws"]),
             "adam_lr": float(kwargs["adam_lr"]),
             "target_accept": float(kwargs["target_accept"]),
             "max_leapfrog_steps": int(kwargs["max_leapfrog_steps"]),
-            "iterate": kwargs.get("iterate", "ma"),
             "warmup_stop": kwargs.get("warmup_stop", None),
-            "metric_refresh": refresh if refreshing else "none",
-            "metric_refresh_ridge": float(kwargs.get("metric_refresh_ridge", 1e-6)) if refreshing else None,
-            "metric_refresh_shrink": float(kwargs.get("metric_refresh_shrink", 0.5)) if refreshing else None,
-            "metric_refresh_rank": int(kwargs.get("metric_refresh_rank", 5)) if refreshing else None,
         }
-        # WP4 two-phase metric refresh. ``metric_refresh`` names an ensemble estimator
-        # (see pfcheeshmc/ensemble_metric.py); when set, phase A is a short fixed warmup on the
-        # Pathfinder metric, the ensemble covariance is estimated from phase-A draws, and phase B
-        # continues on the refreshed metric with a re-searched eps and re-seeded trajectory length.
-        # ``"none"`` (default) keeps the single-phase path bit-for-bit.
-        if refreshing:
-            return self._run_chees_two_phase(
-                pf_samples, inverse_mass_matrix, init_step_size, refresh, optim, **kwargs)
         # Stage-scoped key. This site used to be `_, key_warm = jax.random.split(jax.random.key(seed))`,
         # which produced exactly the key the sampling stage derived, so sampling replayed the warmup
         # key stream's child. Stage numbers are part of the key now: 1 = warmup, 2 = sampling.
@@ -1117,16 +1000,13 @@ class PfCheesHMC:
             # Warmup stopping rule, e.g. {"block": 250, "window": 100, "rhat": 1.01}.
             # Absent by default: warmup then runs exactly num_steps as before.
             stop_rule=kwargs.get("warmup_stop", None),
-            # Until R2-WP2 this call did not forward `iterate`, so chees_kwargs={"iterate": "raw"}
-            # without a metric refresh silently ran "ma" (only the two-phase path passed it on).
-            iterate=kwargs.get("iterate", "ma"),
         )
         if hasattr(chees_info, "info"):
             # utils.WarmupInfo (the vendored-adapter path) wraps the stacked HMCInfo together with
             # the per-step scalar trace. Everything downstream reads HMCInfo fields
             # (num_integration_steps, is_divergent), so unwrap once at the seam and keep the trace
-            # for whoever wants the growth curve. Found by the integration smoke cell on
-            # pf-r1-int: 'WarmupInfo' object has no attribute 'num_integration_steps'.
+            # for whoever wants the growth curve. Without it:
+            # 'WarmupInfo' object has no attribute 'num_integration_steps'.
             self._warmup_trace = getattr(chees_info, "trace", None)
             chees_info = chees_info.info
 
@@ -1136,155 +1016,6 @@ class PfCheesHMC:
             chees_info,
         )
 
-    def _run_chees_two_phase(self, pf_samples, imm_A, eps_A, refresh, optim, **kwargs):
-        """WP4 two-phase warmup: short fixed warmup on the Pathfinder metric, then a refresh.
-
-        Phase A runs ``metric_refresh_warmup`` steps of the ordinary ChEES warmup on ``imm_A``
-        and collects its draws. The named ensemble estimator builds a COVARIANCE (kernel order)
-        from those draws; eps is re-searched on the new metric (the same traced 32-probe search
-        the shipped path uses, so the cost is independent of chain count) and the trajectory
-        length is re-seeded at
-        ``T0_B = (pi/2) * sqrt( lambda_max( L^-1 S L^-T ) )`` with ``B = L L^T`` the refreshed
-        metric and ``S`` the sample covariance (ddof=1) of the same phase-A pool, then clipped to
-        ``[eps_B, max_leapfrog_steps * eps_B]`` so ``1 <= L0 <= max_leapfrog_steps``. Phase B then
-        continues the warmup to the budget from phase A's final positions, on the refreshed metric.
-
-        Everything downstream of this method is unchanged: it returns the same
-        ``(states, parameters), info`` contract as :meth:`_run_chees`, so ``sample()`` and the
-        A8 attrs write the frozen values and gradient counts exactly as before.
-        """
-        W_total = int(kwargs["draws"])
-        W_A = int(kwargs.get("metric_refresh_warmup", 50))
-        W_A = max(2, min(W_A, W_total - 2))
-        W_B = W_total - W_A
-
-        # Stage-scoped key, same as the single-phase path; the two phases get distinct children
-        # so a refresh never replays the phase-A key stream.
-        key_warm = jax.random.fold_in(jax.random.key(kwargs["seed"]), 1)
-        keyA, keyB = jax.random.split(key_warm)
-
-        # Ensemble pool: the last `pool` phase-A steps, flattened in kernel order.
-        pool = int(kwargs.get("metric_refresh_pool", min(W_A, 20)))
-        pool = max(2, min(pool, W_A))
-
-        # ---- Phase A: short fixed warmup on the Pathfinder metric, collect draws ----------
-        (states_A, params_A), info_A = chees_warmup_with_progress(
-            self._logdensity(), keyA, pf_samples, eps_A, optim, W_A, imm_A,
-            target_acceptance_rate=kwargs["target_accept"],
-            max_leapfrog_steps=kwargs["max_leapfrog_steps"],
-            progressbar=False, stop_rule=None,
-            stack_positions=True,      # phase A must keep its draws for the ensemble estimate
-            positions_last=pool,       # ... of which only the last `pool` steps are read
-            iterate=kwargs.get("iterate", "ma"))
-        pos_hist = getattr(info_A, "positions", None)
-        if pos_hist is None:
-            # Unreachable on the current routing: the phase-A call above passes stack_positions=True,
-            # which makes that one call stack its positions. Kept as a regression tripwire -- if the
-            # routing is ever changed back to the plain default path the refresh would silently build its
-            # ensemble from nothing, and a stale metric is worse than no refresh.
-            raise RuntimeError(
-                "two-phase metric refresh asked for phase-A positions (stack_positions=True) and got "
-                "None. This is a routing regression in utils.chees_warmup_with_progress, not a "
-                "configuration the user can set: the plain default path returns positions=None on "
-                "purpose (that stack is WP5's C=1,024 memory win), and the refresh must not be "
-                "routed through it.")
-
-        # The pool is the stacked positions' last rows, already gathered on the host (NumPy).
-        pos_pool = {n: jnp.asarray(p) for n, p in pos_hist.items()}
-        draws = positions_to_draws(pos_pool, pool)                       # (pool*C, d)
-
-        # Gradients are needed only by the Fisher estimator; chunked so peak memory is O(chunk).
-        grads = None
-        if refresh == "fisher_diag":
-            grads = self._pool_gradients(pos_pool, draws, kwargs)
-
-        # ---- The swap: build the refreshed covariance (kernel order), re-search eps, re-seed T
-        imm_B = estimate_covariance(
-            refresh, draws, grads,
-            ridge=float(kwargs.get("metric_refresh_ridge", 1e-6)),
-            shrink=float(kwargs.get("metric_refresh_shrink", 0.5)),
-            max_rank=int(kwargs.get("metric_refresh_rank", 5)))
-        # HMC state is a named tuple (index 0 = position dict); match the access the rest of
-        # the sampler uses (states_hist[0] / .position), not a string key.
-        pos_A = getattr(states_A, "position", None)
-        if pos_A is None:
-            pos_A = states_A[0]
-        eps_B = self._run_step_size_tune(pos_A, imm_B, **kwargs)         # traced, C-independent
-        # metric_refresh_reseed (default True) re-seeds the phase-B trajectory length at
-        #     T0_B = (pi/2) * sqrt( lambda_max( L^-1 S L^-T ) ),  B = L L^T = imm_B,
-        #     S = sample covariance (ddof=1) of the SAME `draws` the estimator above consumed.
-        # Whitening S by the metric makes T0 invariant to the units of the coordinates, which the
-        # run-1 formula (pi/2)/sqrt(lambda_min(imm_B)) was not -- that one read the precision of the
-        # narrowest posterior coordinate in MODEL units, so a coordinate rescale moved T0 and frozen
-        # L landed at 213-283 (plan Part B 1.1). False skips the re-seed entirely: phase B then
-        # starts at L=1 (t0=None -> trajectory_length = step_size) and grows T with its own dynamics
-        # on the refreshed metric, which is the control that isolates the re-seed's effect.
-        reseed = bool(kwargs.get("metric_refresh_reseed", True))
-        lmax_B = whitened_lambda_max(imm_B, draws) if reseed else None
-        T0_B = None
-        if reseed:
-            # Clip on the step-size and leapfrog budget this warmup actually has, so the re-seeded
-            # trajectory length L0 = T0_B / eps_B is inside [1, max_leapfrog_steps].
-            # (Plain float min/max, not jnp.clip: that would round T0 to float32 when x64 is off.)
-            # ``kwargs["max_leapfrog_steps"]`` is always set here: ``_run_chees`` does
-            # ``kwargs.setdefault("max_leapfrog_steps", 1000)`` before routing to this method.
-            eps_f = float(eps_B)
-            max_L = int(kwargs["max_leapfrog_steps"])
-            T0_B = float(min(max(reseed_trajectory_length(imm_B, draws), eps_f), max_L * eps_f))
-
-        # ---- Phase B: continue to the budget on the refreshed metric -----------------------
-        (states_B, params_B), info_B = chees_warmup_with_progress(
-            self._logdensity(), keyB, pos_A, eps_B, optim, W_B, imm_B,
-            target_acceptance_rate=kwargs["target_accept"],
-            max_leapfrog_steps=kwargs["max_leapfrog_steps"],
-            progressbar=bool(kwargs.get("progressbar", True)), stop_rule=None,
-            iterate=kwargs.get("iterate", "ma"), t0=T0_B)
-
-        # Merge the frozen bookkeeping so the A8 attrs and any row schema see one warmup.
-        params_B["warmup_steps_used"] = W_A + W_B
-        params_B["metric_refresh"] = refresh
-        params_B["metric_refresh_warmup"] = W_A
-        params_B["metric_refresh_pool"] = pool
-        # eps bookkeeping for the A8 row schema and the "re-search moves eps" test:
-        #   eps0            -- the step size the swap started from (phase-A input),
-        #   phaseA_end_eps  -- what the ChEES adapter had settled at the end of phase A,
-        #   eps_researched  -- the re-search on the NEW metric (must differ from phaseA_end).
-        params_B["metric_refresh_eps0"] = float(eps_A)
-        params_B["metric_refresh_phaseA_end_eps"] = float(params_A["step_size"])
-        params_B["metric_refresh_eps_researched"] = float(eps_B)
-        params_B["metric_refresh_reseed"] = reseed
-        params_B["metric_refresh_T0"] = float(T0_B) if T0_B is not None else None
-        # The unit-invariant quantity behind T0, before the (pi/2) factor and the clip. Kept because
-        # T0 alone cannot distinguish "the pool is badly conditioned" from "the clip bit".
-        params_B["metric_refresh_lmax_whitened"] = float(lmax_B) if lmax_B is not None else None
-        # The third return must be the warmup HMCInfo stack for the WHOLE warmup (phase A + phase B)
-        # so the exact A8 gradient count (sum of num_integration_steps) and the warmup divergence
-        # count span both phases; returning phase B alone would under-count warmup gradients by W_A
-        # steps. Build the combined WarmupInfo, then unwrap to the HMCInfo stack like the single-
-        # phase path.
-        combined = _concat_warmup_info(info_A, info_B)
-        if hasattr(combined, "info"):
-            self._warmup_trace = getattr(combined, "trace", None)
-            combined = combined.info
-        return (states_B, params_B, combined)
-
-    def _pool_gradients(self, pos_pool, draws, kwargs):
-        """Log-density gradients at the pooled phase-A positions, in kernel order, chunked.
-
-        ``draws`` is the (N, d) kernel-order flat matrix (== positions_to_draws(pos_pool, pool)).
-        The un-ravel is built from ONE position (a single chain at a single step), because a
-        ravel_pytree of the whole (pool, C, ...) stack maps a full-stack vector, not one row --
-        un-ravelling a single row with the stack's un-ravel produced a malformed position and a
-        non-scalar log-density (caught: "Gradient only defined for scalar-output functions").
-        """
-        ld = self._logdensity()
-        one = {n: pos_pool[n][0, 0] for n in pos_pool}
-        chunk = int(kwargs.get("score_chunk", 1024))
-        N = int(draws.shape[0])
-        return jnp.concatenate([
-            compiled.pool_gradients(ld.fn, ld.names, ld.values, one, draws[i:i + chunk])
-            for i in range(0, N, chunk)], axis=0)
-    
     def _run_dynamic_hmc(self, chees_states, chees_parameters, inverse_mass_matrix, **kwargs):
         """Sample from the frozen kernel: host-driven chunks of ONE jitted program (`compiled.sampling_chunk`).
 
@@ -1293,6 +1024,7 @@ class PfCheesHMC:
         key is ``fold_in(stage_key, draw_index)``. Returns the final state and the per-draw stacks as
         NumPy arrays, ``(draws, chains, ...)``.
         """
+        _check_options("dynamic_hmc_kwargs", kwargs, _DYNAMIC_HMC_OPTIONS)
         # Defaults
         kwargs.setdefault("chains", 32)
         kwargs.setdefault("draws", 1000)
@@ -1566,6 +1298,14 @@ class PfCheesHMC:
         keep_untransformed: bool = False,
         **kwargs,
     ) -> az.InferenceData:
+        # An option nobody reads is an error here, before the first stage runs (each stage checks its own as well).
+        _check_options("sample", kwargs, _SAMPLE_OPTIONS)
+        for where, given, allowed in (
+                ("pathfinder_kwargs", pathfinder_kwargs, _PATHFINDER_OPTIONS),
+                ("step_size_tune_kwargs", step_size_tune_kwargs, _STEP_SIZE_OPTIONS),
+                ("chees_kwargs", chees_kwargs, _CHEES_OPTIONS),
+                ("dynamic_hmc_kwargs", dynamic_hmc_kwargs, _DYNAMIC_HMC_OPTIONS)):
+            _check_options(where, given, allowed)
         #Override chains in all kwargs
         kwargs.setdefault("chains", 32)
         if "chains" in kwargs:
@@ -1582,9 +1322,6 @@ class PfCheesHMC:
         self._refresh_values()
         pf_samples, inverse_mass_matrix = self._run_pathfinder(**pathfinder_kwargs)
         eps0 = self._run_step_size_tune(pf_samples, inverse_mass_matrix, **step_size_tune_kwargs)
-        # Snapshot: the two-phase refresh re-searches eps through the same method, with the CHEES
-        # kwargs, and overwrites this entry. The re-search's own entry is read after warmup.
-        eps0_record = dict(self._resolved["step_size"])
         chees_states, chees_parameters, chees_info = self._run_chees(
             pf_samples,
             inverse_mass_matrix,
@@ -1627,46 +1364,28 @@ class PfCheesHMC:
         samp_n = _np.asarray(infos_hist.num_integration_steps, dtype=_np.int64)   # (draws, chains)
         idata.attrs["warmup_grad_evals_per_chain"] = int(warm_n.sum() // warm_n.shape[1])
         idata.attrs["sampling_grad_evals_per_chain"] = int(samp_n.sum() // samp_n.shape[1])
-        # WP4 metric refresh: expose the swap bookkeeping in the output (and hence the row
-        # schema) so a refresh is auditable -- which estimator, which warmup split it used,
-        # and where the step size moved across the swap.
-        for _k in ("metric_refresh", "metric_refresh_warmup", "metric_refresh_pool",
-                  "metric_refresh_eps0", "metric_refresh_phaseA_end_eps",
-                  "metric_refresh_eps_researched", "metric_refresh_reseed", "metric_refresh_T0",
-                  "metric_refresh_lmax_whitened"):
-            if _k in chees_parameters:
-                idata.attrs[_k] = chees_parameters[_k]
         # R2-WP2: the resolved configuration, one JSON string (key list: see _config_record).
-        idata.attrs["config"] = self._config_record(idata, chees_parameters, eps0, eps0_record)
+        idata.attrs["config"] = self._config_record(idata, chees_parameters, eps0)
         return idata
 
-    def _config_record(self, idata, chees_parameters, eps0, eps0_record) -> str:
+    def _config_record(self, idata, chees_parameters, eps0) -> str:
         """JSON string for ``idata.attrs["config"]``: what the sampler RESOLVED, not what was asked.
 
         Every value is the one the code applied, defaults filled in, so a harness can compare it with
         the flags it passed and can never read "None" for a knob that had a default. Keys:
 
         Pathfinder / pool / metric (``_run_pathfinder``)
-            ``imm_source``, ``imm_orientation``, ``imm_order``; ``ridge`` (added to the Monte-Carlo
-            covariance only, so 0.0 for every other source); ``pf_draws``; ``pf_pool_cap`` (the cap
-            applied, 0 = uncapped) and ``pf_pool_rows`` (rows actually drawn); ``pf_start_scale``;
-            ``init_source``,
-            ``init_pick``, ``superchains`` (null = not set), ``pm_chains``, ``pm_init``, ``pm_tune``,
+            ``imm_source``; ``ridge`` (added to the Monte-Carlo covariance only, so 0.0 for every other
+            source); ``pf_draws``; ``pf_pool_cap`` (the cap applied, 0 = uncapped) and ``pf_pool_rows``
+            (rows actually drawn); ``init_source``, ``pm_chains``, ``pm_init``, ``pm_tune``,
             ``score_chunk``.
         Step-size search (``_run_step_size_tune``)
             ``eps0_probes`` (number of probe positions) and ``eps0`` (the step size it returned) for
-            the search before warmup; with a refresh, the re-search on the new metric reads its own
-            ``metric_refresh_eps_probes`` from the CHEES kwargs (not the step-size kwargs).
+            the search before warmup.
         Warmup (``_run_chees``)
             ``num_warmup`` (configured warmup length) and ``warmup_steps_used`` (ran; differs only
-            with a stop rule), ``iterate``, ``adam_lr``, ``target_accept``, ``max_leapfrog_steps``,
+            with a stop rule), ``adam_lr``, ``target_accept``, ``max_leapfrog_steps``,
             ``warmup_stop`` (null = no stop rule).
-        Metric refresh
-            ``metric_refresh`` ("none" or the estimator name that ran) and, when one ran,
-            ``metric_refresh_warmup`` (phase-A steps after clamping), ``metric_refresh_pool``,
-            ``metric_refresh_reseed``, ``metric_refresh_ridge``, ``metric_refresh_shrink``,
-            ``metric_refresh_rank``, ``metric_refresh_eps_probes``; all null when ``metric_refresh``
-            is "none" (not applicable).
         Sampling (``_run_dynamic_hmc``)
             ``chains``, ``num_draws``.
         Frozen at the end of warmup
@@ -1678,20 +1397,14 @@ class PfCheesHMC:
         positive-definiteness check, depends on it.
         """
         r = self._resolved
-        pf, ss, wu, sm = r["pathfinder"], eps0_record, r["warmup"], r["sampling"]
-        refreshing = wu["metric_refresh"] != "none"
+        pf, ss, wu, sm = r["pathfinder"], r["step_size"], r["warmup"], r["sampling"]
         cfg = {
             "imm_source": pf["imm_source"],
-            "imm_orientation": pf["imm_orientation"],
-            "imm_order": pf["imm_order"],
             "ridge": pf["ridge"],
             "pf_draws": pf["pf_draws"],
             "pf_pool_cap": pf["pf_pool_cap"],
             "pf_pool_rows": pf["pf_pool_rows"],
-            "pf_start_scale": pf["pf_start_scale"],
             "init_source": pf["init_source"],
-            "init_pick": pf["init_pick"],
-            "superchains": pf["superchains"],
             "pm_chains": pf["pm_chains"],
             "pm_init": pf["pm_init"],
             "pm_tune": pf["pm_tune"],
@@ -1700,19 +1413,10 @@ class PfCheesHMC:
             "eps0": float(eps0),
             "num_warmup": wu["num_warmup"],
             "warmup_steps_used": int(idata.attrs["warmup_steps_used"]),
-            "iterate": wu["iterate"],
             "adam_lr": wu["adam_lr"],
             "target_accept": wu["target_accept"],
             "max_leapfrog_steps": wu["max_leapfrog_steps"],
             "warmup_stop": wu["warmup_stop"],
-            "metric_refresh": wu["metric_refresh"],
-            "metric_refresh_warmup": chees_parameters["metric_refresh_warmup"] if refreshing else None,
-            "metric_refresh_pool": chees_parameters["metric_refresh_pool"] if refreshing else None,
-            "metric_refresh_reseed": chees_parameters["metric_refresh_reseed"] if refreshing else None,
-            "metric_refresh_ridge": wu["metric_refresh_ridge"],
-            "metric_refresh_shrink": wu["metric_refresh_shrink"],
-            "metric_refresh_rank": wu["metric_refresh_rank"],
-            "metric_refresh_eps_probes": r["step_size"]["eps0_probes"] if refreshing else None,
             "chains": sm["chains"],
             "num_draws": sm["num_draws"],
             "frozen_step_size": idata.attrs["frozen_step_size"],
@@ -1767,14 +1471,15 @@ def sample_pf_chees_hmc(
         Forwarded to `PfCheesHMC.sample(...)`. ``pathfinder_kwargs["pm_chains"]`` (default 1, at most
         ``chains``) is how many PyMC start points are built; they are shared cyclically, chain c taking
         point ``c % pm_chains``, so 1 shares one point among all the chains and ``chains`` gives each its
-        own. The other Pathfinder keys are listed in `PfCheesHMC._run_pathfinder`.
+        own. The other Pathfinder keys are listed in `PfCheesHMC._run_pathfinder`, the warmup keys in
+        `PfCheesHMC._run_chees`. A key a stage does not read raises a TypeError that names it.
 
     Returns
     -------
     arviz.InferenceData
     """
     # Keep the compiled programs on disk for the next Python process, unless the user opted out or set a JAX cache of
-    # their own (README, "Keeping the compiled programs between Python processes"); does nothing after the first call.
+    # their own (README, "Compile once, and the disk cache"); does nothing after the first call.
     ensure_default_compilation_cache()
     _warn_if_x64_contradicts_floatx()
 

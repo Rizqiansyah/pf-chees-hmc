@@ -1,6 +1,0 @@
-# F2k: the R1 gate rows under float32 on the GPU (run with PYTENSOR_FLAGS="floatX=float32,blas__ldflags=-llapack -lblas -lcblas -lm"
-# exported; results/f2/drivers/run_step.sh F2k results/f2/drivers/F2k_gate.cmds). Same shapes and seeds as F2f_gate.cmds.
-float32 --models 8schools --chains 1024 --draws 10 --warmups 25 --seeds 1,2,3 --repeat 2 --arm f2k:float32 --wp F2 --step F2k
-float32 --models gev --chains 1024 --draws 10 --warmups 25 --seeds 1,2,3 --repeat 2 --arm f2k:float32 --wp F2 --step F2k
-float32 --models logit_1000x25 --chains 1024 --draws 10 --warmups 50 --seeds 1,2,3 --repeat 2 --arm f2k:float32 --wp F2 --step F2k
-float32 --models radon_noncentered --chains 1024 --draws 10 --warmups 300 --seeds 1,2,3 --repeat 2 --arm f2k:float32 --wp F2 --step F2k

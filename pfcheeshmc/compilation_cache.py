@@ -19,7 +19,7 @@ The two thresholds are what makes the cache worth having. JAX writes a program o
 compile (``jax_persistent_cache_min_compile_time_secs``), and nearly every program of a sampler call takes less:
 8 Schools at 1,024 chains makes 134 compile requests in a first call and only 3 of them reach 1 s, so the
 directory alone takes a fresh process's first call from 13.6 s to 8.2 s, while all three settings take it to
-3.4 s (CPU; see the README, "Keeping the compiled programs between Python processes").
+3.4 s (CPU; see the README, "Compile once, and the disk cache").
 """
 from __future__ import annotations
 

@@ -13,9 +13,6 @@ Pinned here:
 * with the whole pool scored the picks are the stratified picks over the whole pool (bit-identical to the
   code before the cap), and with a stride they are the stratified picks over exactly that strided subset;
 * a larger pool than the cap still gives distinct, ordered, finite starts.
-
-The start-dispersion ratio of radon against the reference posterior (REPORT run-1 section 3j), old against new,
-is `tools/start_dispersion.py`; its numbers are in results/f2/F2cd/SUMMARY.md.
 """
 import math
 
@@ -25,9 +22,10 @@ import numpy as np
 import pymc as pm
 import pytest
 
+import pfcheeshmc
 from pfcheeshmc import compiled
 from pfcheeshmc import sampler as sm
-from pfcheeshmc.sampler import PfCheesHMC, default_pool_cap, start_score_stride
+from pfcheeshmc.sampler import PfCheesHMC, _stratified_pool_idx, default_pool_cap, start_score_stride
 
 
 def old_stride(total, chains):
@@ -152,3 +150,47 @@ def test_the_picks_are_spread_over_the_log_density_ranks(monkeypatch):
     scored = np.asarray(compiled.score_pool(ld.fn, ld.names, ld.values, spy.pool, jnp.asarray(spy.idx)))
     assert lp.min() == scored.min()                                            # rank 0 of the subset
     assert lp.max() <= scored.max() and lp.max() >= np.sort(scored)[-1 - len(scored) // chains]
+
+
+# ------------------------------------------------------------------- the stratified pick
+# Tests for stratified chain-start selection (the only start pick since C2 removed ``init_pick="iid"``).
+# 
+# What could silently break: the rank arithmetic running off the end of the subset, duplicates in the
+# scored log-densities collapsing the picks onto one row, or the pool index being applied to the wrong
+# axis after the (chains, draws) -> flat change. Each has a test. The behaviour tests use a tiny model
+# because the property worth checking is "distinct, spread-out starts drawn from the pool", which needs
+# no expensive fit.
+def test_picks_are_distinct_in_range_and_spread_out():
+    subset = jnp.arange(1000)
+    logp = -jnp.abs(subset - 500).astype(float)      # peak at the middle of the pool
+    idx = np.asarray(_stratified_pool_idx(logp, subset, 32))
+    assert len(idx) == 32
+    assert idx.min() >= 0 and idx.max() < 1000
+    assert len(set(idx.tolist())) == 32, "stratified picks must not repeat"
+    gaps = np.diff(np.sort(idx))
+    assert gaps.max() < 5 * max(gaps.min(), 1), f"picks clustered: gaps {gaps[:5]}"
+
+
+def test_duplicate_scores_still_give_distinct_picks():
+    subset = jnp.arange(64)
+    logp = jnp.zeros(64)                              # every draw equally good
+    idx = np.asarray(_stratified_pool_idx(logp, subset, 8))
+    assert len(set(idx.tolist())) == 8
+
+
+def test_more_picks_than_subset_rows_stays_in_bounds():
+    subset = jnp.arange(8)
+    idx = np.asarray(_stratified_pool_idx(-subset.astype(float), subset, 16))
+    assert len(idx) == 16
+    assert idx.min() >= 0 and idx.max() < 8
+
+
+def test_the_stratified_pick_produces_the_contract():
+    with pm.Model() as model:
+        pm.Normal("x", shape=(4,))
+        idata = pfcheeshmc.sample_pf_chees_hmc(
+            model, draws=30, chains=6, random_seed=3, progressbar=False,
+            chees_kwargs={"draws": 10}, pathfinder_kwargs={"draws": 500})
+    assert idata.posterior["x"].shape == (6, 30, 4)
+    assert set(["acceptance_rate", "diverging", "energy", "is_accepted", "lp",
+                "num_integration_steps"]) <= set(idata.sample_stats.data_vars)

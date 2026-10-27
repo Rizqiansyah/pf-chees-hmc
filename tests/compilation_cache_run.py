@@ -6,7 +6,7 @@ VIA is how the cache is switched on: ``helper`` (``pfcheeshmc.enable_compilation
 ``none`` (the parent has put whatever it wants into the environment; this process touches nothing: with the
 opt-out unset, the sampler call itself switches the default cache on, in the HOME or XDG_CACHE_HOME the parent
 chose), or ``early`` (as ``none``, after compiling a few plain JAX programs, before any sampler call). The
-model is ``tests/seeded_models.hier(DATA_SEED, DATA_SEED)``: other data AND other prior values at the same
+model is ``benchmarks/seeded_models.hier(DATA_SEED, DATA_SEED)``: other data AND other prior values at the same
 shapes for another seed. Prints one JSON line: the JAX monitoring events this call produced, and the number
 of files in CACHE_DIR before and after, its mode, and the JAX cache settings after the call. The draws of ``mu`` and ``tau`` go to OUT.npz.
 """
@@ -18,7 +18,6 @@ import sys
 
 tree, via, cache_dir, seed, out = sys.argv[1:6]
 sys.path.insert(0, tree)
-sys.path.insert(1, os.path.join(tree, "tests"))
 
 import jax  # noqa: E402
 import jax.monitoring  # noqa: E402
@@ -30,7 +29,7 @@ jax.monitoring.register_event_listener(lambda event, **kw: events.update([event]
 jax.monitoring.register_event_duration_secs_listener(lambda event, secs, **kw: seconds.__setitem__(event, seconds[event] + secs))
 
 import pfcheeshmc  # noqa: E402
-from seeded_models import hier  # noqa: E402
+from benchmarks.seeded_models import hier  # noqa: E402
 
 if via == "helper":
     pfcheeshmc.enable_compilation_cache(cache_dir)

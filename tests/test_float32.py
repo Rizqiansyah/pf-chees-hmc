@@ -7,24 +7,22 @@ What a wrong answer here costs:
   * the smoke test of 2026-10-24 failed on all four models with "cond branches must have equal output types", inside
     BlackJAX's L-BFGS. The value that optax's line search keeps in its state has the dtype of the position (float32);
     a fresh evaluation has the dtype of the log-density, and that was float64: the two example notebooks (8 Schools,
-    GEV) run ``jax.config.update("jax_enable_x64", True)`` in their first cell, `tools/r1_bias.build_model` executes
+    GEV) run ``jax.config.update("jax_enable_x64", True)`` in their first cell, the tag's model builder executed
     them, and 8 Schools' data are float64 NumPy arrays that PyMC does not cast. The first model turned x64 on for the
     whole process, so the other three failed behind it. Nothing in the sampler produces the mismatch (a process whose
-    x64 was off all along ran logit_1000x25 on the code before this task). `build_model` now puts x64 back to
-    ``floatX == "float64"``, and the sampler says so when the two disagree;
+    x64 was off all along ran logit_1000x25 on the code before this task). The sampler says so when x64 and floatX
+    disagree. The models are built in Python now (`benchmarks/models.py`), and `build_model` sets no JAX option: x64
+    stays what PyTensor made it from floatX, at either floatX (below);
   * a float32 run that finishes with a NaN, or whose posterior is float64 (something converted it back);
   * a warning that tells a float32 user to switch x64 on ("Explicitly requested dtype ... is not available");
-  * a float64 run whose draws move by one bit. The code before this task is a `git archive` (`BASE_SHA`), run in fresh
-    processes.
+  * a float64 run whose draws move by one bit (`test_golden.py`: the float64 golden files equal the tag's draws).
 """
 import concurrent.futures
-import io
 import json
 import os
 import pathlib
 import subprocess
 import sys
-import tarfile
 import warnings
 
 import jax
@@ -34,12 +32,13 @@ import pymc as pm
 import pytest
 import scipy.special as sps
 
+import make_golden
+
+
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent
-BASE_SHA = "62c38a3"             # the f2 head before F2k
 LADDER = ("8schools", "gev", "logit_1000x25", "radon_noncentered")
 SOURCES = "pf,adapt_diag"        # init_source values: the Pathfinder pool pick, and the (jittered) PyMC start
-IDENTITY_MODELS = ("8schools", "gev")
 
 
 def _env(floatx):
@@ -86,37 +85,13 @@ def float32_jobs(tmp_path_factory):
     run.close()
 
 
-@pytest.fixture(scope="module")
-def base_tree(tmp_path_factory):
-    git = ["git", "-C", str(REPO)]
-    try:
-        subprocess.run([*git, "cat-file", "-e", f"{BASE_SHA}^{{commit}}"], check=True, capture_output=True)
-        blob = subprocess.run([*git, "archive", BASE_SHA], check=True, capture_output=True).stdout
-    except (OSError, subprocess.CalledProcessError):
-        pytest.skip(f"commit {BASE_SHA} is not available here (git archive failed)")
-    dest = tmp_path_factory.mktemp("float32_base") / "base"
-    with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
-        tar.extractall(dest, filter="data")
-    return dest
-
-
-@pytest.fixture(scope="module")
-def float64_jobs(tmp_path_factory, base_tree):
-    tmp = tmp_path_factory.mktemp("float64")
-    jobs = {f"{label}:{name}": (tree, name, "float64", ("--init-sources", SOURCES))
-            for name in IDENTITY_MODELS for label, tree in (("old", base_tree), ("new", REPO))}
-    run = Jobs(tmp, jobs)
-    yield run
-    run.close()
-
-
 # ------------------------------------------------------------------------------------ float32, end to end
 @pytest.mark.parametrize("name", LADDER)
 def test_the_ladder_model_samples_under_float32(float32_jobs, name):
     """Finishes, finite draws, float32 posterior, x64 off, and no warning that advises switching x64 on."""
     meta, arrays = float32_jobs[name]
     assert meta["floatX"] == "float32" and meta["x64_start"] is False
-    assert meta["x64_built"] is False, "building the model turned jax_enable_x64 on (an example notebook's cell)"
+    assert meta["x64_built"] is False, "building the model turned jax_enable_x64 on"
     assert meta["x64_end"] is False
     assert meta["errors"] == {}, meta["errors"]
     assert meta["warnings"] == [], meta["warnings"][:2]
@@ -133,12 +108,21 @@ def test_the_ladder_model_samples_under_float32(float32_jobs, name):
         assert set(meta["dtypes"][source].values()) <= {"float32", "bool", "int32"}, meta["dtypes"][source]
 
 
-def test_the_two_notebook_models_leave_x64_off_under_float32(float32_jobs):
-    """The leaf mismatch of the smoke test. `build_model` runs the notebook cell that turns x64 on; after it, x64 must
-    be what floatX says (off), or the log-density of a float32 position is float64 and L-BFGS fails in `lax.cond`."""
-    for name in ("8schools", "gev"):
-        meta, _ = float32_jobs[name]
-        assert meta["x64_built"] is False and meta["errors"] == {}, (name, meta["x64_built"], meta["errors"])
+@pytest.mark.parametrize("name", LADDER)
+def test_the_float32_draws_are_those_of_the_golden_file(float32_jobs, name):
+    """The same children, both init sources: every posterior and sample_stats array, the attributes and the config."""
+    _, arrays = float32_jobs[name]
+    make_golden.assert_golden(f"float32_{name}", arrays)
+
+
+@pytest.mark.parametrize("name", LADDER)
+def test_build_model_never_changes_x64_under_float32(float32_jobs, name):
+    """The leaf mismatch of the smoke test: if building a model turns x64 on under float32, the log-density of a float32
+    position is float64 and L-BFGS fails in `lax.cond`. `build_model` sets no JAX option (the notebook models it replaced
+    ran a cell that turned x64 on)."""
+    meta, _ = float32_jobs[name]
+    assert meta["x64_built"] == meta["x64_start"] is False and meta["errors"] == {}, (
+        name, meta["x64_start"], meta["x64_built"], meta["errors"])
 
 
 def test_x64_on_under_float32_is_said_not_left_to_a_jax_type_error(float32_jobs):
@@ -148,28 +132,6 @@ def test_x64_on_under_float32_is_said_not_left_to_a_jax_type_error(float32_jobs)
     assert len(meta["x64_warnings"]) == 1 and meta["x64_end"] is True
     text = meta["x64_warnings"][0]
     assert "floatX is float32" in text and 'jax.config.update("jax_enable_x64", False)' in text
-
-
-# ------------------------------------------------------------------------------------ float64, bit for bit
-@pytest.mark.parametrize("name", IDENTITY_MODELS)
-def test_float64_draws_are_bit_identical_to_the_code_before(float64_jobs, name):
-    """Both init sources, one call each: every posterior and sample_stats array equal to the last bit, same dtypes,
-    same resolved config. (8 Schools has the notebook's float64 data; GEV the start repair and the erfcx.)"""
-    old_meta, old = float64_jobs[f"old:{name}"]
-    new_meta, new = float64_jobs[f"new:{name}"]
-    assert sorted(old) == sorted(new) and len(old) >= 20
-    for source in SOURCES.split(","):
-        assert any(k.startswith(f"{source}/posterior/") for k in old) and any(k.startswith(f"{source}/stats/") for k in old)
-    for key in old:
-        assert old[key].dtype == new[key].dtype and np.array_equal(old[key], new[key], equal_nan=True), key
-    assert old_meta["dtypes"] == new_meta["dtypes"]
-    assert {s: json.loads(c) for s, c in new_meta["config"].items()} == {s: json.loads(c) for s, c in old_meta["config"].items()}
-    for key in new:
-        if "/posterior/" in key:
-            assert new[key].dtype == np.float64 and np.isfinite(new[key]).all(), key
-    # the float32 guard in `build_model` must not touch a float64 session: the notebook's x64 stays on
-    assert new_meta["floatX"] == "float64" and new_meta["x64_built"] is True and new_meta["x64_end"] is True
-    assert new_meta["x64_warnings"] == []
 
 
 # ------------------------------------------------------------------------------------ in-process pieces

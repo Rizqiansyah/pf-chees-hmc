@@ -3,37 +3,20 @@
 What a wrong answer here would silently cost: every `sample()` call recompiles XLA programs (15.9-17.4 s of
 a 19.9-21.9 s call for 8 Schools at C=1,024) because jitted closures are rebuilt per call and per-run values
 (data, priors, metric, step size) are compiled in as constants. Nothing in the draws would show it, so the
-only honest test counts compiles: `compile_counter.count_compiles` listens to JAX's backend-compile event.
+only honest test counts compiles: `benchmarks/compile_counter.count_compiles` listens to JAX's backend-compile event.
 
-F2b-1 converted the non-loop sites (`pfcheeshmc.compiled`, plus the ensemble estimators): the start screening
+F2b-1 converted the non-loop sites (`pfcheeshmc.compiled`): the start screening
 and scoring, the Pathfinder fit and draws, the step-size search, the pool gradients, the warmup init, and the
 value -> problem-space transform. F2b-2 converted the two loops: the warmup (`compiled.warmup_chunk`) and the
 sampling loop (`compiled.sampling_chunk`) are chunk programs driven from the host with a dynamic active
 count, so W and D are loop bounds on the host. The correctness side (determinism, chunk-size invariance, a
 known posterior, bookkeeping, the progress bars) is in `test_chunked_loops.py`.
 
-Equivalence with the F2 head before F2c/F2d/eps0 (`BASE_SHA`, cdc4a55). The initial points are PyMC's own
-(equal to the last digit on these models), the batched step-size search is the per-probe one bit for bit, and
-the stratified start pick scores the whole pool whenever it has at most 4C rows (d <= sqrt(C)), so 8 Schools,
-GEV and logit at C=1,024 are BIT-identical to cdc4a55, every array. Radon's pool is 4d^2 = 122,500 rows, of
-which F2c now scores 4,084 instead of all: its picks, hence its draws, change by design, and it is compared on
-structure only (as is the refresh case, whose stream already differed from before F2b-2, see
-`test_chunked_loops.py`).
-
-Before that, F2b-2 versus c35fbba was NOT bit-for-bit: the loops are different XLA programs (a chunk of steps
-behind a conditional, the trajectory-length adjustment and the step size as arguments instead of constants),
-which changes floating-point results by an ulp, carried through chaotic trajectories to about 1e-10 relative
-(observed worst 1.9e-10, GEV).
+The draws are pinned, bit for bit, by the golden files of `test_golden.py`.
 """
-import concurrent.futures
 import contextlib
-import io
-import json
-import os
 import pathlib
-import subprocess
 import sys
-import tarfile
 import types
 
 import jax
@@ -44,11 +27,11 @@ import numpy as np
 import pymc as pm
 import pytest
 
-from compile_counter import count_compiles, count_pytensor_functions
-from seeded_models import dims_model, hier
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from benchmarks.compile_counter import count_compiles, count_pytensor_functions  # noqa: E402
+from benchmarks.seeded_models import dims_model, hier  # noqa: E402
 
 from pfcheeshmc import compiled
-from pfcheeshmc.ensemble_metric import ENGLISH_NAMES, estimate_covariance, positions_to_draws
 from pfcheeshmc.lifted import lift_logp
 from pfcheeshmc.sampler import PfCheesHMC, sample_pf_chees_hmc
 
@@ -75,10 +58,13 @@ def run_sites(model, seed, chains=C, **pathfinder_kw):
         s._run_step_size_tune(pf, imm, seed=seed)
     with _site(counts, "usable_mask"):
         s._usable_mask(pf)
-    pool = {n: jnp.stack([pf[n]] * 3) for n in pf}                      # (3, chains, ...)
-    with _site(counts, "pool_gradients"):
-        s._pool_gradients(pool, positions_to_draws(pool, 3), {"score_chunk": 40})   # chunks of 40 and a rest
     ld = s._logdensity()
+    pool = {n: jnp.stack([pf[n]] * 3) for n in pf}                      # (3, chains, ...)
+    draws = jnp.concatenate([a.reshape(a.shape[0] * a.shape[1], -1) for a in jax.tree_util.tree_leaves(pool)], axis=1)
+    one = {n: pool[n][0, 0] for n in pool}
+    with _site(counts, "pool_gradients"):                                # chunks of 40 and a rest
+        for i in range(0, draws.shape[0], 40):
+            compiled.pool_gradients(ld.fn, ld.names, ld.values, one, draws[i:i + 40])
     with _site(counts, "batch_init"):
         compiled.batch_init(ld.fn, ld.names, ld.values, pf, 0)
     hist = types.SimpleNamespace(position={n: jnp.stack([pf[n]] * D) for n in pf})    # (draws, chains, ...)
@@ -302,57 +288,6 @@ def test_imm_sources_compile_nothing_on_a_second_invocation(imm_source):
     assert_no_compiles(run_sites(hier(2, 3), seed=2, **kw), imm_source)
 
 
-def test_superchains_compile_nothing_on_a_second_invocation():
-    kw = dict(superchains=4)
-    run_sites(hier(1, 1), seed=1, **kw)
-    assert_no_compiles(run_sites(hier(2, 3), seed=2, **kw), "superchains")
-
-
-@pytest.mark.parametrize("estimator", sorted(ENGLISH_NAMES))
-def test_every_ensemble_estimator_compiles_nothing_on_a_second_call(estimator):
-    d = 6
-    key = jax.random.key(0)
-    draws = jax.random.normal(key, (40, d), dtype=jnp.float64)
-    grads = -draws + 0.1 * jax.random.normal(jax.random.key(1), (40, d), dtype=jnp.float64)
-    estimate_covariance(estimator, draws, grads)
-    draws2, grads2 = 1.5 * draws + 0.2, 1.5 * grads - 0.1
-    with count_compiles() as cc:
-        estimate_covariance(estimator, draws2, grads2)
-    assert cc.count == 0, str(cc)
-
-
-def test_metric_refresh_path_second_call_compiles_nothing():
-    refresh = dict(metric_refresh="fisher_diag", metric_refresh_warmup=10)
-    sample_call(hier(1, 1), seed=1, **refresh)
-    idata, cc = sample_call(hier(5, 6), seed=2, **refresh)
-    assert cc.count == 0, str(cc)
-    assert idata.attrs["metric_refresh"] == "fisher_diag"
-
-
-@pytest.mark.parametrize("estimator", ["fisher_diag", "sample_diag"])
-def test_metric_refresh_with_another_W_and_W_A_compiles_nothing(estimator):
-    """W_A is a loop bound. The estimator's pool is min(W_A, 20) draws, so it is the same shape while W_A >= 20."""
-    kw = dict(metric_refresh=estimator)
-    sample_call(hier(1, 1), seed=1, warmup=60, metric_refresh_warmup=30, **kw)
-    idata, cc = sample_call(hier(2, 2), seed=2, warmup=83, metric_refresh_warmup=41, **kw)
-    assert cc.count == 0, str(cc)
-    assert idata.attrs["metric_refresh_warmup"] == 41 and idata.attrs["warmup_steps_used"] == 83
-
-
-def test_metric_refresh_in_the_multi_chunk_regime_compiles_nothing_for_another_W_A(small_chunks):
-    kw = dict(metric_refresh="fisher_diag")
-    sample_call(hier(1, 1), seed=1, warmup=3 * 6 + 20, metric_refresh_warmup=2 * 6 + 3 + 20, **kw)
-    _, cc = sample_call(hier(2, 2), seed=2, warmup=7 * 6 + 1 + 20, metric_refresh_warmup=6 + 1 + 20, **kw)
-    assert cc.count == 0, str(cc)
-
-
-def test_superchain_path_second_call_compiles_nothing():
-    kw = dict(pathfinder_kwargs={"superchains": 4})
-    sample_call(hier(1, 1), seed=1, **kw)
-    _, cc = sample_call(hier(5, 6), seed=2, **kw)
-    assert cc.count == 0, str(cc)
-
-
 def test_stop_rule_path_second_call_compiles_nothing_also_for_another_W():
     """The block and window are settings (one program per rule); the last, shorter block is the same program."""
     rule = {"block": 8, "window": 8, "rhat": 0.0}            # never fires: every block runs
@@ -505,100 +440,3 @@ def test_a_replaced_ld_fn_is_honoured_by_the_compiled_sites_and_is_one_static_ar
     assert cc.count == 0 and np.array_equal(np.asarray(again), [False, True, True, True])
     s.ld_fn = lambda pos: -jnp.inf                        # another replacement is another program
     assert not bool(jnp.any(s._usable_mask(stack)))
-
-
-# ---------------------------------------------------------------------- 4. equivalence
-BASE_SHA = "cdc4a55"            # the f2 head before F2c, F2d and the one-dispatch eps0 search
-EQUIV_CASES = {                  # name -> (model, extra args for compile_equiv_run.py)
-    "8schools": ("8schools", ["--chains", "1024"]),
-    "gev": ("gev", ["--chains", "1024"]),
-    "logit_1000x25": ("logit_1000x25", ["--chains", "1024"]),
-    "radon_noncentered": ("radon_noncentered", []),
-    "8schools+refresh": ("8schools", ["--chees", json.dumps(
-        {"metric_refresh": "fisher_diag", "metric_refresh_warmup": 10})]),
-    "8schools+pf_closed+superchains": ("8schools", ["--pathfinder", json.dumps(
-        {"imm_source": "pf_closed", "superchains": 4})]),
-}
-# The refresh path's phase A and B were keyed `split(fold_in(key, 0), n)`: a stream that depended on the block
-# length. They are keyed `fold_in(key, global_step)` now, so that run is a different realisation of the same
-# algorithm. It is compared on structure here, and statistically in test_chunked_loops.py. Radon's start picks
-# changed with F2c (a pool of 122,500 rows is scored on 4,084 of them), at C=8 too (the refresh case as well).
-STRUCTURE_ONLY_CASES = {"8schools+refresh", "radon_noncentered"}
-# d <= sqrt(C): the whole 4C-row pool is scored, as before; nothing in the run differs.
-BIT_IDENTICAL_CASES = {"8schools", "gev", "logit_1000x25"}
-EQUIV_RTOL = 1e-7        # relative to (1 + |x|), for the other cases (observed worst 1.9e-10 across F2b-2)
-
-
-def _base_tree(tmp):
-    git = ["git", "-C", str(REPO)]
-    try:
-        subprocess.run([*git, "cat-file", "-e", f"{BASE_SHA}^{{commit}}"], check=True, capture_output=True)
-        blob = subprocess.run([*git, "archive", BASE_SHA], check=True, capture_output=True).stdout
-    except (OSError, subprocess.CalledProcessError):
-        pytest.skip(f"commit {BASE_SHA} is not available here (git archive failed)")
-    dest = tmp / "base"
-    with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
-        tar.extractall(dest)
-    return dest
-
-
-def _run_in_tree(tree, model, out, extra):
-    env = dict(os.environ, PYTHONPATH=str(tree), CUDA_VISIBLE_DEVICES="", JAX_PLATFORMS="cpu",
-               OMP_NUM_THREADS="2", PYTENSOR_FLAGS="blas__ldflags=-llapack -lblas -lcblas -lm")
-    # The example notebooks the ladder models are built from set JAX_PLATFORM_NAME=gpu in os.environ
-    # when another test has executed one in this process; a CPU-only child must not inherit that.
-    env.pop("JAX_PLATFORM_NAME", None)
-    cmd = [sys.executable, str(pathlib.Path(__file__).with_name("compile_equiv_run.py")),
-           str(tree), model, str(out), *extra]
-    done = subprocess.run(cmd, env=env, capture_output=True, text=True)
-    assert done.returncode == 0, done.stderr[-2000:]
-    return np.load(out)
-
-
-@pytest.fixture(scope="module")
-def equivalence(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("equiv")
-    base = _base_tree(tmp)
-    jobs = {(case, tree_name): (tree, model, tmp / f"{tree_name}_{case.replace('+', '_')}.npz", extra)
-            for case, (model, extra) in EQUIV_CASES.items()
-            for tree_name, tree in (("old", base), ("new", REPO))}
-    workers = max(2, min(len(jobs), (os.cpu_count() or 4) // 3))
-    with concurrent.futures.ThreadPoolExecutor(workers) as pool:
-        futures = {key: pool.submit(_run_in_tree, *args) for key, args in jobs.items()}
-        return {key: f.result() for key, f in futures.items()}
-
-
-@pytest.mark.parametrize("case", list(EQUIV_CASES))
-def test_draws_match_the_f2_head_before_this_task(equivalence, case):
-    """BIT-identical for d <= sqrt(C) (every array, every config value); within EQUIV_RTOL otherwise; structure only
-    where F2c changes the start picks."""
-    old, new = equivalence[(case, "old")], equivalence[(case, "new")]
-    assert sorted(old.files) == sorted(new.files)
-    worst = 0.0
-    for key in old.files:
-        a, b = old[key], new[key]
-        if key == "config":
-            continue
-        assert a.shape == b.shape and a.dtype == b.dtype, key
-        if case in STRUCTURE_ONLY_CASES:
-            continue
-        if case in BIT_IDENTICAL_CASES:
-            assert np.array_equal(a, b, equal_nan=True), f"{key}: not bit-identical to {BASE_SHA}"
-            continue
-        if a.dtype.kind in "biu":                       # steps, divergences, accepts: a flip is a different run
-            assert np.array_equal(a, b), key
-            continue
-        rel = np.abs(a - b) / (1.0 + np.abs(a))
-        worst = max(worst, float(np.nanmax(rel)))
-        assert np.all(rel <= EQUIV_RTOL), f"{key}: worst relative difference {np.nanmax(rel):.3e}"
-    old_cfg, new_cfg = json.loads(str(old["config"])), json.loads(str(new["config"]))
-    assert old_cfg.keys() == new_cfg.keys()
-    for k, v in old_cfg.items():                        # every resolved setting; floats only up to the ulp
-        if case in STRUCTURE_ONLY_CASES and k in ("eps0", "frozen_step_size", "frozen_L_nominal"):
-            continue                                    # adaptation outputs of a different realisation
-        if case in BIT_IDENTICAL_CASES:
-            assert new_cfg[k] == v, k
-        elif isinstance(v, float):
-            assert new_cfg[k] == pytest.approx(v, rel=EQUIV_RTOL), k
-        else:
-            assert new_cfg[k] == v, k

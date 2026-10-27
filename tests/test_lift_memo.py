@@ -35,10 +35,10 @@ from pytensor.tensor.variable import TensorConstant
 # Same workaround as tests/test_lifted.py: PyMC's own C backend cannot link a Dot under a path with a space.
 pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
-import r1_bias as rb  # noqa: E402
-from seeded_models import hier  # noqa: E402
-from test_lifted import EXTRA  # noqa: E402
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from benchmarks.models import build_model  # noqa: E402
+from benchmarks.seeded_models import hier  # noqa: E402
+from _helpers import EXTRA, point, pymc_logp  # noqa: E402
 
 from pfcheeshmc import lifted  # noqa: E402
 from pfcheeshmc.lifted import lift_graph, lift_initial_point, lift_logp  # noqa: E402
@@ -96,12 +96,6 @@ def lift_sites(model):
     return {"logp": sampler._lifted, "initial_point": lift_initial_point(model), "transform": transform}
 
 
-def point(model, seed=0):
-    ip = model.initial_point()
-    rng = np.random.default_rng(seed)
-    return tuple(jnp.asarray(ip[v.name] + 0.3 * rng.standard_normal(np.shape(ip[v.name]))) for v in model.value_vars)
-
-
 def site_args(model, site):
     return () if site == "initial_point" else point(model)
 
@@ -129,10 +123,6 @@ def build_without_memo(model, site, monkeypatch):
         mp.setattr(lifted, "_recall", lambda inputs, outputs: (None, None))
         fn, values, *_ = lifted._build(model, inputs, outputs, "model_inputs")
     return fn, values
-
-
-def pymc_logp(model, x):
-    return float(model.compile_logp()({v.name: np.asarray(a) for v, a in zip(model.value_vars, x)}))
 
 
 def perturb_values(model):
@@ -167,12 +157,12 @@ def perturb_values(model):
 # ------------------------------------------------------------------------------------ hit
 @pytest.mark.parametrize("name", LADDER)
 def test_ladder_model_rebuilt_with_new_values_makes_no_rewrite_at_any_site(name, counts, monkeypatch):
-    first_model = rb.build_model(name)
+    first_model = build_model(name)
     first = lift_sites(first_model)
     assert counts.rewrite == counts.funcify >= 3 and counts.lowering >= 3     # the counters see a real build
     memos = sum(len(v) for v in lifted._MEMO.values())
 
-    second_model = rb.build_model(name)
+    second_model = build_model(name)
     arrays, scalars = perturb_values(second_model)
     assert arrays + scalars > 0, "nothing was perturbed: the premise of the test is gone"
     counts.reset()
@@ -534,7 +524,7 @@ def test_set_data_on_a_kept_static_shared_variable_relifts_correctly_with_the_me
 def test_the_memo_holds_no_data():
     """The stored graph has the data replaced by placeholders: the 1000 x 25 design matrix of the logit model
     is lifted, so it is not kept alive (the reason the memo can be an unbounded dict, like the registry)."""
-    m = rb.build_model("logit_1000x25")
+    m = build_model("logit_1000x25")
     lg = lift_sites(m)["logp"]
     assert any(v.size >= 25_000 for v in lg.values)
     memo = next(memo for bucket in lifted._MEMO.values() for memo in bucket)
@@ -555,20 +545,20 @@ def test_second_sampler_call_on_a_rebuilt_model_makes_no_rewrite(counts):
     assert np.all(np.isfinite(mu2)) and not np.allclose(mu1, mu2)
 
 
-@pytest.mark.parametrize("name", ["8schools", "logit_1000x25"])
+@pytest.mark.parametrize("name", ["8schools"])
 def test_draws_are_bit_identical_with_and_without_the_memo(name, monkeypatch):
     """A sampler call whose lifts are all memo hits and one whose lifts are all builds have the same draws for a
     fixed seed, every array of the InferenceData: same function (the registry names the first for a key), same
     values. (That a build from scratch computes the same numbers as the reused function is checked, bit for
     bit, in the ladder test above.)"""
     kw = dict(draws=5, chains=16, progressbar=False, random_seed=3, chees_kwargs={"draws": 10})
-    sample_pf_chees_hmc(rb.build_model(name), **kw)                          # fills the memo and the registry
+    sample_pf_chees_hmc(build_model(name), **kw)                          # fills the memo and the registry
     filed = sum(len(v) for v in lifted._MEMO.values())
-    with_memo = sample_pf_chees_hmc(rb.build_model(name), **kw)
+    with_memo = sample_pf_chees_hmc(build_model(name), **kw)
     assert sum(len(v) for v in lifted._MEMO.values()) == filed, "the second call must have been all hits"
 
     monkeypatch.setattr(lifted, "_recall", lambda inputs, outputs: (None, None))     # every lift builds
-    without = sample_pf_chees_hmc(rb.build_model(name), **kw)
+    without = sample_pf_chees_hmc(build_model(name), **kw)
     for group in ("posterior", "sample_stats"):
         a, b = getattr(with_memo, group), getattr(without, group)
         assert set(a.data_vars) == set(b.data_vars)

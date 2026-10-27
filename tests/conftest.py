@@ -20,7 +20,7 @@ Releasing compiled programs (F2g, F2j)
 
     The threshold is ``limit // 2 - MODULE_GROWTH``: a module that starts at or under it ends under half the limit.
     ``MODULE_GROWTH`` is the largest growth of the count inside one test module, with a margin. Measured with
-    ``results/f2/probes/mapcount_modules.py``, each of the 32 modules alone in a fresh process (so from empty caches),
+    a probe (``mapcount_modules.py`` at the tag ``archive/pre-cleanup``), each of the 32 modules alone in a fresh process (so from empty caches),
     as its peak minus its start: test_pf_closed_form.py 12,589, test_compile_once.py 12,582, test_chunked_loops.py
     8,584, test_lift_memo.py 6,349, all others under 5,100. In the suite, after a release, the same modules grew 12,286,
     12,271, 8,326 and 6,020. The constant is 16,000, 27% above the largest. At 65,530 the threshold is 16,765. It is
@@ -39,6 +39,8 @@ import gc
 import os
 
 import jax
+import numpy as np
+import pymc as pm
 import pytest
 
 os.environ["PFCHEESHMC_COMPILATION_CACHE"] = "0"
@@ -87,3 +89,53 @@ def release_if_needed():
 def release_compiled_programs():
     yield
     release_if_needed()
+
+
+# ------------------------------------------------------------------ fixtures shared by test_metric_orientation and test_pf_closed_form
+@pytest.fixture(scope="module")
+def odd_order_model():
+    """z (sd 100, created first) and a (sd 0.01, created second): value_vars != sorted keys.
+
+    Deliberately not sorted: a test on an already-sorted model would pass on the broken code. The
+    two scales are 8 orders of magnitude apart so a mis-permutation cannot hide inside a tolerance.
+    """
+    with pm.Model() as model:
+        pm.Normal("z", 0.0, 100.0)
+        pm.Normal("a", 0.0, 0.01, shape=3)
+    names = [rv.name for rv in model.value_vars]
+    assert names == ["z", "a"], f"fixture lost its point: value_vars is {names}"
+    assert sorted(names) == ["a", "z"]
+    return model
+
+
+@pytest.fixture(scope="module")
+def anisotropic_model():
+    """Four scalars, posterior variances 1e2 / 3 / 1 / 1e-2, created in a NON-reversing order.
+
+    Conjugate Normal-Normal, so the analytic posterior is exact: var = 1/(1/tau^2 + n/sigma^2),
+    mean = var*(n/sigma^2)*ybar. Tests compare by name, never by position.
+
+    The fixture design matters. An earlier version used three scalars with variances 1e1 / 1e0 /
+    1e-2 created in reverse-sorted order, and it is degenerate for the question these tests ask: the
+    permutation is a reversal, and a symmetric variance ladder means "read an unpermuted covariance"
+    and "read a permuted precision" are nearly the same array, so two of the 2x2 cells came back
+    good and ordering and orientation looked interchangeable. Here value_vars order is
+    [delta, beta, zeta, alpha] against kernel order [alpha, beta, delta, zeta], variances
+    (1, 1e-2, 3, 1e2): no symmetry to hide behind.
+    """
+    rng = np.random.default_rng(3)
+    specs = [("delta", 3.0, 3), ("beta", 1.0, 100), ("zeta", 10.0, 1), ("alpha", 1.0, 1)]
+    y = {name: rng.normal(0.0, sigma, n) for name, sigma, n in specs}
+    tau = 1e6
+    with pm.Model() as model:
+        for name, sigma, n in specs:
+            v = pm.Normal(name, 0.0, tau)
+            pm.Normal(f"obs_{name}", v, sigma, observed=y[name])
+    mean, var = {}, {}
+    for name, sigma, n in specs:
+        prec = 1.0 / tau ** 2 + n / sigma ** 2
+        var[name] = 1.0 / prec
+        mean[name] = var[name] * (n / sigma ** 2) * float(y[name].mean())
+    assert [rv.name for rv in model.value_vars] == ["delta", "beta", "zeta", "alpha"]
+    assert sorted(rv.name for rv in model.value_vars) == ["alpha", "beta", "delta", "zeta"]
+    return model, mean, var

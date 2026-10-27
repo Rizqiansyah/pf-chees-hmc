@@ -10,17 +10,13 @@ that is not skipped, a progress bar that stops at the first chunk. Here:
   sizes (even 1) and the stop-rule block;
 * the discrete bookkeeping (gradient counts, divergences, steps used) against an independent recomputation
   of the trajectory-length rule from the warmup trace;
-* a conjugate Normal-Normal model with a known posterior, against the analytic mean and variance, and
-  against the F2 head (a subprocess on a `git archive`);
+* a conjugate Normal-Normal model with a known posterior, against the analytic mean and variance;
 * the progress bars (host-driven, at chunk granularity) and the absence of any host callback in the programs;
 * the Halton depth (fixed at 30 bits) against the old depth, and the plumbing (`run_chunks`, `HostStack`).
 """
-import concurrent.futures
 import contextlib
 import json
-import os
 import pathlib
-import subprocess
 import sys
 
 import jax
@@ -29,20 +25,38 @@ jax.config.update("jax_enable_x64", True)
 import blackjax.mcmc.dynamic_hmc as dynamic_hmc
 import jax.numpy as jnp
 import numpy as np
+import pymc as pm
 import pytest
-import scipy.stats
 from tqdm.auto import tqdm
 
-from seeded_models import hier
-from test_compile_once import BASE_SHA, _base_tree
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from benchmarks.seeded_models import hier  # noqa: E402
 
 import pfcheeshmc.sampler as sampler_module
 import pfcheeshmc.utils as utils_module
 from pfcheeshmc import compiled
 from pfcheeshmc.sampler import PfCheesHMC, sample_pf_chees_hmc
-import known_posterior_run as kp
 
 CH = 8
+D_THETA = 10
+PRIOR_MU = np.linspace(-1.0, 1.0, D_THETA)
+PRIOR_SD = np.linspace(0.5, 2.0, D_THETA)
+OBS = np.linspace(1.0, -1.0, D_THETA)
+OBS_SE = np.linspace(1.0, 0.4, D_THETA)
+
+
+def analytic():
+    """Posterior mean and variance of each coordinate: theta_j ~ N(mu_j, s_j^2), y_j ~ N(theta_j, se_j^2)."""
+    precision = 1.0 / PRIOR_SD ** 2 + 1.0 / OBS_SE ** 2
+    var = 1.0 / precision
+    return var * (PRIOR_MU / PRIOR_SD ** 2 + OBS / OBS_SE ** 2), var
+
+
+def conjugate_model():
+    with pm.Model() as model:
+        theta = pm.Normal("theta", PRIOR_MU, PRIOR_SD, shape=D_THETA)
+        pm.Normal("y", theta, OBS_SE, observed=OBS)
+    return model
 
 
 def run(seed=5, warmup=40, draws=23, chains=CH, model=None, progressbar=False, **chees):
@@ -118,8 +132,6 @@ def test_the_same_seed_gives_bit_identical_draws_and_another_seed_does_not():
 # ------------------------------------------------------------------- chunk-size invariance
 CHUNK_PATHS = {
     "default": dict(warmup=40),
-    "refresh": dict(warmup=70, metric_refresh="fisher_diag", metric_refresh_warmup=30),
-    "stop rule that never fires": dict(warmup=40, warmup_stop={"block": 16, "window": 16, "rhat": 0.0}),
 }
 
 
@@ -198,44 +210,13 @@ def test_discrete_bookkeeping_matches_an_independent_recomputation(monkeypatch, 
     assert json.loads(idata.attrs["config"])["num_draws"] == D == idata.posterior["mu"].shape[1]
 
 
-def test_the_refresh_path_keeps_one_warmup_of_the_full_length(monkeypatch):
-    """Phase A then phase B, joined on the host: W rows, with the gradient counts of both phases."""
-    set_chunks(monkeypatch, 7, 5, 5)
-    with spy_on_warmup(monkeypatch) as seen:
-        idata = run(warmup=60, metric_refresh="fisher_diag", metric_refresh_warmup=23)
-    assert seen["info"].num_integration_steps.shape == (60, CH) and seen["trace"].step_size.shape == (60,)
-    assert idata.attrs["warmup_steps_used"] == 60 and idata.attrs["metric_refresh_warmup"] == 23
-    assert idata.attrs["warmup_grad_evals_per_chain"] == int(seen["info"].num_integration_steps.sum()) // CH
-    # phase B restarts its own step counter: the trace's step column is 2..24 then 2..38
-    assert np.array_equal(seen["trace"].step, np.concatenate([np.arange(2, 25), np.arange(2, 39)]))
-
-
 # ------------------------------------------------------------------ a known posterior
 @pytest.fixture(scope="module")
-def known_posterior(tmp_path_factory):
-    """New tree and the F2 head, on the conjugate model (C=256, W=200, D=50), plain and with a refresh."""
-    tmp = tmp_path_factory.mktemp("known")
-    base = _base_tree(tmp)
-    refresh = json.dumps({"metric_refresh": "fisher_diag", "metric_refresh_warmup": 60})
-    runner = pathlib.Path(__file__).with_name("known_posterior_run.py")
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", JAX_PLATFORMS="cpu", OMP_NUM_THREADS="2",
-               PYTENSOR_FLAGS="blas__ldflags=-llapack -lblas -lcblas -lm")
-    env.pop("JAX_PLATFORM_NAME", None)
-
-    def job(tree_name, tree, case, extra):
-        out = tmp / f"{tree_name}_{case}.npz"
-        done = subprocess.run(
-            [sys.executable, str(runner), str(tree), str(out), *extra],
-            env=dict(env, PYTHONPATH=str(tree)), capture_output=True, text=True)
-        assert done.returncode == 0, done.stderr[-2000:]
-        return np.load(out)
-
-    repo = pathlib.Path(__file__).resolve().parents[1]
-    jobs = {(t, c): (t, tree, c, extra) for t, tree in (("old", base), ("new", repo))
-            for c, extra in (("plain", []), ("refresh", ["--chees", refresh]))}
-    with concurrent.futures.ThreadPoolExecutor(len(jobs)) as pool:
-        futures = {key: pool.submit(job, *args) for key, args in jobs.items()}
-        return {key: f.result() for key, f in futures.items()}
+def known_posterior():
+    """The conjugate model (C=256, W=200, D=50), `theta` of shape (256, 50, 10)."""
+    idata = sample_pf_chees_hmc(conjugate_model(), draws=50, chains=256, random_seed=1, progressbar=False,
+                                chees_kwargs={"draws": 200})
+    return np.asarray(idata.posterior["theta"].values)
 
 
 def mc_check(theta, label):
@@ -244,7 +225,7 @@ def mc_check(theta, label):
     The standard error comes from the spread of the per-chain estimates (chains are independent), so it
     includes the autocorrelation of the draws within a chain.
     """
-    mean, var = kp.analytic()
+    mean, var = analytic()
     chains = theta.shape[0]
     chain_mean = theta.mean(axis=1)                                      # (chains, 10)
     chain_sq = ((theta - mean) ** 2).mean(axis=1)                        # unbiased for the variance: known mean
@@ -254,26 +235,9 @@ def mc_check(theta, label):
         assert np.all(np.abs(z) < 4.0), f"{label} {name}: z = {np.round(z, 2)}"
 
 
-@pytest.mark.parametrize("case", ["plain", "refresh"])
-def test_known_posterior_mean_and_variance_within_4_standard_errors(known_posterior, case):
-    new = known_posterior[("new", case)]["theta"]
-    assert new.shape == (256, 50, kp.D_THETA)
-    mc_check(new, f"new {case}")
-    mc_check(known_posterior[("old", case)]["theta"], f"f2 head {case}")        # the check itself is sound
-
-
-@pytest.mark.parametrize("case", ["plain", "refresh"])
-def test_known_posterior_draws_are_not_distinguishable_from_the_f2_head(known_posterior, case):
-    """Two-sample KS per coordinate, new vs F2 head, same seed, at 1e-3. (`plain` has the same stream and
-    agrees to the ulp; `refresh` changed its stream, so it is another realisation of the same sampler.)"""
-    new, old = known_posterior[("new", case)]["theta"], known_posterior[("old", case)]["theta"]
-    for j in range(kp.D_THETA):
-        p = scipy.stats.ks_2samp(new[..., j].ravel(), old[..., j].ravel()).pvalue
-        assert p > 1e-3, f"{case} coordinate {j}: KS p = {p:.2e}"
-    if case == "plain":
-        assert np.allclose(new, old, rtol=1e-7, atol=1e-7)
-        assert np.array_equal(known_posterior[("new", case)]["steps"], known_posterior[("old", case)]["steps"])
-        assert np.array_equal(known_posterior[("new", case)]["div"], known_posterior[("old", case)]["div"])
+def test_known_posterior_mean_and_variance_within_4_standard_errors(known_posterior):
+    assert known_posterior.shape == (256, 50, D_THETA)
+    mc_check(known_posterior, "known posterior")
 
 
 # ------------------------------------------------------------------------ progress bars
@@ -328,14 +292,13 @@ def _jaxprs():
     pos = {n: jnp.zeros((CH,) + np.shape(v)) for n, v in s.model.initial_point().items() if n in names}
     d = sum(int(np.prod(np.shape(v))) for v in pos.values()) // CH
     settings = dict(optim=0.05, target_accept=0.651, decay_rate=0.5, jitter_amount=1.0, max_leapfrog_steps=100,
-                    iterate="ma", single_step_iters=0)
-    states, astate = compiled.warmup_init(ld.fn, ld.names, ld.values, pos, jnp.asarray(0.1), jnp.asarray(0.0),
-                                          has_t0=False, **settings)
+                    single_step_iters=0)
+    states, astate = compiled.warmup_init(ld.fn, ld.names, ld.values, pos, jnp.asarray(0.1), **settings)
     key, imm = jax.random.key(0), jnp.eye(d)
     z = np.int32(0)
     out = {}
     out["warmup_init"] = jax.make_jaxpr(lambda p: compiled.warmup_init(
-        ld.fn, ld.names, ld.values, p, jnp.asarray(0.1), jnp.asarray(0.0), has_t0=False, **settings))(pos)
+        ld.fn, ld.names, ld.values, p, jnp.asarray(0.1), **settings))(pos)
     for stack in (False, True):
         out[f"warmup_chunk stack={stack}"] = jax.make_jaxpr(lambda c: compiled.warmup_chunk(
             ld.fn, ld.names, ld.values, c, imm, key, z, np.int32(3), chunk=5, stack_positions=stack, **settings)
@@ -374,15 +337,13 @@ def test_run_chunks_dispatches_the_next_chunk_before_it_converts_the_previous_on
     assert events == ["dispatch 0+0", "consume 0+0"]                  # one empty chunk: the shapes are known
 
 
-def test_host_stack_cuts_the_real_rows_with_numpy_and_can_keep_only_the_last_ones():
+def test_host_stack_cuts_the_real_rows_with_numpy():
     out = lambda start: {"a": np.arange(start, start + 4)[:, None] * np.ones((1, 2)), "b": np.arange(start, start + 4)}
-    full, last = compiled.HostStack(10), compiled.HostStack(10, keep_last=3)
+    full = compiled.HostStack(10)
     for start, n in ((0, 4), (4, 4), (8, 2)):
         full.add(start, n, out(start))
-        last.add(start, n, out(start))
-    f, l = full.result(), last.result()
+    f = full.result()
     assert f["b"].tolist() == list(range(10)) and f["a"].shape == (10, 2)
-    assert l["b"].tolist() == [7, 8, 9] and l["a"].shape == (3, 2)
     empty = compiled.HostStack(0)
     empty.add(0, 0, out(0))
     assert empty.result()["b"].shape == (0,)

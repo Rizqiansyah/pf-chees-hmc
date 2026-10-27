@@ -1,7 +1,6 @@
 """Statistical correctness: anisotropic Gaussian through the public API.
 
-WP8 hygiene item 1 (plan Part B, §WP8): "an anisotropic Gaussian, mean and
-variance within 4 MCSE (CPU, <= 60 s)".
+An anisotropic Gaussian: mean and variance within 4 MCSE (CPU, <= 60 s).
 
 The full public ``sample_pf_chees_hmc`` pipeline (PyMC init -> finite-start
 repair -> Pathfinder -> step-size tuning -> ChEES warmup -> dynamic-HMC

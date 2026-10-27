@@ -1,10 +1,9 @@
 """Child process of tests/test_start_repair.py: `_ensure_finite_inits` on one case, in a fresh process, in any tree.
 
-    python start_repair_run.py TREE CASE OUT.npz
+    python start_repair_run.py CASE OUT.npz
 
-TREE is a source tree that provides `pfcheeshmc/` and `tools/` (the checkout, or a `git archive` of an earlier
-commit). It must not import anything that exists only in the newer tree. Everything runs in float64: PyTensor's
-JAX dispatch switches `jax_enable_x64` on at import.
+Run from the repository root on the path. Everything runs in float64: PyTensor's JAX dispatch switches `jax_enable_x64`
+on at import.
 
 Prints one JSON line: the XLA programs the call compiled (`first`: a cold process; `second`: the same call with
 another key) and the stack's shape. The repaired stack of each call goes to OUT.npz (`first/<name>`,
@@ -17,8 +16,8 @@ another key) and the stack's shape. The repaired stack of each call goes to OUT.
                     row 0 fenced off at x0 = 12 (the backtrack finds a usable point on its 2nd halving),
                     row 1 usable, row 2 on a fenced strip around x1 = 0 (every backtrack fails: random restarts),
                     row 3 as row 2, under another key
-    last_resort   a unit-ball log-density, a start and a `center` far outside it: the search from them fails and
-                  the search from the origin gives the answer
+    last_resort   a unit-ball log-density and a start far outside it, with no backtracks and no restarts allowed: the
+                  search from the start fails and the search from the origin gives the answer
     clean_64      64 usable starts: nothing to repair
 """
 import json
@@ -26,25 +25,23 @@ import os
 import sys
 
 os.environ.setdefault("PYTENSOR_FLAGS", "blas__ldflags=-llapack -lblas -lcblas -lm")
-tree, case, out = sys.argv[1:4]
-sys.path.insert(0, os.path.join(tree, "tools"))
-sys.path.insert(0, tree)
-sys.path.insert(1, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+case, out = sys.argv[1:3]
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 import pymc as pm  # noqa: E402
 import pytensor.tensor as pt  # noqa: E402
-import r1_bias  # noqa: E402
-from compile_counter import count_compiles  # noqa: E402
+from benchmarks.compile_counter import count_compiles  # noqa: E402
+from benchmarks.models import build_model  # noqa: E402
 from pfcheeshmc.sampler import PfCheesHMC  # noqa: E402
 
 KW = {}
 
 
 def gev(chains, bad_rows=()):
-    s = PfCheesHMC(r1_bias.build_model("gev"), seed=1)
+    s = PfCheesHMC(build_model("gev"), seed=1)
     kwargs = dict(init="adapt_diag", tune=500, random_seed=1) if chains == 1 else \
         dict(init="jitter+adapt_diag", tune=500, random_seed=1)
     stack = s._pymc_adapt_diag_start(chains, **kwargs)
@@ -80,7 +77,7 @@ elif case == "last_resort":
         pm.Potential("ball", pt.switch(pt.sum(x ** 2) > 1.0, -np.inf, 0.0))
     s = PfCheesHMC(model, seed=1)
     stack = {"x": jnp.array([[50.0, 50.0]])}
-    KW["center"] = {"x": jnp.array([100.0, 100.0])}
+    KW.update(max_backtracks=0, max_restarts=0)
 elif case == "clean_64":
     with pm.Model() as model:
         pm.Normal("x", shape=(3,))

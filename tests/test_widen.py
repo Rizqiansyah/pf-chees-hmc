@@ -10,24 +10,16 @@ What a wrong answer here would silently corrupt:
     the reverse), so another program than the one `clone_replace` made;
   * the compile-once promise: a rebuilt model whose widened graph differs from the first one's (a dtype that depends on
     the literal's value) misses the lift memo and puts the rewrite, the funcify and the lowering back on the call;
-  * the draws, which must be bit for bit those of the code before this task (`BASE_SHA`, a `git archive`, in fresh
-    processes: `widen_run.py`).
+  * the draws of a rebuilt model, which `test_golden.py` pins bit for bit (`8schools_rebuilt`, `shaped_literals`).
 """
-import concurrent.futures
 import gc
-import io
-import json
-import os
 import pathlib
-import subprocess
 import sys
-import tarfile
 import weakref
 
 import numpy as np
 import pymc as pm
 import pytensor
-import pytensor.tensor as pt
 import pytest
 from pymc.util import get_default_varnames
 from pytensor.graph.basic import equal_computations
@@ -39,16 +31,13 @@ pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent
-sys.path.insert(0, str(REPO / "tools"))
-import r1_bias as rb  # noqa: E402
-from test_lift_memo import point, pymc_logp  # noqa: E402
-from test_lifted import EXTRA, LADDER, LITERALS, LITERALS_INT_RV, _literal_models  # noqa: E402
+sys.path.insert(0, str(REPO))
+from benchmarks.models import build_model  # noqa: E402
+from _helpers import EXTRA, LADDER, LITERALS, LITERALS_INT_RV, literal_models, point, pymc_logp  # noqa: E402
 
 from pfcheeshmc import lifted  # noqa: E402
 from pfcheeshmc.lifted import lift_logp  # noqa: E402
 
-BASE_SHA = "44a0556"             # the f2 head before F2i
-SITES = ("logp", "initial_point", "transform")
 
 
 def sites(model):
@@ -60,9 +49,9 @@ def sites(model):
 def models():
     """The ladder, the extra models of test_lifted, and its literal models at every literal pair (the pairs cross the
     autocast boundaries: 0.5 is float32, 0.1 float64, 1000 int16)."""
-    cases = {name: (lambda name=name: rb.build_model(name)) for name in LADDER}
+    cases = {name: (lambda name=name: build_model(name)) for name in LADDER}
     cases.update({f"extra:{name}": (lambda build=build: build(1)) for name, build in EXTRA.items()})
-    for kind, build in _literal_models().items():
+    for kind, build in literal_models().items():
         for pair in (LITERALS_INT_RV if kind == "poisson" else LITERALS):
             cases[f"literal:{kind}:{pair}"] = lambda build=build, pair=pair: build(*pair)
     return cases
@@ -129,7 +118,7 @@ def test_only_the_nodes_below_a_widened_constant_are_remade(name):
 
 # ------------------------------------------------------------------------------------ the fold
 def test_the_parameters_are_folded_in_one_call_not_one_each(monkeypatch):
-    model = rb.build_model("radon_noncentered")                 # four literal-built parameters
+    model = build_model("radon_noncentered")                    # four literal-built parameters
     folds = Folds(monkeypatch)
     lifted._widen_model_inputs(model, [model.logp()])
     assert (folds.calls, folds.expressions) == (1, 4)
@@ -176,7 +165,7 @@ def test_a_prior_literal_across_an_autocast_boundary_is_a_memo_hit(kind):
     """The literals of one model crossing int8 / float32 / float64 / int16 / int32: the first build makes the function,
     every other literal pair reuses it (no rewrite: the memo's size does not grow), with its own values."""
     pairs = LITERALS_INT_RV if kind == "poisson" else LITERALS
-    build = _literal_models()[kind]
+    build = literal_models()[kind]
     first = lift_logp(build(*pairs[0]))
     filed = sum(len(v) for v in lifted._MEMO.values())
     for pair in pairs[1:] + pairs[:2]:
@@ -226,86 +215,3 @@ def test_the_widening_keeps_no_data_or_prior_values():
     del widened, replaced, model
     gc.collect()
     assert all(r() is None for r in refs), "a widened constant is still referenced"
-
-
-# ------------------------------------------------------------------------------------ against the code before
-def _env():
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", JAX_PLATFORMS="cpu", OMP_NUM_THREADS="2",
-               PYTENSOR_FLAGS="blas__ldflags=-llapack -lblas -lcblas -lm", PFCHEESHMC_COMPILATION_CACHE="0")
-    env.pop("JAX_PLATFORM_NAME", None)        # set by the example notebooks when another test ran one in-process
-    return env
-
-
-@pytest.fixture(scope="module")
-def base_tree(tmp_path_factory):
-    git = ["git", "-C", str(REPO)]
-    try:
-        subprocess.run([*git, "cat-file", "-e", f"{BASE_SHA}^{{commit}}"], check=True, capture_output=True)
-        blob = subprocess.run([*git, "archive", BASE_SHA], check=True, capture_output=True).stdout
-    except (OSError, subprocess.CalledProcessError):
-        pytest.skip(f"commit {BASE_SHA} is not available here (git archive failed)")
-    dest = tmp_path_factory.mktemp("widen_base") / "base"
-    with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
-        tar.extractall(dest)
-    return dest
-
-
-def _child(tree, *args):
-    done = subprocess.run([sys.executable, str(HERE / "widen_run.py"), args[0], str(tree), *map(str, args[1:])],
-                          env=dict(_env(), PYTHONPATH=str(tree)), capture_output=True, text=True)
-    assert done.returncode == 0, done.stderr[-2000:]
-
-
-def test_widened_graphs_and_replacements_are_those_of_the_old_code(base_tree, tmp_path):
-    """Every model of `CASES` at the three sites, in fresh processes: the same graphs (type, constant and sharing of
-    every node) and the same constants replaced, byte for byte, as 44a0556 makes. And for the ladder and the extra
-    models, the same key, ``n_lifted``, rule and kept-static report at each site, and the same function object for
-    a rebuild of the model."""
-    got = {}
-    with concurrent.futures.ThreadPoolExecutor(2) as pool:
-        jobs = {label: pool.submit(_child, tree, "graphs", tmp_path / f"{label}.json")
-                for label, tree in (("old", base_tree), ("new", REPO))}
-        for label, job in jobs.items():
-            job.result()
-            got[label] = json.loads((tmp_path / f"{label}.json").read_text())
-    old, new = got["old"], got["new"]
-    graphs = sorted(f"{name}|{site}" for name in CASES for site in SITES)
-    lifts = sorted(f"lift:{name}" for name in (*LADDER, *(f"extra:{n}" for n in EXTRA)))
-    assert sorted(old) == sorted(new) == sorted(graphs + lifts)
-    assert sum(old[key]["n"] for key in graphs) > 100, "few constants were replaced: the premise of the test is gone"
-    for key in graphs:
-        assert new[key]["n"] == old[key]["n"], key
-        assert new[key]["replaced"] == old[key]["replaced"], key
-        assert new[key]["graph"] == old[key]["graph"], key
-    for key in lifts:                    # key, n_lifted, rule and kept-static report of each site; a rebuild finds the same fn
-        assert new[key] == old[key], key
-        assert set(old[key]) == set(SITES)
-        for site, lg in old[key].items():
-            assert lg["again_same_fn"] and lg["again_same_key"] and lg["rule"] == "model_inputs", (key, site)
-
-
-@pytest.mark.parametrize("name", ["8schools", "gev"])
-def test_draws_of_a_rebuilt_model_are_bit_identical_to_the_old_code(base_tree, tmp_path, name):
-    """Two sampler calls in one process, the second on a rebuilt model (every lift of it finds the first one's memo):
-    every array of both, in the new tree and in 44a0556. GEV has the folded one-element literals; 8schools the shaped
-    prior with int literals."""
-    out = {}
-    with concurrent.futures.ThreadPoolExecutor(2) as pool:
-        jobs = {label: pool.submit(_child, tree, "draws", name, tmp_path / f"{label}.npz")
-                for label, tree in (("old", base_tree), ("new", REPO))}
-        for label, job in jobs.items():
-            job.result()
-            out[label] = dict(np.load(tmp_path / f"{label}.npz"))
-    old, new = out["old"], out["new"]
-    assert sorted(old) == sorted(new) and len(old) > 20
-    for call in ("first", "second"):
-        assert any(k.startswith(f"{call}/posterior/") for k in old) and any(k.startswith(f"{call}/stats/") for k in old)
-    assert not all(np.array_equal(old[k], old[k.replace("first", "second")]) for k in old if k.startswith("first/posterior/"))
-    for key in old:
-        if key.endswith("/config"):
-            assert json.loads(str(new[key])) == json.loads(str(old[key])), key
-        else:
-            assert old[key].dtype == new[key].dtype and np.array_equal(old[key], new[key], equal_nan=True), key
-    for key in new:
-        if "/posterior/" in key:
-            assert np.isfinite(new[key]).all(), key
