@@ -77,3 +77,8 @@ Execution order dependence: restart the kernel before changing `USE_FLOAT32`.
   recompiles once: 2.0, 3.0, 5.0 in a model with constants 0, 5, 2, 3; 0.3, 1.0, 4.0, 6.0, 6.5, 7.0 compile nothing).
   Carried to the owner as a library follow-up.
 - a38f3e6 and the next commit: markdown only, after the GPU outputs and the integrator's findings 1, 2 and 4.
+
+Integrator suite on merged `cleanup` (bfec2e9): `542 passed, 48 warnings in 458.03s (0:07:38)`, rc 0, load 1.16 → 12.31
+Step-1 verdicts: scope OK; default path untouched OK (notebooks and README only); acceptance OK (PLAN row items, GPU outputs show CudaDevice and no errors, claims agree with outputs); must-fail n/a; dangling OK; quality OK; SUMMARY stale on GPU status (finding 3, fixed by the GPU-run note). CPU re-run of New data and 8 Schools clean (103/0/0/0 programs; R-hat 1.46); GEV and float32 CPU runs rely on the task's.
+Findings: 1 (float32 ratio text CPU-vs-GPU) fixed; 2 (step-size range 3e-5..9e-3 vs 0.0114) fixed; 3 (SUMMARY GPU status) fixed; 4 (cosmetic CPU wording) fixed; README line-105 x64 sentence kept (advice for users' own notebooks).
+Carried to the owner (library follow-up, not fixed): a new prior value equal to another model constant (for example 1.0, 2.0, 3.0 next to other constants) recompiles once; see DEVIATIONS 1 and the README "One exception" sentence.
