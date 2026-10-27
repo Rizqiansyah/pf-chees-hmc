@@ -92,7 +92,7 @@ Commands: `pixi run --manifest-path "$MAIN/pixi.toml" env CUDA_VISIBLE_DEVICES= 
 ## Final suite line (the finishing command, plain, copied from its output)
 `542 passed, 48 warnings in 515.28s (0:08:35)`
 
-Tests: 573 -> 542 (-31 net: the archive proofs and the redundancies above out, 28 golden/float32-golden tests in).
+Tests: 573 -> 542 (-31 net: the archive proofs and the redundancies above out, 20 golden tests in: 14 float64 cases, 2 file checks, 4 float32 comparisons).
 
 ## Notes for the lead
 - `docs/cleanup/TASK-RULES.md:33` still names `git show archive/pre-cleanup:tests/widen_run.py` as the F2 pattern; `tests/widen_run.py` is gone from the branch (the tag still has it). C2/C4 SUMMARYs refer to the removed files (history, left as is).
