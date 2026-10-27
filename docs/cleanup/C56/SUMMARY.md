@@ -60,3 +60,7 @@ Command: `pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" python
 - The mechanism of the JAX `erfcx` band is attributed in the draft from the matching edges, not from JAX's source. The GPU backend, float16 and bfloat16 are untried for it. The float32 grid probe (5.6 million points, within 1e-5 of SciPy) is F2k's and was not re-run.
 - Other PyMC versions and other integer-bound distributions for the Uniform draft.
 - Dropped from the README, with no replacement: ESS/s chain-count scaling, the warmup 1,000 / 2,000 / 10,000 table, the `imm_source` ratios, the "lift cost 0.05-0.14 s per call".
+
+Integrator suite on merged `cleanup` (ad40567): `542 passed, 48 warnings in 460.34s (0:07:40)`, rc 0, load 2.79 → 13.39
+
+Integrator step-1 verdicts: scope, no behaviour change (comments only), pixi.lock/pyproject, deletions, run-time reads, dangling refs, design.md citations, DEVIATION 1 (no `min(D,1000)` in code), upstream-drafts reproducers (re-run, match), README numbers and float32 section: OK. Findings: (1) README NUTS command lacked `--out`: fixed by the lead in b95bfbf. (2) "Part B" / "pf-r1-int" labels in comments: fixed in b95bfbf. (3) GPU rows not re-run: carried to C7/C8.
