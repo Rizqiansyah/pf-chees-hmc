@@ -69,7 +69,7 @@ Commands. GPU: `benchmarks/gpu_run.sh pixi run python benchmarks/warm_stages.py 
 
 ## Compile once, and the disk cache
 
-A call compiles its XLA programs the first time it meets a model structure, a set of array shapes, a chain count and sampler settings, and nothing after that in the same Python process. A new seed, new data, new prior values, a longer or shorter warmup or another number of draws, at the same shapes, compile nothing: data, priors, the metric, the step size and the trajectory length are arguments of the compiled programs. Rebuilding the model object for each dataset is fine; a rebuilt model is recognised as the same structure. A new shape, chain count or model structure compiles once (design: `docs/design.md`; test: `tests/test_compile_once.py`).
+A call compiles its XLA programs the first time it meets a model structure, a set of array shapes, a chain count and sampler settings, and nothing after that in the same Python process. A new seed, new data, new prior values, a longer or shorter warmup or another number of draws, at the same shapes, compile nothing: data, priors, the metric, the step size and the trajectory length are arguments of the compiled programs. Rebuilding the model object for each dataset is fine; a rebuilt model is recognised as the same structure. One exception: a new prior value that equals another constant of the model (for example `pm.Normal("b", 5.0, 3.0)` next to `pm.Normal("a", 0.0, 5.0)`) is a new structure, and that call compiles once (about 4 s on the CPU); other values compile nothing. A new shape, chain count or model structure compiles once (design: `docs/design.md`; test: `tests/test_compile_once.py`).
 
 `benchmarks/warm_stages.py . MODEL 1024 10 W --calls 3` prints, per call, the wall time and the XLA programs and PyTensor functions compiled. CPU (Xeon Platinum 8280L, `OMP_NUM_THREADS=4`, load below 1, 2026-10-28); calls 2 and 3 compile 0 and 0:
 
@@ -119,7 +119,7 @@ Command, once with and once without the `PYTENSOR_FLAGS` above: `benchmarks/gpu_
 
 **Checks to run on every float32 result:**
 1. The frozen step size (`idata.attrs["frozen_step_size"]`): a value orders of magnitude smaller than float64 gives for the same model is the GEV failure.
-2. R-hat on every parameter. A collapsed step size gives values far above 1.01.
+2. R-hat on every parameter, against a float64 run of the same settings. With 10 draws per chain R-hat is above 1.01 even in float64 (1.5 to 1.9 on 8 Schools and GEV); a collapsed step size gives values far above that (57 to 112 on GEV).
 3. `num_integration_steps` in `sample_stats`: a collapsed step size comes with trajectories of hundreds of steps.
 
 Every notebook in `examples/` opens with a `USE_FLOAT32` switch; `examples/float32.ipynb` shows where it helps and what the GEV failure looks like.
