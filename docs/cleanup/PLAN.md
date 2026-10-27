@@ -62,7 +62,7 @@ benchmarks/            README with the exact commands
   models.py            the four ladder models in Python (same graphs as the notebooks build today)
   bias.py              the R1 gate (b²_max against NUTS references), trimmed from tools/r1_bias.py
   references.json      the reference manifest (sha256, seeds, settings); make_reference.py rebuilds them
-  make_reference.py, warm_stages.py, nuts_cpu.py, gpu_run.sh
+  make_reference.py, warm_stages.py, nuts_cpu.py, gpu_run.sh, compile_counter.py, seeded_models.py
 examples/              8 Schools, GEV, a new "new data every call" notebook (the owner's workflow), and float32
                        demonstrated (see C7)
 docs/
@@ -83,7 +83,7 @@ go to steady-tier. One subtask runs at a time.
 | **lead** | — | edits the plan; writes each task's brief (a few lines: the PLAN row is the spec); decides accept or send back from the integrator's findings; talks to the owner | the task header (≤ 15 lines), the integrator's findings (≤ 25 lines), spot checks only where a finding points |
 | **task** | fast-tier | implements one WP in its checkout (`TASK-RULES.md`); commits its own `docs/cleanup/<WP>/SUMMARY.md` | the PLAN, the code |
 | **integrator** | fast-tier, one per WP, kept alive across rounds | step 1: reviews the task branch against its PLAN row and `INTEGRATOR.md`, and reports findings without changing anything. Step 2, after the lead's "merge": merges into `cleanup` with `--no-ff`, runs the full suite, appends the suite line to the SUMMARY, writes the ledger line, removes the checkout and branch, and reports the suite line | the task SUMMARY, the diff |
-| **runner** | steady-tier | runs a given command list and reports the output lines verbatim: GPU notebook execution under `tools/gpu_run.sh` (C7), the final suite (C8). Never edits | the command list |
+| **runner** | steady-tier | runs a given command list and reports the output lines verbatim: GPU notebook execution under `benchmarks/gpu_run.sh` (C7), the final suite (C8). Never edits | the command list |
 
 **Flow per WP:** the lead launches the task → the task reports a header → the lead launches the
 integrator (step 1) → findings → the lead says merge, or sends the findings back to the task

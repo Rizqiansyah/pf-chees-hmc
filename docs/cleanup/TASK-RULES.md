@@ -21,14 +21,14 @@ export CUDA_VISIBLE_DEVICES="" JAX_PLATFORMS=cpu OMP_NUM_THREADS=4
 pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" python "$WT/<script>.py" ...
 pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" python -m pytest "$WT/tests" -q --rootdir "$WT" -p no:cacheprovider
 ```
-- **No GPU.** Always export the variables above. Do not call `tools/gpu_run.sh`.
+- **No GPU.** Always export the variables above. Do not call `benchmarks/gpu_run.sh`.
 - Do not change `pixi.toml`, `pixi.lock` or the environment. Do not `pip install`.
 - No single command over 20 minutes. Run the tests you touch first, and the full suite once at the
   end (about 13 minutes until C3 slims it, then about 5).
-- Ladder models (`8schools`, `gev`, `logit_1000x25`, `radon_noncentered`): before C1 lands,
-  `sys.path.insert(0, "$WT/tools"); import r1_bias; r1_bias.build_model(name)` (never
-  `bench_ladder.model_specs()` directly: it leaves sampling stubs installed). After C1, `benchmarks/models.py`
-  as the PLAN's C1 section says.
+- Ladder models (`8schools`, `gev`, `logit_1000x25`, `radon_noncentered`): `benchmarks/models.py`
+  (`tools/` is gone since C4). At the tag, a child process uses the tag tree's own `tools/r1_bias.build_model`;
+  pick by `os.path.isdir(TREE/benchmarks)`, as the git-archive runners do (C4 finding: `PYTHONPATH` otherwise
+  makes the tag side import this tree's models).
 - The state before the cleanup, for bit-identity proofs: `git archive archive/pre-cleanup` into a temp dir, run in
   a child process (the F2 pattern: `git show archive/pre-cleanup:tests/widen_run.py`).
 
