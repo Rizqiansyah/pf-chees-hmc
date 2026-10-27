@@ -30,7 +30,8 @@ pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" python -m pytest
   pick by `os.path.isdir(TREE/benchmarks)`, as the git-archive runners do (C4 finding: `PYTHONPATH` otherwise
   makes the tag side import this tree's models).
 - The state before the cleanup, for bit-identity proofs: `git archive archive/pre-cleanup` into a temp dir, run in
-  a child process (the F2 pattern: `git show archive/pre-cleanup:tests/widen_run.py`).
+  a child process (for example `tests/make_golden.py --tree <dir>`). Since C3 the suite pins the default path with
+  `tests/data/golden_*.npz` instead.
 
 ## Fidelity
 - If something in the spec is impossible or wrong, do not reinterpret it silently. Implement the
