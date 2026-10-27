@@ -33,8 +33,9 @@ import pytest
 import scipy.stats
 from tqdm.auto import tqdm
 
-from seeded_models import hier
-from test_compile_once import BASE_SHA, _base_tree
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from benchmarks.seeded_models import hier  # noqa: E402
+from test_compile_once import BASE_SHA, _base_tree  # noqa: E402
 
 import pfcheeshmc.sampler as sampler_module
 import pfcheeshmc.utils as utils_module

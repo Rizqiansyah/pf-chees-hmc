@@ -1,11 +1,17 @@
-"""Models built from seeds at fixed shapes: "same structure, other values" is a real rebuild.
+"""Models at fixed shapes with other values: "same structure, other values" is a real rebuild.
 
 `hier(data_seed, prior_seed)` is an 8-schools-shaped hierarchical model. `data_seed` moves the data (an
 observed array and a `pm.Data`); `prior_seed` moves the prior values (a location and two scales, written
 as the floats a user would write). `J` is the one shape.
+
+`with_new_data(model, seed)` is the same model with NEW observed data (any model, no special cases); the compile-once
+tests and `warm_stages.py` use these to ask what a call costs when only the values changed.
 """
 import numpy as np
 import pymc as pm
+import pytensor.tensor as pt
+from pymc.model.fgraph import ModelObservedRV, fgraph_from_model, model_from_fgraph
+from pytensor.tensor.variable import TensorConstant
 
 
 def hier(data_seed, prior_seed=None, J=8):
@@ -37,3 +43,23 @@ def dims_model(data_seed=1, prior_seed=None, J=5):
         s = pm.HalfNormal("s", float(prior.uniform(2.0, 4.0)))
         pm.Normal("y", th, s, observed=data.normal(size=J), dims="g")
     return m
+
+
+def with_new_data(model, seed: int):
+    """`model` with every observed variable's data constant permuted along axis 0 by a seeded RNG (seed 0: a clone, data unchanged).
+
+    Shapes, dtypes and support are kept, so it is "the next dataset" for a compile-cost measurement: the structure is
+    equal and the values differ. Observed data held in a shared variable (`pm.Data`) is left alone. Built with PyMC's own
+    `fgraph_from_model` / `model_from_fgraph`.
+    """
+    fgraph, _ = fgraph_from_model(model)
+    rng = np.random.default_rng(seed)
+    for node in list(fgraph.toposort()):
+        if not isinstance(node.op, ModelObservedRV):
+            continue
+        data = node.inputs[1]
+        if not isinstance(data, TensorConstant) or data.ndim == 0 or seed == 0:
+            continue
+        new = rng.permutation(np.asarray(data.data), axis=0)
+        fgraph.replace(data, pt.constant(new, dtype=data.dtype, name=data.name), import_missing=True)
+    return model_from_fgraph(fgraph, mutate_fgraph=True)

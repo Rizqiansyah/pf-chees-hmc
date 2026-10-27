@@ -56,9 +56,9 @@ def old_tree_builder(tree):
 def any_tree_builder(tree):
     sys.path.insert(0, os.path.join(tree, "tools"))
     sys.path.insert(0, tree)
-    try:
+    if os.path.isdir(os.path.join(tree, "benchmarks")):   # the tree decides, not an ImportError: PYTHONPATH can put THIS benchmarks/ on an older tree's path
         from benchmarks.models import build_model
-    except ModuleNotFoundError:
+    else:
         from r1_bias import build_model
     return build_model
 

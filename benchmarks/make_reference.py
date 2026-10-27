@@ -1,13 +1,13 @@
-"""WP0.2 -- reference posteriors for the pf-r1 run.
+"""Reference posteriors for the bias gate: long PyMC NUTS runs on the ladder models (`benchmarks/models.py`).
 
-Usage (from the checkout directory, shared env per A3):
+Usage (from the checkout, shared env):
 
-    MAIN="/home/akbar/Documents/Python packages/pf-chees-hmc"; WT=/home/akbar/pf/wp0refs; cd "$WT"
-    pixi run --manifest-path "$MAIN/pixi.toml" env PYTHONPATH="$WT" \
-        python "$WT/tools/make_reference.py" <model> [--chains 8] [--draws 10000] [--tune 2000]
-        [--target 0.95] [--seed 42] [--out PATH] [--no-row]
+    python benchmarks/make_reference.py <model> [--chains 8] [--draws 10000] [--tune 2000] [--target 0.95] [--seed 42]
+                                        [--out PATH] [--note TEXT]
 
-Writes ~/pf-runs/references/<model>.npz, a flat dict keyed by variable name:
+The settings default to the model's entry in `benchmarks/references.json`, so `make_reference.py <model>` rebuilds the file
+the manifest describes (GEV's entry says target_accept 0.99: the canonical run, which still diverges 18 times in 80,000
+draws). The default output is `~/pf-runs/references/<model>.npz` (or `$PF_REFERENCE_DIR`): a flat dict keyed by variable name,
 
     x__<name>   constrained posterior samples, (chains, draws, ...)
     u__<name>   unconstrained value-var samples, (chains, draws, ...)
@@ -18,42 +18,43 @@ Writes ~/pf-runs/references/<model>.npz, a flat dict keyed by variable name:
                                        'mean' on x and on x**2)
     meta__<key>  run metadata (seed, target_accept, divergences, gate verdict, ...)
 
-The npz stays OUTSIDE git (A8). A JSONL row is appended to
-results/runs/WP0__references.jsonl and the lead assembles
-results/references/MANIFEST.json from those rows.
+The npz stays OUTSIDE git. Its manifest entry (path, sha256, the settings, the gate numbers) is written to
+`benchmarks/references.json`, which is what `benchmarks/bias.py` checks the file against; `--out` writes elsewhere and
+leaves the manifest alone. The npz is not reproducible byte for byte (its metadata has the time and the wall clock), so a
+rebuild changes the sha256: commit the manifest with it.
 
 CPU-only: PyMC NUTS (pytensor), no JAX device allocation, no GPU lock needed.
-Models load through bench_ladder because its notebook loader stubs pm.sample;
-REAL_PM_SAMPLE is captured before the stub (tools/bench_ladder.py:50).
 
-Gate (WP0.2): max R-hat < 1.01 AND bulk ESS > 10,000 per parameter, over every
-posterior variable including the transformed ones.
+Gate: max R-hat < 1.01 AND bulk ESS > 10,000 per parameter, over every posterior variable including the transformed ones.
 
-Single authority (2026-10-19 code review): the SAMPLE arrays (x__*/u__*) are
-the authority. The stat columns (mean__/var__/mcse_x__/mcse_x2__) are
-display-only convenience columns: consumers must recompute from the samples,
-and the shape guard below only exists so the metadata published next to the
-samples cannot drift from the samples. mcse_x2__ is the MCSE of E[x^2], NOT
-the MCSE of the variance: pairing it with var__ gives a noise floor wrong by
-Var(x^2)/Var(x).
+Single authority: the SAMPLE arrays (x__*/u__*) are the authority. The stat columns (mean__/var__/mcse_x__/mcse_x2__) are
+display-only convenience columns: consumers must recompute from the samples, and the shape guard below only exists so the
+metadata published next to the samples cannot drift from the samples. mcse_x2__ is the MCSE of E[x^2], NOT the MCSE of the
+variance: pairing it with var__ gives a noise floor wrong by Var(x^2)/Var(x).
 """
 
 import argparse
-import hashlib
 import json
 import os
 import sys
 import time
 
-# bench_ladder first: it sets PYTENSOR_FLAGS for the Dot models before anything
-# else imports pymc (A3 box trap).
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import bench_ladder as bl  # noqa: E402
+# This repo's path has a space ("Python packages"): PyTensor puts the environment prefix into blas__ldflags as an unquoted
+# -Wl,-rpath token and its linker dies on it for any model that compiles a Dot. Set before anything imports pymc.
+_flags = os.environ.get("PYTENSOR_FLAGS", "")
+if "blas__ldflags" not in _flags:
+    os.environ["PYTENSOR_FLAGS"] = ",".join(f for f in (_flags, "blas__ldflags=-llapack -lblas -lcblas -lm") if f)
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
 
 import arviz as az  # noqa: E402
 import arviz_stats  # noqa: E402
 import numpy as np  # noqa: E402
 import pymc as pm  # noqa: E402
+
+from benchmarks.bias import MANIFEST, load_manifest, reference_path, sha256_file  # noqa: E402
+from benchmarks.models import MODELS, build_model  # noqa: E402
 
 
 # Stat columns checked by the shape contract. The samples (x__/u__) are the
@@ -108,14 +109,6 @@ def reference_shape_problems(arr, chains, draws, names):
     return probs
 
 
-def _sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _rhat_max(x):
     """Max split-R-hat over all elements of a (chains, draws, ...) array."""
     c, d = x.shape[:2]
@@ -146,7 +139,7 @@ def _mcse(x, method):
 
 def make_reference(model_name, chains, draws, tune, target, seed, out):
     t0 = time.perf_counter()
-    model = bl.model_specs()[model_name]()
+    model = build_model(model_name)
     # Derive the variable list from the model, not from the group's data_vars:
     # the group may also carry coordinate-shaped entries (e.g. theta_dim_0).
     free = [rv.name for rv in model.free_RVs]
@@ -159,7 +152,7 @@ def make_reference(model_name, chains, draws, tune, target, seed, out):
     u_set = set(u_names)
 
     with model:
-        idata = bl.REAL_PM_SAMPLE(
+        idata = pm.sample(
             draws=draws, tune=tune, chains=chains, cores=chains,
             target_accept=target, random_seed=seed, progressbar=False,
             idata_kwargs={"include_transformed": True},
@@ -194,7 +187,7 @@ def make_reference(model_name, chains, draws, tune, target, seed, out):
         key = ("u__" if n in u_set else "x__") + n
         arr[key] = x
         # Per-parameter stats: shape must equal the sample shape minus the
-        # (chain, draw) axes, or WP3 would score every parameter of a vector
+        # (chain, draw) axes, or the gate would score every parameter of a vector
         # variable against one pooled number. Guarded below, loudly.
         arr["mean__" + n] = x.mean(axis=(0, 1))
         arr["var__" + n] = x.var(axis=(0, 1), ddof=1)
@@ -237,54 +230,67 @@ def make_reference(model_name, chains, draws, tune, target, seed, out):
 
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     np.savez(out, **arr)
-    sha = _sha256(out)
+    sha = sha256_file(out)
     meta["sha256"] = sha
     meta["path"] = out
     print(json.dumps(meta, indent=1, default=str), flush=True)
     return meta
 
 
+def update_manifest(model_name, meta, note):
+    """Write `model_name`'s entry of benchmarks/references.json from a finished build. The entry's note is kept unless given."""
+    manifest = load_manifest()
+    old = manifest["models"].get(model_name, {})
+    manifest["models"][model_name] = {
+        "path": f"~/pf-runs/references/{model_name}.npz",
+        "sha256": meta["sha256"],
+        "chains": meta["chains"],
+        "draws": meta["draws"],
+        "tune": meta["tune"],
+        "seed": meta["seed"],
+        "target_accept": meta["target_accept"],
+        "max_rhat": meta["max_rhat"],
+        "min_ess": meta["min_bulk_ess"],
+        "divergences": meta["divergences"],
+        "divs_per_1k": meta["divs_per_1k"],
+        "gate": meta["gate"],
+        "wall_s": meta["wall_s"],
+        "note": note if note is not None else old.get("note"),
+    }
+    manifest["created"] = meta["created"]
+    tmp = MANIFEST + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(manifest, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, MANIFEST)
+
+
 def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("model", choices=sorted(bl.model_specs().keys()))
-    p.add_argument("--chains", type=int, default=8)
-    p.add_argument("--draws", type=int, default=10000)
-    p.add_argument("--tune", type=int, default=2000)
-    p.add_argument("--target", type=float, default=0.95)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--out", default=None)
-    p.add_argument("--no-row", action="store_true")
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("model", choices=sorted(MODELS))
+    p.add_argument("--chains", type=int)
+    p.add_argument("--draws", type=int)
+    p.add_argument("--tune", type=int)
+    p.add_argument("--target", type=float)
+    p.add_argument("--seed", type=int)
+    p.add_argument("--out", help="write the npz here instead of the standard place, and leave the manifest alone")
+    p.add_argument("--note", help="the manifest entry's note (default: the old entry's)")
     a = p.parse_args()
 
-    import _common
-
-    out = a.out or os.path.expanduser(f"~/pf-runs/references/{a.model}.npz")
-    _common.banner(model=a.model, cold=True, wp="WP0", arm="reference")
-    meta = make_reference(a.model, a.chains, a.draws, a.tune, a.target, a.seed, out)
-
-    row = _common.new_row(
-        wp="WP0", arm="reference", model=a.model, chains=a.chains, draws_per_chain=a.draws,
-        warmup=a.tune, seed=a.seed, rep=0, cold=None,
-        kwargs={"target_accept": a.target},
-        wall_s=meta["wall_s"], max_rhat=meta["max_rhat"], min_bulk_ess=meta["min_bulk_ess"],
-        error=None if meta["gate"] == "PASS" else f"gate_{meta['gate'].lower()}",
-    )
-    row.update({
-        "path": meta["path"], "sha256": meta["sha256"],
-        "divs_per_1k": meta["divs_per_1k"],
-        "target_accept": meta["target_accept"], "gate": meta["gate"],
-        # This is a CPU pytensor run. new_row auto-populated device and
-        # peak_mem_bytes from the first visible JAX device, which on this box
-        # is the A2000 with a 512 B placeholder -- a claim the run did not
-        # make. A None peak on CPU is correct, not a bug.
-        "device": "cpu", "peak_mem_bytes": None,
-    })
-    if not a.no_row:
-        row_file = os.path.join(os.getcwd(), "results", "runs", "WP0__references.jsonl")
-        _common.write_row(row_file, row)
+    entry = load_manifest()["models"].get(a.model, {})
+    settings = {k: (getattr(a, arg) if getattr(a, arg) is not None else entry.get(key, default))
+                for k, arg, key, default in (("chains", "chains", "chains", 8), ("draws", "draws", "draws", 10000),
+                                             ("tune", "tune", "tune", 2000), ("target", "target", "target_accept", 0.95),
+                                             ("seed", "seed", "seed", 42))}
+    out = a.out or reference_path(a.model)
+    meta = make_reference(a.model, settings["chains"], settings["draws"], settings["tune"], settings["target"],
+                          settings["seed"], out)
+    if a.out is None:
+        update_manifest(a.model, meta, a.note)
     print(f"[{a.model}] gate={meta['gate']} max_rhat={meta['max_rhat']:.4f} "
           f"min_bulk_ess={meta['min_bulk_ess']:.0f} divs={meta['divergences']} "
-          f"wall={meta['wall_s']:.0f}s sha256={meta['sha256'][:12]}", flush=True)
+          f"wall={meta['wall_s']:.0f}s sha256={meta['sha256'][:12]}"
+          + ("" if a.out is None else f"  (manifest unchanged: --out {a.out})"), flush=True)
 
 
 if __name__ == "__main__":

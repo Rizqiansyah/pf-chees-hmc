@@ -5,10 +5,11 @@
     logit_1000x25       Bernoulli logistic regression, 1,000 observations, 25 correlated predictors
     radon_noncentered   the posteriordb radon_mn pair, county effects non-centered (d=175, N=919)
 
-The graphs are those the two example notebooks and `bench_ladder` built before: `8schools` and `gev` are the model cells
+The graphs are those the two example notebooks and the old ladder harness built: `8schools` and `gev` are the model cells
 of the 8 Schools and the GEV Port Pirie notebooks in `examples/`, transcribed (data, priors, names, shapes, creation
-order); `logit_1000x25` and `radon_noncentered` are `bench_ladder.build_logistic` and `build_radon`, moved here. `tests/test_benchmark_models.py` holds the proof (value variables, `logp` and `dlogp` at 100 points, the
-graph, and the draws of `sample_pf_chees_hmc`, against the notebook-built models of the tag `archive/pre-cleanup`).
+order); `logit_1000x25` and `radon_noncentered` are the harness's logistic and radon builders. `tests/test_benchmark_models.py`
+holds the proof (value variables, `logp` and `dlogp` at 100 points, the graph, and the draws of `sample_pf_chees_hmc`,
+against the notebook-built models of the tag `archive/pre-cleanup`).
 
 Building a model sets no JAX option and no environment variable: not `jax_enable_x64` (PyTensor's JAX dispatch sets it
 from floatX when it is imported), not the platform, not the compilation cache. A caller that wants float32 sets
@@ -93,14 +94,12 @@ def pdb_data(name: str):
     return json.loads(out.read_text())
 
 
-def build_radon(noncentered: bool):
-    """Radon hierarchical slope/intercept model, posterior_database radon_mn pair (d=175, N=919).
+def build_radon_noncentered():
+    """Radon hierarchical slope/intercept model, posterior_database radon_mn pair (d=175, N=919), county effects non-centered.
 
-    The two parameterisations differ only in how the county effects are drawn, which makes this the
-    conditioning A/B: `centered` is the funnel where the group size is not identified, and
-    Seyboldt et al. excluded every centered variant of it for non-convergence. Ported directly from
-    the database's Stan source: half-normal(0,1) on the three sigmas, normal(0,10) on the two means,
-    county intercepts and slopes normal(mu, sigma), y ~ normal(alpha[c] + floor*beta[c], sigma_y).
+    Ported directly from the database's Stan source: half-normal(0,1) on the three sigmas, normal(0,10) on the two
+    means, county intercepts and slopes mu + sigma * raw with raw standard normal, y ~ normal(alpha[c] + floor*beta[c],
+    sigma_y).
     """
     d = pdb_data("radon_mn")
     idx = np.asarray(d["county_idx"]) - 1          # Stan is 1-based
@@ -114,21 +113,18 @@ def build_radon(noncentered: bool):
         sigma_beta = pm.HalfNormal("sigma_beta", 1.0)
         mu_alpha = pm.Normal("mu_alpha", 0.0, 10.0)
         mu_beta = pm.Normal("mu_beta", 0.0, 10.0)
-        if noncentered:
-            alpha_raw = pm.Normal("alpha_raw", shape=(J,))
-            beta_raw = pm.Normal("beta_raw", shape=(J,))
-            alpha = pm.Deterministic("alpha", mu_alpha + sigma_alpha * alpha_raw)
-            beta = pm.Deterministic("beta", mu_beta + sigma_beta * beta_raw)
-        else:
-            alpha = pm.Normal("alpha", mu=mu_alpha, sigma=sigma_alpha, shape=(J,))
-            beta = pm.Normal("beta", mu=mu_beta, sigma=sigma_beta, shape=(J,))
+        alpha_raw = pm.Normal("alpha_raw", shape=(J,))
+        beta_raw = pm.Normal("beta_raw", shape=(J,))
+        alpha = pm.Deterministic("alpha", mu_alpha + sigma_alpha * alpha_raw)
+        beta = pm.Deterministic("beta", mu_beta + sigma_beta * beta_raw)
         pm.Normal("obs", mu=alpha[idx] + floor * beta[idx], sigma=sigma_y, observed=y)
     return model
 
 
-def build_logistic(n_obs, d, seed=11):
-    """Bernoulli logistic regression with correlated predictors."""
-    rng = np.random.default_rng(seed)
+def build_logistic_1000x25():
+    """Bernoulli logistic regression: 1,000 observations, 25 correlated predictors (data from a generator seeded 11)."""
+    n_obs, d = 1000, 25
+    rng = np.random.default_rng(11)
     a = rng.normal(size=(d, d)) / np.sqrt(d)
     x = rng.normal(size=(n_obs, d)) @ (np.eye(d) + a)
     beta = rng.normal(size=d) * 0.5
@@ -144,8 +140,8 @@ def build_logistic(n_obs, d, seed=11):
 _BUILDERS = {
     "8schools": build_8schools,
     "gev": build_gev,
-    "logit_1000x25": lambda: build_logistic(1000, 25),
-    "radon_noncentered": lambda: build_radon(True),
+    "logit_1000x25": build_logistic_1000x25,
+    "radon_noncentered": build_radon_noncentered,
 }
 MODELS = tuple(_BUILDERS)
 

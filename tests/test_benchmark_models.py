@@ -1,7 +1,7 @@
 """C1: the ladder models of `benchmarks/models.py` are the models the example notebooks built, and building one sets no JAX option.
 
-Until C1, `8schools` and `gev` were built by executing the cells of the two example notebooks (`tools/bench_ladder.py`'s
-loader, with `pm.sample` stubbed), and `logit_1000x25` and `radon_noncentered` by two functions of the same file. The
+Until C1, `8schools` and `gev` were built by executing the cells of the two example notebooks (the old ladder
+harness's loader, with `pm.sample` stubbed), and `logit_1000x25` and `radon_noncentered` by two functions of the same file. The
 notebook cells set ``JAX_PLATFORM_NAME=gpu`` and ``jax_enable_x64`` for the whole process. The models are Python now, and
 the NUTS references the bias gate scores against were made on the notebook-built ones, so a Python-built model that
 differs in one detail (a prior's dtype, the order of the names) would no longer fit them. The old models are the tag

@@ -1,4 +1,4 @@
-"""Permanent shape guard for the WP0.2 reference npz files (A8).
+"""Permanent shape guard for the reference npz files (`benchmarks/make_reference.py`).
 
 The 2026-10-19 review caught that the first reference build stored per-variable
 mean/var/MCSE as scalars even for vector-valued variables: x.mean() / x.var()
@@ -14,7 +14,7 @@ runs inside make_reference before it saves, so generation also fails loudly;
 this test is the guard on the committed reference artifacts and calls the
 production function rather than re-implementing the comparison.
 
-The npz files live outside git (~/pf-runs/references/ per A8). The first
+The npz files live outside git (~/pf-runs/references/). The first
 review found that a missing directory made the fixture collect ZERO tests,
 so `pixi run test` went all-green with the guard doing nothing: that trap is
 closed by test_reference_files_present, which FAILS (not skips) when the
@@ -23,14 +23,16 @@ teeth test builds a synthetic legacy-format file and asserts the shared guard
 reports it red.
 """
 
+import json
 import os
+import pathlib
 import sys
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
-from make_reference import reference_shape_problems  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from benchmarks.make_reference import reference_shape_problems  # noqa: E402
 
 
 def _reference_dir():
@@ -66,7 +68,7 @@ def test_reference_files_present():
         pytest.fail(
             f"no .npz files under {d}; the reference shape guard collected nothing. "
             "Regenerate with `pixi run --manifest-path <main checkout>/pixi.toml "
-            "env PYTHONPATH=<this checkout> python tools/make_reference.py <model>` "
+            "env PYTHONPATH=<this checkout> python benchmarks/make_reference.py <model>` "
             "(models: 8schools, gev, logit_1000x25, radon_noncentered), or set "
             "REFERENCE_FILES_OPTIONAL=1 in environments without the run artifacts."
         )
@@ -83,7 +85,7 @@ def test_reference_npz_keeps_parameter_axis(npz_path):
     probs = reference_shape_problems(arr, chains, draws, names)
     assert not probs, (
         f"shape contract violated in {npz_path}:\n  " + "\n  ".join(probs)
-        + "\n(the 2026-10-19 incident: see tools/make_reference.py docstring)"
+        + "\n(the 2026-10-19 incident: see benchmarks/make_reference.py docstring)"
     )
 
 
@@ -114,3 +116,30 @@ def test_legacy_shape_fails_the_guard():
         "mcse_x2__theta": np.ones(x.shape[2:]),
     }
     assert reference_shape_problems(clean, chains=8, draws=100, names=["theta"]) == []
+
+
+def test_a_rebuild_changes_the_manifest_entry_of_its_model_and_nothing_else(tmp_path, monkeypatch):
+    """`make_reference` writes the new sha256 and settings into `benchmarks/references.json`, which `bias.py` checks the file
+    against; the entry's note survives unless one is given, and a rewrite of the file is a minimal diff."""
+    from benchmarks import bias, make_reference
+
+    text = pathlib.Path(bias.MANIFEST).read_text()
+    assert json.dumps(json.loads(text), indent=2) + "\n" == text
+    copy = tmp_path / "references.json"
+    copy.write_text(text)
+    monkeypatch.setattr(bias, "MANIFEST", str(copy))
+    monkeypatch.setattr(make_reference, "MANIFEST", str(copy))
+    meta = {"sha256": "ab" * 32, "chains": 2, "draws": 100, "tune": 100, "seed": 7, "target_accept": 0.9, "max_rhat": 1.5,
+            "min_bulk_ess": 20.0, "divergences": 3, "divs_per_1k": 15.0, "gate": "FAIL", "wall_s": 1.5,
+            "created": "2026-10-24T00:00:00+1100"}
+    old = json.loads(text)
+    make_reference.update_manifest("gev", meta, None)
+    new = json.loads(copy.read_text())
+    assert new["models"]["gev"] == {"path": "~/pf-runs/references/gev.npz", "sha256": "ab" * 32, "chains": 2, "draws": 100,
+                                   "tune": 100, "seed": 7, "target_accept": 0.9, "max_rhat": 1.5, "min_ess": 20.0,
+                                   "divergences": 3, "divs_per_1k": 15.0, "gate": "FAIL", "wall_s": 1.5,
+                                   "note": old["models"]["gev"]["note"]}
+    assert list(new["models"]) == list(old["models"]) and new["created"] == meta["created"]
+    assert {k: v for k, v in new["models"].items() if k != "gev"} == {k: v for k, v in old["models"].items() if k != "gev"}
+    make_reference.update_manifest("gev", meta, "a new note")
+    assert json.loads(copy.read_text())["models"]["gev"]["note"] == "a new note"

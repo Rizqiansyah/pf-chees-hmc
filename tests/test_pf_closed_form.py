@@ -32,7 +32,7 @@ import pytensor
 
 # This repo lives under a path with a space; PyTensor's default blas__ldflags carries the env prefix as
 # an unquoted -Wl,-rpath token that its linker rejects for any model with a dot product (logit_1000x25).
-# tools/bench_ladder.py works around it with PYTENSOR_FLAGS, but that is read at pytensor import, which
+# benchmarks/bias.py works around it with PYTENSOR_FLAGS, but that is read at pytensor import, which
 # pytest has already done here. Set the same flags on the live config (numpy still supplies BLAS at runtime).
 pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 

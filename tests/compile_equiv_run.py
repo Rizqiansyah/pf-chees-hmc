@@ -32,9 +32,9 @@ sys.path.insert(0, args.tree)
 import numpy as np  # noqa: E402
 from pfcheeshmc import sample_pf_chees_hmc  # noqa: E402
 
-try:                                      # this tree; a tree before benchmarks/ builds the notebook models in tools/r1_bias
+if os.path.isdir(os.path.join(args.tree, "benchmarks")):  # the tree decides, not an ImportError: PYTHONPATH can put THIS benchmarks/ on an older tree's path
     from benchmarks.models import build_model
-except ModuleNotFoundError:
+else:                                                    # a tree before benchmarks/: its models are the notebooks', built by tools/r1_bias
     from r1_bias import build_model
 
 model = build_model(args.model)
