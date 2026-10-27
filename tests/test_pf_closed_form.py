@@ -43,9 +43,7 @@ import pfcheeshmc.sampler as sampler_mod  # noqa: E402
 from pfcheeshmc import compiled  # noqa: E402
 from pfcheeshmc.sampler import PfCheesHMC, default_pool_cap, resolve_pool_cap  # noqa: E402
 
-# Shared with the run-1 G-ORDER file: the non-sorted-names fixtures and the mixing instrument.
-from test_metric_orientation import (  # noqa: E402,F401  (fixtures are used by name)
-    PF_ORDER_VAR, _mixing_report, anisotropic_model, odd_order_model)
+from _helpers import mixing_report as _mixing_report  # noqa: E402  (the fixtures are in conftest.py)
 
 MODELS = ["8schools", "gev", "logit_1000x25", "radon_noncentered"]
 SMALL_MODELS = ["8schools", "gev"]

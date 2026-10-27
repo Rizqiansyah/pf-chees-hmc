@@ -38,7 +38,7 @@ pytensor.config.blas__ldflags = "-llapack -lblas -lcblas -lm"
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from benchmarks.models import build_model  # noqa: E402
 from benchmarks.seeded_models import hier  # noqa: E402
-from test_lifted import EXTRA  # noqa: E402
+from _helpers import EXTRA, point, pymc_logp  # noqa: E402
 
 from pfcheeshmc import lifted  # noqa: E402
 from pfcheeshmc.lifted import lift_graph, lift_initial_point, lift_logp  # noqa: E402
@@ -96,12 +96,6 @@ def lift_sites(model):
     return {"logp": sampler._lifted, "initial_point": lift_initial_point(model), "transform": transform}
 
 
-def point(model, seed=0):
-    ip = model.initial_point()
-    rng = np.random.default_rng(seed)
-    return tuple(jnp.asarray(ip[v.name] + 0.3 * rng.standard_normal(np.shape(ip[v.name]))) for v in model.value_vars)
-
-
 def site_args(model, site):
     return () if site == "initial_point" else point(model)
 
@@ -129,10 +123,6 @@ def build_without_memo(model, site, monkeypatch):
         mp.setattr(lifted, "_recall", lambda inputs, outputs: (None, None))
         fn, values, *_ = lifted._build(model, inputs, outputs, "model_inputs")
     return fn, values
-
-
-def pymc_logp(model, x):
-    return float(model.compile_logp()({v.name: np.asarray(a) for v, a in zip(model.value_vars, x)}))
 
 
 def perturb_values(model):

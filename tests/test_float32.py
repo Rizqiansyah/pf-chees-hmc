@@ -15,17 +15,14 @@ What a wrong answer here costs:
     stays what PyTensor made it from floatX, at either floatX (below);
   * a float32 run that finishes with a NaN, or whose posterior is float64 (something converted it back);
   * a warning that tells a float32 user to switch x64 on ("Explicitly requested dtype ... is not available");
-  * a float64 run whose draws move by one bit. The code before this task is a `git archive` (`BASE_SHA`), run in fresh
-    processes.
+  * a float64 run whose draws move by one bit (`test_golden.py`: the float64 golden files equal the tag's draws).
 """
 import concurrent.futures
-import io
 import json
 import os
 import pathlib
 import subprocess
 import sys
-import tarfile
 import warnings
 
 import jax
@@ -35,14 +32,11 @@ import pymc as pm
 import pytest
 import scipy.special as sps
 
-from test_api_prune import without_removed
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent
-BASE_SHA = "62c38a3"             # the f2 head before F2k
 LADDER = ("8schools", "gev", "logit_1000x25", "radon_noncentered")
 SOURCES = "pf,adapt_diag"        # init_source values: the Pathfinder pool pick, and the (jittered) PyMC start
-IDENTITY_MODELS = ("8schools", "gev")
 
 
 def _env(floatx):
@@ -89,30 +83,6 @@ def float32_jobs(tmp_path_factory):
     run.close()
 
 
-@pytest.fixture(scope="module")
-def base_tree(tmp_path_factory):
-    git = ["git", "-C", str(REPO)]
-    try:
-        subprocess.run([*git, "cat-file", "-e", f"{BASE_SHA}^{{commit}}"], check=True, capture_output=True)
-        blob = subprocess.run([*git, "archive", BASE_SHA], check=True, capture_output=True).stdout
-    except (OSError, subprocess.CalledProcessError):
-        pytest.skip(f"commit {BASE_SHA} is not available here (git archive failed)")
-    dest = tmp_path_factory.mktemp("float32_base") / "base"
-    with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
-        tar.extractall(dest, filter="data")
-    return dest
-
-
-@pytest.fixture(scope="module")
-def float64_jobs(tmp_path_factory, base_tree):
-    tmp = tmp_path_factory.mktemp("float64")
-    jobs = {f"{label}:{name}": (tree, name, "float64", ("--init-sources", SOURCES))
-            for name in IDENTITY_MODELS for label, tree in (("old", base_tree), ("new", REPO))}
-    run = Jobs(tmp, jobs)
-    yield run
-    run.close()
-
-
 # ------------------------------------------------------------------------------------ float32, end to end
 @pytest.mark.parametrize("name", LADDER)
 def test_the_ladder_model_samples_under_float32(float32_jobs, name):
@@ -153,30 +123,6 @@ def test_x64_on_under_float32_is_said_not_left_to_a_jax_type_error(float32_jobs)
     assert len(meta["x64_warnings"]) == 1 and meta["x64_end"] is True
     text = meta["x64_warnings"][0]
     assert "floatX is float32" in text and 'jax.config.update("jax_enable_x64", False)' in text
-
-
-# ------------------------------------------------------------------------------------ float64, bit for bit
-@pytest.mark.parametrize("name", IDENTITY_MODELS)
-def test_float64_draws_are_bit_identical_to_the_code_before(float64_jobs, name):
-    """Both init sources, one call each: every posterior and sample_stats array equal to the last bit, same dtypes,
-    same resolved config. (8 Schools has the notebook's float64 data; GEV the start repair and the erfcx.)"""
-    old_meta, old = float64_jobs[f"old:{name}"]
-    new_meta, new = float64_jobs[f"new:{name}"]
-    assert sorted(old) == sorted(new) and len(old) >= 20
-    for source in SOURCES.split(","):
-        assert any(k.startswith(f"{source}/posterior/") for k in old) and any(k.startswith(f"{source}/stats/") for k in old)
-    for key in old:
-        assert old[key].dtype == new[key].dtype and np.array_equal(old[key], new[key], equal_nan=True), key
-    assert old_meta["dtypes"] == new_meta["dtypes"]
-    assert {s: json.loads(c) for s, c in new_meta["config"].items()} == {
-        s: without_removed(json.loads(c)) for s, c in old_meta["config"].items()}
-    for key in new:
-        if "/posterior/" in key:
-            assert new[key].dtype == np.float64 and np.isfinite(new[key]).all(), key
-    # x64 is on in a float64 session (PyTensor's import set it), and `build_model` does not touch it
-    assert new_meta["floatX"] == "float64" and new_meta["x64_start"] is True
-    assert new_meta["x64_built"] is True and new_meta["x64_end"] is True
-    assert new_meta["x64_warnings"] == []
 
 
 # ------------------------------------------------------------------------------------ in-process pieces

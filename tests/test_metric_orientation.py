@@ -22,7 +22,6 @@ practical budget.
 import jax
 import jax.numpy as jnp
 import numpy as np
-import arviz as az
 import pymc as pm
 import pytest
 
@@ -30,10 +29,8 @@ import blackjax as bj
 from blackjax.mcmc.metrics import LowRankInverseMassMatrix
 from jax.flatten_util import ravel_pytree
 
-import arviz_stats
-
-import pfcheeshmc
-from pfcheeshmc.sampler import PfCheesHMC, sample_pf_chees_hmc
+from _helpers import PF_ORDER_VAR, mixing_report as _mixing_report
+from pfcheeshmc.sampler import PfCheesHMC
 
 
 def _scalar(x):
@@ -43,56 +40,6 @@ def _scalar(x):
     return float(a.reshape(-1)[0]) if a.size == 1 else float(a)
 
 Z_INDEX_IN_KERNEL_ORDER = 3
-
-
-# --------------------------------------------------------------------------- fixtures
-@pytest.fixture(scope="module")
-def odd_order_model():
-    """z (sd 100, created first) and a (sd 0.01, created second): value_vars != sorted keys.
-
-    Deliberately not sorted: a test on an already-sorted model would pass on the broken code. The
-    two scales are 8 orders of magnitude apart so a mis-permutation cannot hide inside a tolerance.
-    """
-    with pm.Model() as model:
-        pm.Normal("z", 0.0, 100.0)
-        pm.Normal("a", 0.0, 0.01, shape=3)
-    names = [rv.name for rv in model.value_vars]
-    assert names == ["z", "a"], f"fixture lost its point: value_vars is {names}"
-    assert sorted(names) == ["a", "z"]
-    return model
-
-
-@pytest.fixture(scope="module")
-def anisotropic_model():
-    """Four scalars, posterior variances 1e2 / 3 / 1 / 1e-2, created in a NON-reversing order.
-
-    Conjugate Normal-Normal, so the analytic posterior is exact: var = 1/(1/tau^2 + n/sigma^2),
-    mean = var*(n/sigma^2)*ybar. Tests compare by name, never by position.
-
-    The fixture design matters. An earlier version used three scalars with variances 1e1 / 1e0 /
-    1e-2 created in reverse-sorted order, and it is degenerate for the question these tests ask: the
-    permutation is a reversal, and a symmetric variance ladder means "read an unpermuted covariance"
-    and "read a permuted precision" are nearly the same array, so two of the 2x2 cells came back
-    good and ordering and orientation looked interchangeable. Here value_vars order is
-    [delta, beta, zeta, alpha] against kernel order [alpha, beta, delta, zeta], variances
-    (1, 1e-2, 3, 1e2): no symmetry to hide behind.
-    """
-    rng = np.random.default_rng(3)
-    specs = [("delta", 3.0, 3), ("beta", 1.0, 100), ("zeta", 10.0, 1), ("alpha", 1.0, 1)]
-    y = {name: rng.normal(0.0, sigma, n) for name, sigma, n in specs}
-    tau = 1e6
-    with pm.Model() as model:
-        for name, sigma, n in specs:
-            v = pm.Normal(name, 0.0, tau)
-            pm.Normal(f"obs_{name}", v, sigma, observed=y[name])
-    mean, var = {}, {}
-    for name, sigma, n in specs:
-        prec = 1.0 / tau ** 2 + n / sigma ** 2
-        var[name] = 1.0 / prec
-        mean[name] = var[name] * (n / sigma ** 2) * float(y[name].mean())
-    assert [rv.name for rv in model.value_vars] == ["delta", "beta", "zeta", "alpha"]
-    assert sorted(rv.name for rv in model.value_vars) == ["alpha", "beta", "delta", "zeta"]
-    return model, mean, var
 
 
 def _inject_pool_with_known_covariance(monkeypatch, var_by_leaf, seed=1234):
@@ -136,9 +83,6 @@ def _inject_low_rank_metric(monkeypatch, sigma, rank=1):
     return np.asarray(sigma) ** 2
 
 
-# PF-order variances for the injection tests: z wide, a tight.
-PF_ORDER_VAR = np.array([1e4, 1e-4, 1e-4, 1e-4])
-KERNEL_ORDER_VAR = np.array([1e-4, 1e-4, 1e-4, 1e4])   # sorted: a, a, a, z
 
 
 def _imm(model, **pathfinder_kwargs):
@@ -265,23 +209,6 @@ def test_kernel_convention_is_ke_half_p_A_p_and_momentum_cov_is_A_inverse(odd_or
 
 
 # ------------------------------------------------------------------- orientation (measured)
-def _mixing_report(anisotropic_model, **pathfinder_kwargs):
-    model, mean, var = anisotropic_model
-    kwargs = {"draws": 256}
-    kwargs.update(pathfinder_kwargs)
-    idata = sample_pf_chees_hmc(model, draws=1000, chains=32, random_seed=5, progressbar=False,
-                                pathfinder_kwargs=kwargs, chees_kwargs={"draws": 500})
-    max_rhat = max(float(np.max(v.values)) for v in az.rhat(idata.posterior).values())
-    ess = az.ess(idata.posterior, method="bulk", relative=False)
-    per = {n: float(np.min(ess[n].values)) for n in var}
-    steps = float(np.mean(idata.sample_stats["num_integration_steps"].values))
-    min_ess = min(per.values())
-    # arviz_stats, not arviz: arviz 0.23's _mcse_sd raises "only 0-dimensional arrays can be
-    # converted to Python scalars" under numpy 2.4 on this box (verified). A6 says use arviz_stats.
-    mcse_mean = arviz_stats.mcse(idata, method="mean")
-    return idata, max_rhat, min_ess, per, steps, mcse_mean, mean, var
-
-
 def test_the_default_metric_mixes_the_anisotropic_target(anisotropic_model):
     """The covariance, in kernel order: measured at R-hat 1.002 on this fixture.
 

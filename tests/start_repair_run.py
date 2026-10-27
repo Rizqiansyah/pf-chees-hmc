@@ -1,10 +1,9 @@
 """Child process of tests/test_start_repair.py: `_ensure_finite_inits` on one case, in a fresh process, in any tree.
 
-    python start_repair_run.py TREE CASE OUT.npz
+    python start_repair_run.py CASE OUT.npz
 
-TREE is a source tree that provides `pfcheeshmc/` and `benchmarks/` or `tools/` (the checkout, or a `git archive` of an
-earlier commit). It must not import anything that exists only in the newer tree. Everything runs in float64: PyTensor's
-JAX dispatch switches `jax_enable_x64` on at import.
+Run from the repository root on the path. Everything runs in float64: PyTensor's JAX dispatch switches `jax_enable_x64`
+on at import.
 
 Prints one JSON line: the XLA programs the call compiled (`first`: a cold process; `second`: the same call with
 another key) and the stack's shape. The repaired stack of each call goes to OUT.npz (`first/<name>`,
@@ -26,24 +25,17 @@ import os
 import sys
 
 os.environ.setdefault("PYTENSOR_FLAGS", "blas__ldflags=-llapack -lblas -lcblas -lm")
-tree, case, out = sys.argv[1:4]
-sys.path.insert(0, os.path.join(tree, "tools"))
-sys.path.insert(0, tree)
-# benchmarks/ of THIS checkout (compile_counter), whatever TREE is
-sys.path.insert(1, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "benchmarks"))
+case, out = sys.argv[1:3]
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 import pymc as pm  # noqa: E402
 import pytensor.tensor as pt  # noqa: E402
-from compile_counter import count_compiles  # noqa: E402
+from benchmarks.compile_counter import count_compiles  # noqa: E402
+from benchmarks.models import build_model  # noqa: E402
 from pfcheeshmc.sampler import PfCheesHMC  # noqa: E402
-
-if os.path.isdir(os.path.join(tree, "benchmarks")):  # the tree decides, not an ImportError: PYTHONPATH can put THIS benchmarks/ on an older tree's path
-    from benchmarks.models import build_model
-else:                                                    # a tree before benchmarks/: its models are the notebooks', built by tools/r1_bias
-    from r1_bias import build_model
 
 KW = {}
 
