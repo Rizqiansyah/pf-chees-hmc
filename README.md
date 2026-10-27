@@ -35,7 +35,7 @@ with pm.Model() as model:
     idata = sample_pf_chees_hmc(draws=10, chains=1024, random_seed=42)
 ```
 
-`idata` is a normal `arviz.InferenceData`. Pass `random_seed`: without it the seed is the current date. Stage options are forwarded as dicts: `pathfinder_kwargs`, `step_size_tune_kwargs`, `chees_kwargs`, `dynamic_hmc_kwargs`; a key a stage does not read raises a `TypeError` that names it. `progressbar=False` silences the bars. The examples are in `examples/`.
+`idata` is a normal `arviz.InferenceData`. Pass `random_seed`: without it the seed is the current date. Stage options are forwarded as dicts: `pathfinder_kwargs`, `step_size_tune_kwargs`, `chees_kwargs`, `dynamic_hmc_kwargs`; a key a stage does not read raises a `TypeError` that names it. `progressbar=False` silences the bars. The notebooks in `examples/` are `8 Schools example.ipynb`, `GEV Port Pirie example.ipynb` (with a NUTS comparison), `New data every call.ipynb` (one model structure, new data and priors on every call) and `float32.ipynb`.
 
 **Output.** `posterior` is in problem space, including `pm.Deterministic` variables. `sample_stats` has exactly `lp`, `diverging`, `acceptance_rate`, `is_accepted`, `energy` and `num_integration_steps`; `lp` is the log-density of the sampled state, as PyMC's JAX samplers emit it. `idata.attrs` records the resolved configuration, `frozen_step_size` and `frozen_L_nominal` (`tests/test_inference_data.py` pins the contract).
 
@@ -122,7 +122,7 @@ Command, once with and once without the `PYTENSOR_FLAGS` above: `benchmarks/gpu_
 2. R-hat on every parameter. A collapsed step size gives values far above 1.01.
 3. `num_integration_steps` in `sample_stats`: a collapsed step size comes with trajectories of hundreds of steps.
 
-The examples in `examples/` show how to switch it on, where it helps, and what a failed run looks like.
+Every notebook in `examples/` opens with a `USE_FLOAT32` switch; `examples/float32.ipynb` shows where it helps and what the GEV failure looks like.
 
 ## Common issues
 
