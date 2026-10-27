@@ -120,7 +120,7 @@ Command, once with and once without the `PYTENSOR_FLAGS` above: `benchmarks/gpu_
 **Checks to run on every float32 result:**
 1. The frozen step size (`idata.attrs["frozen_step_size"]`): a value orders of magnitude smaller than float64 gives for the same model is the GEV failure.
 2. R-hat on every parameter, against a float64 run of the same settings. With 10 draws per chain R-hat is above 1.01 even in float64 (1.5 to 1.9 on 8 Schools and GEV); a collapsed step size gives values far above that (57 to 112 on GEV).
-3. `num_integration_steps` in `sample_stats`: a collapsed step size comes with trajectories of hundreds of steps.
+3. `num_integration_steps` in `sample_stats`, against a float64 run. On GEV the collapsed step size came with hundreds of steps per trajectory on the CPU and about 1 on the GPU (float64: about 7); either way the chains barely move.
 
 Every notebook in `examples/` opens with a `USE_FLOAT32` switch; `examples/float32.ipynb` shows where it helps and what the GEV failure looks like.
 
