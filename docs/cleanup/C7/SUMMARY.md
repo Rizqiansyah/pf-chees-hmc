@@ -67,3 +67,13 @@ Execution order dependence: restart the kernel before changing `USE_FLOAT32`.
 - Nothing was run on a GPU; the GPU numbers in the notebook text are the README's.
 - The cause of deviation 1 is unexamined.
 - `float32.ipynb` needs network on first use for the radon data (cached in `~/.cache/pf-ladder`; present on this host).
+
+## Lead, after the task
+- b4911ad: a steady-tier runner executed the four notebooks on the GPU (RTX A2000, under `benchmarks/gpu_run.sh`) and committed
+  the outputs, so "nothing was run on a GPU" and "committed with outputs cleared" above describe the task's state only.
+  GPU walls: 8 Schools 20.8 s, GEV 39.0 s, New data every call 15.0 s, float32 194.7 s; all rc 0. float32 ratios on the
+  GPU 8.12x (logistic) and 3.25x (radon); GEV float32 step 0.0114, R-hat 57.97, 1.4 steps (float64 0.52, 1.89, 7.1).
+- a85cd6e: README states deviation 1 (lead's CPU repro: a new prior value equal to another constant of the model
+  recompiles once: 2.0, 3.0, 5.0 in a model with constants 0, 5, 2, 3; 0.3, 1.0, 4.0, 6.0, 6.5, 7.0 compile nothing).
+  Carried to the owner as a library follow-up.
+- a38f3e6 and the next commit: markdown only, after the GPU outputs and the integrator's findings 1, 2 and 4.
