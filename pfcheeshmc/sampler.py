@@ -1005,8 +1005,8 @@ class PfCheesHMC:
             # utils.WarmupInfo (the vendored-adapter path) wraps the stacked HMCInfo together with
             # the per-step scalar trace. Everything downstream reads HMCInfo fields
             # (num_integration_steps, is_divergent), so unwrap once at the seam and keep the trace
-            # for whoever wants the growth curve. Found by the integration smoke cell on
-            # pf-r1-int: 'WarmupInfo' object has no attribute 'num_integration_steps'.
+            # for whoever wants the growth curve. Without it:
+            # 'WarmupInfo' object has no attribute 'num_integration_steps'.
             self._warmup_trace = getattr(chees_info, "trace", None)
             chees_info = chees_info.info
 
