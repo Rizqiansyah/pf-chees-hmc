@@ -2,6 +2,22 @@
 
 A Pathfinder-ChEES-HMC sampler for PyMC models, built on JAX and BlackJAX. `sample_pf_chees_hmc` takes a PyMC model with continuous variables and returns an `arviz.InferenceData`.
 
+> **WARNING: compiled Hessians on the GPU can be WRONG. Set `XLA_FLAGS=--xla_gpu_enable_triton_gemm=false`.**
+>
+> **What happened.** On one PyMC model (an upper-bounded GEV regression with a change point), `jax.jit(jax.hessian(logp))` on the GPU returned a block of second derivatives that was wrong by up to a factor of 1,000,000. The same Hessian was right on the CPU, right on the GPU without `jit`, and right on the GPU with XLA's Triton GEMM path switched off. A function that is linear in some inputs had a Hessian of 8.7e6 where the right answer is exactly 0. JAX 0.12.0.1 (the latest release on 2026-10-28), CUDA 13, RTX A2000, driver 580.
+>
+> **What is known and what is not.** Switching off Triton GEMM (`--xla_gpu_enable_triton_gemm=false`) fixed it; five other XLA flags and `JAX_DEFAULT_MATMUL_PRECISION=highest` did not. Why Triton gets it wrong (lost precision or a miscompiled kernel) is NOT known, and no upstream report has been filed.
+>
+> **Does it affect this sampler?** The sampler uses log-densities and gradients only; it computes no Hessian. On that model the gradients were right: batched over 1,024 chains, as the sampler evaluates them, they matched the CPU to 3e-9 relative, with and without Triton. That was checked for one model, not proven in general, so for a new model compare a few gradients on the GPU against the CPU (`jax.jit(..., backend="cpu")`).
+>
+> **What to do.** Set the flag before JAX starts, in the shell or in the environment (pixi: `[activation.env]`):
+>
+> ```
+> XLA_FLAGS="--xla_gpu_enable_triton_gemm=false" python my_script.py
+> ```
+>
+> On that model it cost nothing measurable (a 1,024-chain gradient: 76.3 ms with Triton, 76.3 to 76.5 ms without). Anything you build on top of the sampler that uses second derivatives (a Laplace approximation, a Newton optimiser, a Hessian-based metric) must either run with this flag or compute the Hessian on the CPU.
+
 ## Why ChEES-HMC, and why many short chains
 
 NUTS adapts the trajectory length of every transition by branching, which is hard to run in lock step on a GPU. ChEES-HMC [1] instead tunes the step size and one trajectory length during warmup (ChEES, the Change in the Estimator of the Expected Square, is the criterion it maximises), then runs plain HMC with those values. Every chain does the same work at each step, so thousands of chains cost little more than a few. ChEES adapts the step size and trajectory length only, not the metric; this package takes the metric from Pathfinder. It calls BlackJAX's `chees_adaptation.base()`, not the public `chees_adaptation(...)` builder.
