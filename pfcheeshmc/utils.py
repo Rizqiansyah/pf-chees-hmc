@@ -100,6 +100,10 @@ def chees_warmup_with_progress(
                              #     boundaries cost 6.7-9.0 s, more than any warmup saving);
                              #     kept opt-in for instrumentation
     single_step_iters=0,       # run L=1 for this many steps while the step size settles
+    metric_updates=None,       # None = the metric is fixed, identical to the previous behaviour. Else
+                             #     warmup fractions in (0, 1) at which the metric is re-estimated from
+                             #     the chains (`compiled.ensemble_metric`) and the step size restarted
+    metric_shrinkage=None,     # weight of the old metric in each re-estimate; None = 5 / (chains + 5)
 ):
     """ChEES warmup, as host-driven chunks of ONE jitted program (`compiled.warmup_chunk`).
 
@@ -109,6 +113,18 @@ def chees_warmup_with_progress(
 
     Returns ``(last_states, parameters), WarmupInfo``; ``WarmupInfo.info`` / ``.trace`` are NumPy stacks
     with one row per step run.
+
+    Metric updates (``metric_updates``, off by default). The Pathfinder metric is fitted once, before any
+    chain has moved; where it is wrong in a direction the chains have to cross (a slow coordinate whose
+    spread Pathfinder under-reads), the frozen metric keeps that direction slow for the whole run. At each
+    fraction ``f`` the warmup stops after ``round(f * num_steps)`` steps, the metric becomes the covariance
+    of the current chain positions (dense or diagonal like the metric passed in), shrunk towards the old
+    metric by ``metric_shrinkage``, and the step size restarts at a fresh doubling/halving search from the
+    current positions with the new metric (Stan restarts its dual averaging after each metric window for
+    the same reason: the old step size belongs to the old metric). The trajectory length and its Adam state
+    carry on. An estimate that is not finite and positive definite is not used. The frozen metric the
+    sampling stage reads is ``parameters["inverse_mass_matrix"]``; ``parameters["metric_updates"]`` records
+    each update (step, used, restarted step size).
     """
     # --- metric shape guard -------------------------------------------------
     # The metric is a flat kernel-order quantity: its dimension must equal the
@@ -148,6 +164,21 @@ def chees_warmup_with_progress(
     eps0 = jnp.asarray(initial_step_size, dtype=jnp.result_type(initial_step_size))
     init_states, adaptation_state = _compiled.warmup_init(
         ld.fn, ld.names, ld.values, positions, eps0, **settings)
+
+    # Warmup steps after which the metric is re-estimated (empty: never, the previous behaviour).
+    boundaries = []
+    if metric_updates:
+        if stop_rule:
+            raise ValueError("metric_updates and a warmup stop rule cannot be combined")
+        for f in metric_updates:
+            if not 0.0 < float(f) < 1.0:
+                raise ValueError(f"metric_updates fractions must lie in (0, 1), got {f}")
+        boundaries = sorted({int(round(float(f) * num_steps)) for f in metric_updates} - {0, num_steps})
+    if metric_shrinkage is None:
+        metric_shrinkage = 5.0 / (_compiled._num_chains(positions) + 5.0)
+    if not 0.0 <= float(metric_shrinkage) <= 1.0:
+        raise ValueError(f"metric_shrinkage must lie in [0, 1], got {metric_shrinkage}")
+    metric_log = []
 
     def chunk_call(size, stack):
         def call(carry, start, n):
@@ -246,14 +277,43 @@ def chees_warmup_with_progress(
         # Default path: chunks of WARMUP_CHUNK steps. The positions are not stacked: that stack is the
         # memory wall at C=1,024, and only the stop rule reads it.
         rest = _compiled.HostStack(num_steps)
+        offset = [0]
 
         def consume(start, n, out):
+            start += offset[0]
             host = jax.tree_util.tree_map(np.asarray, out)
             rest.add(start, n, host)
             tick(start + n, *[jax.tree_util.tree_map(lambda x: x[:n], t) for t in host])
 
-        carry = _compiled.run_chunks(chunk_call(_compiled.WARMUP_CHUNK, False), carry,
-                                     num_steps, _compiled.WARMUP_CHUNK, consume)
+        call = chunk_call(_compiled.WARMUP_CHUNK, False)
+        if not boundaries:
+            carry = _compiled.run_chunks(call, carry, num_steps, _compiled.WARMUP_CHUNK, consume)
+        else:
+            # Segments between the update steps. Each is the same chunk program run from a global step
+            # offset, so the keys and the Halton index are those of an unsegmented run.
+            edges = [0] + boundaries + [num_steps]
+            for k, (a, b) in enumerate(zip(edges[:-1], edges[1:])):
+                offset[0] = a
+                carry = _compiled.run_chunks(
+                    lambda c, s, n: call(c, s + a, n), carry, b - a, _compiled.WARMUP_CHUNK, consume)
+                if b == num_steps:
+                    break
+                states, astate = carry
+                new_imm, used = _compiled.ensemble_metric(states.position, imm_arr, float(metric_shrinkage))
+                used = bool(used)
+                eps_new = float("nan")
+                if used:
+                    imm_arr = new_imm
+                    # Probes: the first 32 chains' current positions; its own key stream, apart from
+                    # the per-step keys fold_in(rng_key, step).
+                    key_k = jax.random.fold_in(jax.random.fold_in(rng_key, 2**31 - 1), k)
+                    eps_new, _, _ = _compiled.search_step_sizes(
+                        ld.fn, ld.names, ld.values, imm_arr, key_k, states.position,
+                        take=min(32, _compiled._num_chains(states.position)))
+                    eps_new = float(eps_new)
+                    if np.isfinite(eps_new) and eps_new > 0.0:
+                        carry = (states, _compiled.restart_step_size(astate, eps_new))
+                metric_log.append({"step": int(b), "used": used, "step_size": eps_new})
         warm_info, trace_hist = rest.result()
         stopped_at = None
     last_states, last_adapt_state = carry
@@ -263,8 +323,9 @@ def chees_warmup_with_progress(
 
     # Assemble parameters like BJ’s run(). Explicit projection: the frozen values a
     # reader or row schema can rely on are named keys, not positions in a dict.
-    # The metric is passed through UNCHANGED -- its orientation and ordering are
-    # another task's decision (WP1); nothing here inverts or permutes it.
+    # The metric is passed through UNCHANGED unless metric_updates re-estimated it (in kernel order,
+    # like the metric passed in) -- its orientation and ordering are another task's decision (WP1);
+    # nothing here inverts or permutes it.
     traj_len_adj = jnp.exp(
         last_adapt_state.log_trajectory_length_moving_average
         - last_adapt_state.log_step_size_moving_average
@@ -272,7 +333,9 @@ def chees_warmup_with_progress(
     parameters = {
         "step_size": jnp.exp(last_adapt_state.log_step_size_moving_average),
         "frozen_step_size": jnp.exp(last_adapt_state.log_step_size_moving_average),
-        "inverse_mass_matrix": inverse_mass_matrix,
+        # The metric the warmup ended with: the one passed in, unless metric_updates replaced it.
+        "inverse_mass_matrix": imm_arr if any(u["used"] for u in metric_log) else inverse_mass_matrix,
+        "metric_updates": metric_log,
         "next_random_arg_fn": _compiled._next_random_arg,
         "integration_steps_fn": lambda arg: _compiled.integration_steps(arg, traj_len_adj, float(jitter_amount)),
         # Nominal leapfrog count L = T/eps before the Halton jitter, i.e. the
