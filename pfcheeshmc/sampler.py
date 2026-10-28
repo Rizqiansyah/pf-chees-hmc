@@ -53,7 +53,8 @@ _PF_LBFGS_OPTIONS = {"pf_maxiter": "maxiter", "pf_maxcor": "maxcor", "pf_maxls":
                      "pf_ftol": "ftol", "pf_elbo_samples": "num_samples"}
 _STEP_SIZE_OPTIONS = _COMMON_OPTIONS | frozenset({"eps0_probes"})
 _CHEES_OPTIONS = _COMMON_OPTIONS | frozenset({
-    "draws", "adam_lr", "target_accept", "max_leapfrog_steps", "warmup_stop", "progressbar"})
+    "draws", "adam_lr", "target_accept", "max_leapfrog_steps", "warmup_stop", "progressbar",
+    "metric_updates", "metric_shrinkage"})
 _DYNAMIC_HMC_OPTIONS = _COMMON_OPTIONS | frozenset({"draws", "progressbar"})
 _SAMPLE_OPTIONS = frozenset({"chains", "draws"})
 
@@ -968,8 +969,11 @@ class PfCheesHMC:
         chees_kwargs you can pass: ``draws`` (the warmup steps, default 2000), ``adam_lr`` (0.05),
         ``target_accept`` (0.651), ``max_leapfrog_steps`` (1000), ``warmup_stop`` (a stop rule, e.g.
         ``{"block": 250, "window": 100, "rhat": 1.01}``; absent by default, so the warmup runs exactly
-        ``draws`` steps), ``progressbar``, ``seed`` and ``chains``. Any other key raises a TypeError that
-        names it.
+        ``draws`` steps), ``metric_updates`` (warmup fractions at which the metric is re-estimated from
+        the chains and the step size restarted, e.g. ``(0.25, 0.5, 0.75)``; absent by default, so the
+        Pathfinder metric is kept), ``metric_shrinkage`` (weight of the old metric in each re-estimate,
+        default ``5 / (chains + 5)``), ``progressbar``, ``seed`` and ``chains``. Any other key raises a
+        TypeError that names it. See `chees_warmup_with_progress` for what an update does.
         """
         _check_options("chees_kwargs", kwargs, _CHEES_OPTIONS)
         #Default values
@@ -991,6 +995,8 @@ class PfCheesHMC:
             "target_accept": float(kwargs["target_accept"]),
             "max_leapfrog_steps": int(kwargs["max_leapfrog_steps"]),
             "warmup_stop": kwargs.get("warmup_stop", None),
+            "metric_updates": (None if kwargs.get("metric_updates") is None
+                               else [float(f) for f in kwargs["metric_updates"]]),
         }
         # Stage-scoped key. This site used to be `_, key_warm = jax.random.split(jax.random.key(seed))`,
         # which produced exactly the key the sampling stage derived, so sampling replayed the warmup
@@ -1010,7 +1016,10 @@ class PfCheesHMC:
             # Warmup stopping rule, e.g. {"block": 250, "window": 100, "rhat": 1.01}.
             # Absent by default: warmup then runs exactly num_steps as before.
             stop_rule=kwargs.get("warmup_stop", None),
+            metric_updates=kwargs.get("metric_updates", None),
+            metric_shrinkage=kwargs.get("metric_shrinkage", None),
         )
+        self._resolved["warmup"]["metric_update_log"] = chees_parameters.get("metric_updates", [])
         if hasattr(chees_info, "info"):
             # utils.WarmupInfo (the vendored-adapter path) wraps the stacked HMCInfo together with
             # the per-step scalar trace. Everything downstream reads HMCInfo fields
@@ -1341,7 +1350,8 @@ class PfCheesHMC:
         dhmc_state, states_hist, infos_hist = self._run_dynamic_hmc(
             chees_states,
             chees_parameters,
-            inverse_mass_matrix,
+            # The metric the warmup ended with: Pathfinder's unless chees_kwargs["metric_updates"] replaced it.
+            chees_parameters["inverse_mass_matrix"],
             **dynamic_hmc_kwargs,
         )
 
@@ -1428,6 +1438,8 @@ class PfCheesHMC:
             "target_accept": wu["target_accept"],
             "max_leapfrog_steps": wu["max_leapfrog_steps"],
             "warmup_stop": wu["warmup_stop"],
+            "metric_updates": wu["metric_updates"],
+            "metric_update_log": wu["metric_update_log"],
             "chains": sm["chains"],
             "num_draws": sm["num_draws"],
             "frozen_step_size": idata.attrs["frozen_step_size"],
