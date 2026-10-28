@@ -127,6 +127,7 @@ Every notebook in `examples/` opens with a `USE_FLOAT32` switch; `examples/float
 ## Common issues
 
 1. The sampler is not converging: raise the warmup (`chees_kwargs={"draws": 2_000}`), and compare with `benchmarks/bias.py` on a model that has a NUTS reference.
+   If the chains stay near their starts (R-hat far above the 1.5 to 1.9 of 10-draw chains, `lp` in `sample_stats` well below the log-density near the mode), check Pathfinder first: the starts and the metric both come from its one L-BFGS path, and BlackJAX's defaults (30 iterations, `ftol=1e-5`) can stop it far from the mode on a stiff posterior. Raise them with `pathfinder_kwargs={"pf_maxiter": 1000, "pf_ftol": 1e-12}` (also `pf_gtol`, `pf_maxcor`, `pf_maxls`, `pf_elbo_samples`, BlackJAX's `gtol`, `maxcor`, `maxls`, `num_samples`). Measured on a 14-parameter upper-bounded GEV regression (κ ≈ 6e6): the defaults stopped L-BFGS about 130 log-density units below the mode and the chains never left; 1,000 iterations reached it. A longer warmup cannot fix this, because the metric is frozen after Pathfinder.
 2. On a shared GPU JAX pre-allocates most of the memory at import. Set `XLA_PYTHON_CLIENT_PREALLOCATE=false` (the pixi environment does).
 3. On the GPU, divergence counts can differ by one between identical runs at the same seed: GPU reductions are not bitwise reproducible. On the CPU, runs at the same seed are identical (`tests/test_golden.py`).
 

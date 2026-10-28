@@ -168,17 +168,20 @@ def pool_gradients(fn, names, values, template, draws):
 # --------------------------------------------------------------------------------------------------
 # Pathfinder
 # --------------------------------------------------------------------------------------------------
-@partial(jax.jit, static_argnames=("approximate",) + _STATIC)
-def pathfinder_fit(approximate, fn, names, values, key, initial_position):
-    """``approximate(key, ld, initial_position)``: the L-BFGS path, whole, as one program.
+@partial(jax.jit, static_argnames=("approximate", "lbfgs") + _STATIC)
+def pathfinder_fit(approximate, fn, names, values, key, initial_position, lbfgs=()):
+    """``approximate(key, ld, initial_position, **dict(lbfgs))``: the L-BFGS path, whole, as one program.
 
     ``approximate`` is ``blackjax.vi.pathfinder.approximate``, looked up by the caller at call time (a
-    static argument, so a replaced function is its own cache entry). maxiter, maxcor, num_samples and
-    the rest keep BlackJAX's defaults, which are Python constants of the trace. Only the fitted
-    `PathfinderState` is returned; the traversed path (``maxiter + 1`` states) is not kept.
+    static argument, so a replaced function is its own cache entry). ``lbfgs`` is a sorted tuple of
+    ``(name, value)`` pairs among ``num_samples``, ``maxiter``, ``maxcor``, ``maxls``, ``gtol`` and ``ftol``
+    (static: they are Python constants of the trace, so another value is another program); the ones not
+    given keep BlackJAX's defaults. Only the fitted `PathfinderState` is returned; the traversed path
+    (``maxiter + 1`` states) is not kept.
     """
     state, _ = approximate(
-        rng_key=key, initial_position=initial_position, logdensity_fn=_logdensity(fn, names, values))
+        rng_key=key, initial_position=initial_position, logdensity_fn=_logdensity(fn, names, values),
+        **dict(lbfgs))
     return state
 
 

@@ -46,7 +46,11 @@ _PATHFINDER_OPTIONS = _COMMON_OPTIONS | frozenset({
     "draws", "ridge", "init_source", "imm_source", "pf_pool_cap", "score_chunk",
     "pm_init", "pm_tune", "pm_seed", "pm_chains",
     "pf_jitter_eps", "pf_max_backtracks", "pf_max_restarts", "pf_restart_radius",
-    "fisher_draws", "max_rank", "fisher_gamma", "fisher_cutoff"})
+    "fisher_draws", "max_rank", "fisher_gamma", "fisher_cutoff",
+    "pf_maxiter", "pf_maxcor", "pf_maxls", "pf_gtol", "pf_ftol", "pf_elbo_samples"})
+# pathfinder_kwargs key -> keyword of blackjax.vi.pathfinder.approximate
+_PF_LBFGS_OPTIONS = {"pf_maxiter": "maxiter", "pf_maxcor": "maxcor", "pf_maxls": "maxls", "pf_gtol": "gtol",
+                     "pf_ftol": "ftol", "pf_elbo_samples": "num_samples"}
 _STEP_SIZE_OPTIONS = _COMMON_OPTIONS | frozenset({"eps0_probes"})
 _CHEES_OPTIONS = _COMMON_OPTIONS | frozenset({
     "draws", "adam_lr", "target_accept", "max_leapfrog_steps", "warmup_stop", "progressbar"})
@@ -629,6 +633,10 @@ class PfCheesHMC:
         score_chunk: block size of the vmapped log-density scorings (default 1024)
         fisher_draws, max_rank, fisher_gamma, fisher_cutoff: the "fisher_lowrank" metric only
         pf_jitter_eps, pf_max_backtracks, pf_max_restarts, pf_restart_radius: the start repair
+        pf_maxiter, pf_maxcor, pf_maxls, pf_gtol, pf_ftol, pf_elbo_samples: the L-BFGS path and its ELBO draws
+            (blackjax.vi.pathfinder.approximate's maxiter, maxcor, maxls, gtol, ftol, num_samples); absent
+            keeps BlackJAX's defaults (30, 10, 1000, 1e-8, 1e-5, 200). The defaults stop early on stiff
+            posteriors: L-BFGS can end far from the mode, and the starts and the metric come from there
         chains, draws, seed, ridge: the number of chains, the Pathfinder draws per chain (the pool is
             ``chains * draws`` rows before the cap), the stage seed and the covariance ridge
 
@@ -724,10 +732,11 @@ class PfCheesHMC:
         c_best = int(jnp.argmax(lp_inits))
         x0_pf = {n: init_stack[n][c_best] for n in self.rvs}
 
-        # 3) Fit Pathfinder
+        # 3) Fit Pathfinder. The L-BFGS settings are passed only when given, so the default call is unchanged.
+        lbfgs = tuple(sorted((_PF_LBFGS_OPTIONS[k], v) for k, v in kwargs.items() if k in _PF_LBFGS_OPTIONS))
         pf_state = compiled.pathfinder_fit(
             bj.vi.pathfinder.approximate, ld.fn, ld.names, ld.values,
-            key_pf, tuple(x0_pf[n] for n in self.rvs),
+            key_pf, tuple(x0_pf[n] for n in self.rvs), **({"lbfgs": lbfgs} if lbfgs else {}),
         )
 
         # 4) Draw the start pool, bounded by `pf_pool_cap` rows (see default_pool_cap for why the
@@ -903,6 +912,7 @@ class PfCheesHMC:
             "pm_init": pm_init,
             "pm_tune": int(pm_tune),
             "score_chunk": score_chunk,
+            "lbfgs": dict(lbfgs),          # only the settings given; the rest are BlackJAX's defaults
         }
 
         return pf_samples, inverse_mass_matrix
@@ -1409,6 +1419,7 @@ class PfCheesHMC:
             "pm_init": pf["pm_init"],
             "pm_tune": pf["pm_tune"],
             "score_chunk": pf["score_chunk"],
+            "pf_lbfgs": pf["lbfgs"],
             "eps0_probes": ss["eps0_probes"],
             "eps0": float(eps0),
             "num_warmup": wu["num_warmup"],

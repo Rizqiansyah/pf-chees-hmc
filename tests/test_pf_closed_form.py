@@ -272,7 +272,7 @@ def tiny_run():
 
 
 ALWAYS_SET = ["imm_source", "ridge", "pf_draws", "pf_pool_cap", "pf_pool_rows", "init_source", "pm_chains",
-              "pm_init", "pm_tune", "score_chunk", "eps0_probes", "eps0", "num_warmup", "warmup_steps_used",
+              "pm_init", "pm_tune", "score_chunk", "pf_lbfgs", "eps0_probes", "eps0", "num_warmup", "warmup_steps_used",
               "adam_lr", "target_accept", "max_leapfrog_steps", "chains", "num_draws", "frozen_step_size",
               "frozen_L_nominal", "seed", "stage_seeds", "jax_enable_x64"]
 NULL_WHEN_NOT_USED = ["warmup_stop"]
