@@ -173,6 +173,29 @@ def _stratified_pool_idx(logp_subset, subset_idx, n_pick):
     return subset_idx[order[ranks]]
 
 
+def _finite_gradient_rows(draws, grads, max_rank):
+    """The rows of a Fisher estimate's (draws, gradients) whose gradient is finite.
+
+    A Pathfinder draw beyond a hard edge of the support (log-density -inf) has a NaN gradient: written as a switch,
+    as in pymc_extras' GenExtreme, the unused branch's NaN survives the masking (0 x NaN). One such row makes the
+    whole metric NaN, every leapfrog step NaN, and the step-size search halve to the float floor. Those rows are
+    left out. When every row is finite (the usual case) the arrays are returned as they are, so nothing changes,
+    not even the compiled shapes. Returns (draws, grads, record) with record = {"fisher_rows", "fisher_rows_used"}.
+    """
+    ok = np.asarray(jnp.all(jnp.isfinite(grads), axis=1))
+    record = {"fisher_rows": int(ok.shape[0]), "fisher_rows_used": int(ok.sum())}
+    if ok.all():
+        return draws, grads, record
+    warnings.warn(
+        f"imm_source='fisher_lowrank': {ok.shape[0] - int(ok.sum())} of {ok.shape[0]} Pathfinder draws have a "
+        "non-finite gradient (outside the support) and are left out of the metric", RuntimeWarning, stacklevel=3)
+    if ok.sum() < 2 * max_rank + 2:
+        raise ValueError(
+            f"imm_source='fisher_lowrank': only {int(ok.sum())} of {ok.shape[0]} Pathfinder draws have a finite "
+            f"gradient (the rest lie outside the support), too few for rank {max_rank}; use imm_source='mc'")
+    return draws[ok], grads[ok], record
+
+
 def _frozen_nominal_L(integration_steps_fn, warmup_steps_used):
     """ceil(T/eps) at the frozen point, recovered from the kernel's own step-count function.
 
@@ -823,6 +846,7 @@ class PfCheesHMC:
 
         # 6b) Optional alternative metric (E4). Default "mc" keeps the empirical covariance above.
         # Every source produces the same kind of object -- a COVARIANCE estimate (see 6c).
+        fisher_record = {}
         if imm_source != "mc":
             if imm_source == "pf_closed":
                 # The exact covariance Pathfinder's own sampler draws with: bfgs_sample builds
@@ -856,6 +880,7 @@ class PfCheesHMC:
                 ggrads = compiled.pool_gradients(
                     ld.fn, ld.names, ld.values,
                     jax.tree_util.tree_map(lambda x: x[0], samples_total), gdraws)
+                gdraws, ggrads, fisher_record = _finite_gradient_rows(gdraws, ggrads, int(kwargs.get("max_rank", 10)))
                 lr = bj.adaptation.metric_estimators.fisher_score_low_rank(
                     gdraws, ggrads, int(kwargs.get("max_rank", 10)),
                     gamma=float(kwargs.get("fisher_gamma", 1e-5)),
@@ -913,6 +938,7 @@ class PfCheesHMC:
             "pm_init": pm_init,
             "pm_tune": int(pm_tune),
             "score_chunk": score_chunk,
+            **fisher_record,      # "fisher_lowrank": rows of the Fisher estimate, and how many had a finite gradient
             "lbfgs": dict(lbfgs),          # only the settings given; the rest are BlackJAX's defaults
         }
 
