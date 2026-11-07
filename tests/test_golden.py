@@ -34,6 +34,11 @@ FLOAT64 = [c for c in make_golden.CASES if make_golden._spec()[c][0] == "float64
 
 @pytest.mark.parametrize("case", FLOAT64)
 def test_the_draws_are_those_of_the_golden_file(case):
+    import jax
+    if jax.default_backend() != "cpu":
+        # the files are CPU runs; the GPU's arithmetic is not the CPU's, and on the GPU a gather's gradient (a
+        # scatter-add) is not even the same twice (README, Common issues)
+        pytest.skip(f"golden draws are CPU runs; this process runs on {jax.default_backend()} (set JAX_PLATFORMS=cpu)")
     make_golden.assert_golden(case, make_golden.compute(case))
 
 
