@@ -1406,6 +1406,12 @@ class PfCheesHMC:
             chees_parameters["integration_steps_fn"],
             int(idata.attrs["warmup_steps_used"]),
         )
+        # The metric the draws were made with (kernel coordinate order: the sorted names, as ravel_pytree
+        # orders a dict), so a divergence can be replayed with the sampler's own metric. Flattened, because
+        # netCDF attributes are 1-D; a diagonal metric has length d, a dense one d * d.
+        imm_frozen = _np.asarray(chees_parameters["inverse_mass_matrix"], dtype=_np.float64)
+        idata.attrs["frozen_inverse_mass_matrix"] = imm_frozen.ravel()
+        idata.attrs["frozen_inverse_mass_matrix_shape"] = _np.asarray(imm_frozen.shape, dtype=_np.int64)
         warm_n = _np.asarray(chees_info.num_integration_steps, dtype=_np.int64)     # (steps, chains)
         samp_n = _np.asarray(infos_hist.num_integration_steps, dtype=_np.int64)   # (draws, chains)
         idata.attrs["warmup_grad_evals_per_chain"] = int(warm_n.sum() // warm_n.shape[1])
