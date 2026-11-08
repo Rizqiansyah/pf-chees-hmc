@@ -38,6 +38,7 @@ from jax import lax
 from jax.flatten_util import ravel_pytree
 
 import blackjax.mcmc.dynamic_hmc as dynamic_hmc
+import blackjax.optimizers.dual_averaging as dual_averaging
 
 from . import chees as _chees_vendored
 
@@ -168,17 +169,20 @@ def pool_gradients(fn, names, values, template, draws):
 # --------------------------------------------------------------------------------------------------
 # Pathfinder
 # --------------------------------------------------------------------------------------------------
-@partial(jax.jit, static_argnames=("approximate",) + _STATIC)
-def pathfinder_fit(approximate, fn, names, values, key, initial_position):
-    """``approximate(key, ld, initial_position)``: the L-BFGS path, whole, as one program.
+@partial(jax.jit, static_argnames=("approximate", "lbfgs") + _STATIC)
+def pathfinder_fit(approximate, fn, names, values, key, initial_position, lbfgs=()):
+    """``approximate(key, ld, initial_position, **dict(lbfgs))``: the L-BFGS path, whole, as one program.
 
     ``approximate`` is ``blackjax.vi.pathfinder.approximate``, looked up by the caller at call time (a
-    static argument, so a replaced function is its own cache entry). maxiter, maxcor, num_samples and
-    the rest keep BlackJAX's defaults, which are Python constants of the trace. Only the fitted
-    `PathfinderState` is returned; the traversed path (``maxiter + 1`` states) is not kept.
+    static argument, so a replaced function is its own cache entry). ``lbfgs`` is a sorted tuple of
+    ``(name, value)`` pairs among ``num_samples``, ``maxiter``, ``maxcor``, ``maxls``, ``gtol`` and ``ftol``
+    (static: they are Python constants of the trace, so another value is another program); the ones not
+    given keep BlackJAX's defaults. Only the fitted `PathfinderState` is returned; the traversed path
+    (``maxiter + 1`` states) is not kept.
     """
     state, _ = approximate(
-        rng_key=key, initial_position=initial_position, logdensity_fn=_logdensity(fn, names, values))
+        rng_key=key, initial_position=initial_position, logdensity_fn=_logdensity(fn, names, values),
+        **dict(lbfgs))
     return state
 
 
@@ -465,6 +469,47 @@ def warmup_init(fn, names, values, positions, initial_step_size, *, optim, targe
                              single_step_iters)
     states = jax.vmap(lambda p: dynamic_hmc.init(p, ld, 0))(positions)
     return _strong(states), _strong(init_adapt(0, initial_step_size))
+
+
+@jax.jit
+def ensemble_metric(positions, old, shrinkage):
+    """The metric re-estimated from the chains: ``(1 - shrinkage) * cov + shrinkage * old``, and whether it was used.
+
+    ``positions`` is the warmup carry's dict of ``(chains, ...)`` positions; each chain is raveled as the
+    kernel ravels its state (sorted keys), so the result is in kernel order like ``old``. ``old`` decides
+    the form: a 2-D metric gets the dense covariance, a 1-D one the variances. Chains with a non-finite
+    coordinate are left out. ``old`` is returned unchanged (and the flag is False) unless the shrunk
+    estimate is finite and positive definite (a Cholesky factor exists, or every variance is positive)
+    and at least two chains are usable.
+    """
+    x = jax.vmap(lambda p: ravel_pytree(p)[0])(positions)
+    ok = jnp.isfinite(x).all(axis=1)
+    n = jnp.sum(ok)
+    xs = jnp.where(ok[:, None], x, 0.0)
+    xc = jnp.where(ok[:, None], xs - jnp.sum(xs, axis=0) / n, 0.0)
+    old = jnp.asarray(old)
+    if old.ndim == 2:
+        est = (xc.T @ xc) / (n - 1)
+        new = (1.0 - shrinkage) * est + shrinkage * old
+        good = jnp.isfinite(jnp.linalg.cholesky(new)).all()
+    else:
+        est = jnp.sum(xc * xc, axis=0) / (n - 1)
+        new = (1.0 - shrinkage) * est + shrinkage * old
+        good = jnp.isfinite(new).all() & (new > 0.0).all()
+    good = good & (n >= 2)
+    return jnp.where(good, new, old).astype(old.dtype), good
+
+
+@jax.jit
+def restart_step_size(astate, step_size):
+    """The adapter state with its step size restarted at ``step_size``: a fresh dual-averaging state there,
+    and the step size's moving average set to it. The trajectory length, its moving average, the Adam state,
+    the jitter index and the step counter carry on. Used after the metric changed under the warmup."""
+    da_init, _, _ = dual_averaging.dual_averaging()
+    step_size = jnp.asarray(step_size, dtype=astate.step_size.dtype)
+    new = astate._replace(step_size=step_size, log_step_size_moving_average=jnp.log(step_size),
+                          da_state=da_init(step_size))
+    return _like(new, astate)
 
 
 @partial(jax.jit, static_argnames=_STATIC + _ADAPTER + ("chunk", "stack_positions"))

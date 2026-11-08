@@ -118,7 +118,9 @@ def _collect(idata, prefix, out):
         for k, v in part.data_vars.items():
             out[f"{prefix}{tag}/{k}"] = v.values
     for k, v in idata.attrs.items():
-        if k != "config":
+        # the frozen metric is left out: the draws pin it, test_frozen_metric_saved checks it, and the dense ones would
+        # take the files past their size guard
+        if k != "config" and not k.startswith("frozen_inverse_mass_matrix"):
             out[f"{prefix}attrs/{k}"] = v
     out[f"{prefix}config"] = idata.attrs["config"]
 

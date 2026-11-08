@@ -2,6 +2,22 @@
 
 A Pathfinder-ChEES-HMC sampler for PyMC models, built on JAX and BlackJAX. `sample_pf_chees_hmc` takes a PyMC model with continuous variables and returns an `arviz.InferenceData`.
 
+> **WARNING: compiled Hessians on the GPU can be WRONG. Set `XLA_FLAGS=--xla_gpu_enable_triton_gemm=false`.**
+>
+> **What happened.** On one PyMC model (an upper-bounded GEV regression with a change point), `jax.jit(jax.hessian(logp))` on the GPU returned a block of second derivatives that was wrong by up to a factor of 1,000,000. The same Hessian was right on the CPU, right on the GPU without `jit`, and right on the GPU with XLA's Triton GEMM path switched off. A function that is linear in some inputs had a Hessian of 8.7e6 where the right answer is exactly 0. JAX 0.12.0.1 (the latest release on 2026-10-28), CUDA 13, RTX A2000, driver 580.
+>
+> **What is known and what is not.** Switching off Triton GEMM (`--xla_gpu_enable_triton_gemm=false`) fixed it; five other XLA flags and `JAX_DEFAULT_MATMUL_PRECISION=highest` did not. Why Triton gets it wrong (lost precision or a miscompiled kernel) is NOT known, and no upstream report has been filed.
+>
+> **Does it affect this sampler?** The sampler uses log-densities and gradients only; it computes no Hessian. On that model the gradients were right: batched over 1,024 chains, as the sampler evaluates them, they matched the CPU to 3e-9 relative, with and without Triton. That was checked for one model, not proven in general, so for a new model compare a few gradients on the GPU against the CPU (`jax.jit(..., backend="cpu")`).
+>
+> **What to do.** Set the flag before JAX starts, in the shell or in the environment (pixi: `[activation.env]`):
+>
+> ```
+> XLA_FLAGS="--xla_gpu_enable_triton_gemm=false" python my_script.py
+> ```
+>
+> On that model it cost nothing measurable (a 1,024-chain gradient: 76.3 ms with Triton, 76.3 to 76.5 ms without). Anything you build on top of the sampler that uses second derivatives (a Laplace approximation, a Newton optimiser, a Hessian-based metric) must either run with this flag or compute the Hessian on the CPU.
+
 ## Why ChEES-HMC, and why many short chains
 
 NUTS adapts the trajectory length of every transition by branching, which is hard to run in lock step on a GPU. ChEES-HMC [1] instead tunes the step size and one trajectory length during warmup (ChEES, the Change in the Estimator of the Expected Square, is the criterion it maximises), then runs plain HMC with those values. Every chain does the same work at each step, so thousands of chains cost little more than a few. ChEES adapts the step size and trajectory length only, not the metric; this package takes the metric from Pathfinder. It calls BlackJAX's `chees_adaptation.base()`, not the public `chees_adaptation(...)` builder.
@@ -92,6 +108,10 @@ A call compiles its XLA programs the first time it meets a model structure, a se
 
 `pathfinder_kwargs={"imm_source": ...}` chooses how the mass matrix is built. The default, `mc`, is the covariance of the Pathfinder draws, and it is the one the bias gate above covers. The alternatives are `pf_closed` (the closed-form Pathfinder covariance), `lbfgs_lowrank` (the L-BFGS factors Pathfinder already fitted) and `fisher_lowrank` (a low-rank metric from the gradients at Pathfinder draws, BlackJAX's `fisher_score_low_rank`). All hand the kernel a posterior covariance. No performance claim is made for them. If you try one, watch `num_integration_steps` in `sample_stats`: a jump from tens of steps to hundreds means the metric does not suit the model.
 
+### Metric updates during the warmup (opt-in)
+
+By default the metric is frozen after Pathfinder, before any chain has moved. `chees_kwargs={"metric_updates": (0.25, 0.5, 0.75)}` re-estimates it at those fractions of the warmup from the current chain positions. It becomes the covariance over chains (dense or diagonal, like the Pathfinder metric), shrunk towards the old metric by `metric_shrinkage` (default `5 / (chains + 5)`). The step size then restarts from a fresh step-size search under the new metric. The trajectory length carries on. An estimate that is not finite and positive definite is not used. The updates are recorded in `idata.attrs["config"]` (`metric_updates`, `metric_update_log`). They cannot be combined with `warmup_stop`. They add no compiled program after the first call. Use them when one coordinate mixes far more slowly than the others: Pathfinder under-read its spread, and a frozen metric keeps it slow for the whole run. Measured on a 12-coordinate upper-bounded GEV regression (1,024 chains, warmup 200, 100 draws, one seed), the `mc` metric alone gave worst R-hat 2.7 and min bulk ESS 1,293. With updates at 0.25/0.5/0.75 it gave R-hat 1.015 and ESS 69,085, and every coordinate was decorrelated by lag 5. Divergences rose from 2 to 13, and the frozen step size fell from 0.11 to 0.037, because the step size then answers to a stiff region of that model rather than to the metric. The bias gate above does not cover this option.
+
 ## float32 on the GPU: opt-in, and check the result
 
 float32 is **off by default and is not a safe replacement for float64.** It is much faster on some models and fails on others, and the failure can be silent. Use it only after comparing it with float64 on your model.
@@ -127,8 +147,9 @@ Every notebook in `examples/` opens with a `USE_FLOAT32` switch; `examples/float
 ## Common issues
 
 1. The sampler is not converging: raise the warmup (`chees_kwargs={"draws": 2_000}`), and compare with `benchmarks/bias.py` on a model that has a NUTS reference.
+   If the chains stay near their starts (R-hat far above the 1.5 to 1.9 of 10-draw chains, `lp` in `sample_stats` well below the log-density near the mode), check Pathfinder first: the starts and the metric both come from its one L-BFGS path, and BlackJAX's defaults (30 iterations, `ftol=1e-5`) can stop it far from the mode on a stiff posterior. Raise them with `pathfinder_kwargs={"pf_maxiter": 1000, "pf_ftol": 1e-12}` (also `pf_gtol`, `pf_maxcor`, `pf_maxls`, `pf_elbo_samples`, BlackJAX's `gtol`, `maxcor`, `maxls`, `num_samples`). Measured on a 14-parameter upper-bounded GEV regression (κ ≈ 6e6): the defaults stopped L-BFGS about 130 log-density units below the mode and the chains never left; 1,000 iterations reached it. A longer warmup cannot fix this, because the metric is frozen after Pathfinder (unless `metric_updates` is set, and even then the starts still come from Pathfinder).
 2. On a shared GPU JAX pre-allocates most of the memory at import. Set `XLA_PYTHON_CLIENT_PREALLOCATE=false` (the pixi environment does).
-3. On the GPU, divergence counts can differ by one between identical runs at the same seed: GPU reductions are not bitwise reproducible. On the CPU, runs at the same seed are identical (`tests/test_golden.py`).
+3. On the GPU, two runs at the same seed can differ (different draws, step size and divergence count; the same posterior within Monte Carlo error). The usual cause is indexing in the model, `mu[group_idx]`: its gradient is a scatter-add, which the GPU sums in no fixed order, so the gradient differs in the last bits between processes, and Pathfinder's long L-BFGS path turns that into a different fit. The log density itself is reproducible, and in jax 0.12 neither `--xla_gpu_deterministic_ops` nor `--xla_gpu_exclude_nondeterministic_ops` changes it. If you need bit-identical runs (to replay one divergence, say), write the lookup as a product with a fixed one-hot matrix, `pt.dot(np.eye(n_groups)[group_idx], mu)`: the same model, and no scatter-add left. On the CPU, runs at the same seed are identical (`tests/test_golden.py`, which runs on the CPU only). The metric the draws were made with is in `idata.attrs["frozen_inverse_mass_matrix"]` (flattened; shape in `frozen_inverse_mass_matrix_shape`), so a divergence can be replayed with the sampler's own metric.
 
 ## Testing and benchmarks
 

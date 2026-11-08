@@ -46,10 +46,15 @@ _PATHFINDER_OPTIONS = _COMMON_OPTIONS | frozenset({
     "draws", "ridge", "init_source", "imm_source", "pf_pool_cap", "score_chunk",
     "pm_init", "pm_tune", "pm_seed", "pm_chains",
     "pf_jitter_eps", "pf_max_backtracks", "pf_max_restarts", "pf_restart_radius",
-    "fisher_draws", "max_rank", "fisher_gamma", "fisher_cutoff"})
+    "fisher_draws", "max_rank", "fisher_gamma", "fisher_cutoff",
+    "pf_maxiter", "pf_maxcor", "pf_maxls", "pf_gtol", "pf_ftol", "pf_elbo_samples"})
+# pathfinder_kwargs key -> keyword of blackjax.vi.pathfinder.approximate
+_PF_LBFGS_OPTIONS = {"pf_maxiter": "maxiter", "pf_maxcor": "maxcor", "pf_maxls": "maxls", "pf_gtol": "gtol",
+                     "pf_ftol": "ftol", "pf_elbo_samples": "num_samples"}
 _STEP_SIZE_OPTIONS = _COMMON_OPTIONS | frozenset({"eps0_probes"})
 _CHEES_OPTIONS = _COMMON_OPTIONS | frozenset({
-    "draws", "adam_lr", "target_accept", "max_leapfrog_steps", "warmup_stop", "progressbar"})
+    "draws", "adam_lr", "target_accept", "max_leapfrog_steps", "warmup_stop", "progressbar",
+    "metric_updates", "metric_shrinkage"})
 _DYNAMIC_HMC_OPTIONS = _COMMON_OPTIONS | frozenset({"draws", "progressbar"})
 _SAMPLE_OPTIONS = frozenset({"chains", "draws"})
 
@@ -166,6 +171,29 @@ def _stratified_pool_idx(logp_subset, subset_idx, n_pick):
     m = int(finite.sum()) or int(order.shape[0])
     ranks = (np.arange(n_pick) * m) // n_pick
     return subset_idx[order[ranks]]
+
+
+def _finite_gradient_rows(draws, grads, max_rank):
+    """The rows of a Fisher estimate's (draws, gradients) whose gradient is finite.
+
+    A Pathfinder draw beyond a hard edge of the support (log-density -inf) has a NaN gradient: written as a switch,
+    as in pymc_extras' GenExtreme, the unused branch's NaN survives the masking (0 x NaN). One such row makes the
+    whole metric NaN, every leapfrog step NaN, and the step-size search halve to the float floor. Those rows are
+    left out. When every row is finite (the usual case) the arrays are returned as they are, so nothing changes,
+    not even the compiled shapes. Returns (draws, grads, record) with record = {"fisher_rows", "fisher_rows_used"}.
+    """
+    ok = np.asarray(jnp.all(jnp.isfinite(grads), axis=1))
+    record = {"fisher_rows": int(ok.shape[0]), "fisher_rows_used": int(ok.sum())}
+    if ok.all():
+        return draws, grads, record
+    warnings.warn(
+        f"imm_source='fisher_lowrank': {ok.shape[0] - int(ok.sum())} of {ok.shape[0]} Pathfinder draws have a "
+        "non-finite gradient (outside the support) and are left out of the metric", RuntimeWarning, stacklevel=3)
+    if ok.sum() < 2 * max_rank + 2:
+        raise ValueError(
+            f"imm_source='fisher_lowrank': only {int(ok.sum())} of {ok.shape[0]} Pathfinder draws have a finite "
+            f"gradient (the rest lie outside the support), too few for rank {max_rank}; use imm_source='mc'")
+    return draws[ok], grads[ok], record
 
 
 def _frozen_nominal_L(integration_steps_fn, warmup_steps_used):
@@ -629,6 +657,10 @@ class PfCheesHMC:
         score_chunk: block size of the vmapped log-density scorings (default 1024)
         fisher_draws, max_rank, fisher_gamma, fisher_cutoff: the "fisher_lowrank" metric only
         pf_jitter_eps, pf_max_backtracks, pf_max_restarts, pf_restart_radius: the start repair
+        pf_maxiter, pf_maxcor, pf_maxls, pf_gtol, pf_ftol, pf_elbo_samples: the L-BFGS path and its ELBO draws
+            (blackjax.vi.pathfinder.approximate's maxiter, maxcor, maxls, gtol, ftol, num_samples); absent
+            keeps BlackJAX's defaults (30, 10, 1000, 1e-8, 1e-5, 200). The defaults stop early on stiff
+            posteriors: L-BFGS can end far from the mode, and the starts and the metric come from there
         chains, draws, seed, ridge: the number of chains, the Pathfinder draws per chain (the pool is
             ``chains * draws`` rows before the cap), the stage seed and the covariance ridge
 
@@ -724,10 +756,11 @@ class PfCheesHMC:
         c_best = int(jnp.argmax(lp_inits))
         x0_pf = {n: init_stack[n][c_best] for n in self.rvs}
 
-        # 3) Fit Pathfinder
+        # 3) Fit Pathfinder. The L-BFGS settings are passed only when given, so the default call is unchanged.
+        lbfgs = tuple(sorted((_PF_LBFGS_OPTIONS[k], v) for k, v in kwargs.items() if k in _PF_LBFGS_OPTIONS))
         pf_state = compiled.pathfinder_fit(
             bj.vi.pathfinder.approximate, ld.fn, ld.names, ld.values,
-            key_pf, tuple(x0_pf[n] for n in self.rvs),
+            key_pf, tuple(x0_pf[n] for n in self.rvs), **({"lbfgs": lbfgs} if lbfgs else {}),
         )
 
         # 4) Draw the start pool, bounded by `pf_pool_cap` rows (see default_pool_cap for why the
@@ -813,6 +846,7 @@ class PfCheesHMC:
 
         # 6b) Optional alternative metric (E4). Default "mc" keeps the empirical covariance above.
         # Every source produces the same kind of object -- a COVARIANCE estimate (see 6c).
+        fisher_record = {}
         if imm_source != "mc":
             if imm_source == "pf_closed":
                 # The exact covariance Pathfinder's own sampler draws with: bfgs_sample builds
@@ -846,6 +880,7 @@ class PfCheesHMC:
                 ggrads = compiled.pool_gradients(
                     ld.fn, ld.names, ld.values,
                     jax.tree_util.tree_map(lambda x: x[0], samples_total), gdraws)
+                gdraws, ggrads, fisher_record = _finite_gradient_rows(gdraws, ggrads, int(kwargs.get("max_rank", 10)))
                 lr = bj.adaptation.metric_estimators.fisher_score_low_rank(
                     gdraws, ggrads, int(kwargs.get("max_rank", 10)),
                     gamma=float(kwargs.get("fisher_gamma", 1e-5)),
@@ -903,6 +938,8 @@ class PfCheesHMC:
             "pm_init": pm_init,
             "pm_tune": int(pm_tune),
             "score_chunk": score_chunk,
+            **fisher_record,      # "fisher_lowrank": rows of the Fisher estimate, and how many had a finite gradient
+            "lbfgs": dict(lbfgs),          # only the settings given; the rest are BlackJAX's defaults
         }
 
         return pf_samples, inverse_mass_matrix
@@ -958,8 +995,11 @@ class PfCheesHMC:
         chees_kwargs you can pass: ``draws`` (the warmup steps, default 2000), ``adam_lr`` (0.05),
         ``target_accept`` (0.651), ``max_leapfrog_steps`` (1000), ``warmup_stop`` (a stop rule, e.g.
         ``{"block": 250, "window": 100, "rhat": 1.01}``; absent by default, so the warmup runs exactly
-        ``draws`` steps), ``progressbar``, ``seed`` and ``chains``. Any other key raises a TypeError that
-        names it.
+        ``draws`` steps), ``metric_updates`` (warmup fractions at which the metric is re-estimated from
+        the chains and the step size restarted, e.g. ``(0.25, 0.5, 0.75)``; absent by default, so the
+        Pathfinder metric is kept), ``metric_shrinkage`` (weight of the old metric in each re-estimate,
+        default ``5 / (chains + 5)``), ``progressbar``, ``seed`` and ``chains``. Any other key raises a
+        TypeError that names it. See `chees_warmup_with_progress` for what an update does.
         """
         _check_options("chees_kwargs", kwargs, _CHEES_OPTIONS)
         #Default values
@@ -981,6 +1021,8 @@ class PfCheesHMC:
             "target_accept": float(kwargs["target_accept"]),
             "max_leapfrog_steps": int(kwargs["max_leapfrog_steps"]),
             "warmup_stop": kwargs.get("warmup_stop", None),
+            "metric_updates": (None if kwargs.get("metric_updates") is None
+                               else [float(f) for f in kwargs["metric_updates"]]),
         }
         # Stage-scoped key. This site used to be `_, key_warm = jax.random.split(jax.random.key(seed))`,
         # which produced exactly the key the sampling stage derived, so sampling replayed the warmup
@@ -1000,7 +1042,10 @@ class PfCheesHMC:
             # Warmup stopping rule, e.g. {"block": 250, "window": 100, "rhat": 1.01}.
             # Absent by default: warmup then runs exactly num_steps as before.
             stop_rule=kwargs.get("warmup_stop", None),
+            metric_updates=kwargs.get("metric_updates", None),
+            metric_shrinkage=kwargs.get("metric_shrinkage", None),
         )
+        self._resolved["warmup"]["metric_update_log"] = chees_parameters.get("metric_updates", [])
         if hasattr(chees_info, "info"):
             # utils.WarmupInfo (the vendored-adapter path) wraps the stacked HMCInfo together with
             # the per-step scalar trace. Everything downstream reads HMCInfo fields
@@ -1331,7 +1376,8 @@ class PfCheesHMC:
         dhmc_state, states_hist, infos_hist = self._run_dynamic_hmc(
             chees_states,
             chees_parameters,
-            inverse_mass_matrix,
+            # The metric the warmup ended with: Pathfinder's unless chees_kwargs["metric_updates"] replaced it.
+            chees_parameters["inverse_mass_matrix"],
             **dynamic_hmc_kwargs,
         )
 
@@ -1360,6 +1406,12 @@ class PfCheesHMC:
             chees_parameters["integration_steps_fn"],
             int(idata.attrs["warmup_steps_used"]),
         )
+        # The metric the draws were made with (kernel coordinate order: the sorted names, as ravel_pytree
+        # orders a dict), so a divergence can be replayed with the sampler's own metric. Flattened, because
+        # netCDF attributes are 1-D; a diagonal metric has length d, a dense one d * d.
+        imm_frozen = _np.asarray(chees_parameters["inverse_mass_matrix"], dtype=_np.float64)
+        idata.attrs["frozen_inverse_mass_matrix"] = imm_frozen.ravel()
+        idata.attrs["frozen_inverse_mass_matrix_shape"] = _np.asarray(imm_frozen.shape, dtype=_np.int64)
         warm_n = _np.asarray(chees_info.num_integration_steps, dtype=_np.int64)     # (steps, chains)
         samp_n = _np.asarray(infos_hist.num_integration_steps, dtype=_np.int64)   # (draws, chains)
         idata.attrs["warmup_grad_evals_per_chain"] = int(warm_n.sum() // warm_n.shape[1])
@@ -1409,6 +1461,7 @@ class PfCheesHMC:
             "pm_init": pf["pm_init"],
             "pm_tune": pf["pm_tune"],
             "score_chunk": pf["score_chunk"],
+            "pf_lbfgs": pf["lbfgs"],
             "eps0_probes": ss["eps0_probes"],
             "eps0": float(eps0),
             "num_warmup": wu["num_warmup"],
@@ -1417,6 +1470,8 @@ class PfCheesHMC:
             "target_accept": wu["target_accept"],
             "max_leapfrog_steps": wu["max_leapfrog_steps"],
             "warmup_stop": wu["warmup_stop"],
+            "metric_updates": wu["metric_updates"],
+            "metric_update_log": wu["metric_update_log"],
             "chains": sm["chains"],
             "num_draws": sm["num_draws"],
             "frozen_step_size": idata.attrs["frozen_step_size"],
