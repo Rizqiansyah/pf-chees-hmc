@@ -30,7 +30,7 @@ myst_enable_extensions = ["colon_fence", "deflist", "dollarmath"]
 myst_heading_anchors = 3
 
 # The case study is a draft until 0.3.1; _build is the output.
-exclude_patterns = ["_build", "case-study-gev-regression.md", "requirements.txt"]
+exclude_patterns = ["_build", "requirements.txt"]
 
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
