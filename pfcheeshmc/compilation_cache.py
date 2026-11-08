@@ -128,7 +128,7 @@ def enable_compilation_cache(path: str | os.PathLike) -> None:
 
     The entries are keyed by the lowered program, the jaxlib version, the backend and its devices, and the XLA
     flags, so a different JAX, GPU or device count misses instead of misbehaving. Entries hold no data and no prior
-    values: the sampler passes those at run time (F2a), so a new dataset or new priors at the same shapes use the
+    values: the sampler passes those at run time, so a new dataset or new priors at the same shapes use the
     entries of the old one. Deleting the directory is always safe; the next call writes it again. A cache is
     trusted code: use a directory only you can write to, and do not share it with users you do not trust.
 
