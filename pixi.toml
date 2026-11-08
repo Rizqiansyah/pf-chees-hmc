@@ -3,7 +3,7 @@ name = "pf-chees-hmc"
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 
-# Shared box (workstation): JAX preallocates ~90% of VRAM by default, which
+# Shared GPU: JAX preallocates ~90% of VRAM by default, which
 # starves other users. Off-switch so VRAM is requested as needed.
 [activation.env]
 XLA_PYTHON_CLIENT_PREALLOCATE = "false"
@@ -25,7 +25,8 @@ numba = "==0.66.0"
 # the package itself, so `import pfcheeshmc` works from anywhere in the repo
 pfcheeshmc = { path = ".", editable = true }
 pymc = ">=5.0,<6.0"
-blackjax = ">=1.2.0"
+# >= 1.7: the floor pyproject.toml declares (pfcheeshmc/chees.py is a copy of 1.7.1's ChEES adapter)
+blackjax = ">=1.7.0"
 # Driver 580.178.04 + sm_86: CUDA 13 wheels (JAX default). CUDA 12 also works
 # but is on the deprecation path.
 jax = { version = ">=0.9.0", extras = ["cuda13"] }

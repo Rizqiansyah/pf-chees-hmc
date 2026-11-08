@@ -1,12 +1,14 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pfcheeshmc"
-version = "0.3.0"
+version = "0.3.1"
 description = "Pathfinder-ChEES-HMC posterior sampler compatible with PyMC model using BlackJAX backend"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 dependencies = [
     "blackjax>=1.7.0",
     "pymc>=5.0,<6.0",
@@ -15,6 +17,10 @@ dependencies = [
     "arviz>=0.17.0",
     "tqdm>=4.66.0",
 ]
+
+[project.urls]
+Documentation = "https://rizqiansyah.github.io/pf-chees-hmc/"
+Source = "https://github.com/Rizqiansyah/pf-chees-hmc"
 
 [project.optional-dependencies]
 cuda13 = ["jax[cuda13]>=0.9.0"]
