@@ -4,7 +4,9 @@
 which is what a GPU does well. Give it a PyMC model with continuous variables; get back an `arviz.InferenceData`.
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![version](https://img.shields.io/badge/version-0.3.0-informational)
+![version](https://img.shields.io/badge/version-0.3.1-informational)
+![license](https://img.shields.io/badge/license-Apache--2.0-green)
+[![docs](https://github.com/Rizqiansyah/pf-chees-hmc/actions/workflows/docs.yml/badge.svg)](https://rizqiansyah.github.io/pf-chees-hmc/)
 ![backend](https://img.shields.io/badge/backend-JAX%20%7C%20BlackJAX-orange)
 
 ```python
@@ -60,7 +62,8 @@ Because every chain does the same work at each step, 1,024 chains cost little mo
 
 ## Documentation
 
-The full documentation is a Sphinx site built from [`docs/`](docs/index.md):
+**Documentation: <https://rizqiansyah.github.io/pf-chees-hmc/>**, a Sphinx site built from [`docs/`](docs/index.md) on every
+push to `main`. To build it locally:
 
 ```bash
 pip install -r docs/requirements.txt
@@ -90,6 +93,11 @@ pixi run python -m pytest tests -q
 
 The suite runs on the CPU in one process: 557 passed, 2 skipped in 8 min 44 s (2026-11-08, shared host).
 `tests/test_golden.py` pins the draws of the default path on the benchmark models.
+
+## License
+
+Apache-2.0 ([LICENSE](LICENSE)). `pfcheeshmc/chees.py` is a modified copy of BlackJAX's ChEES adapter, also
+Apache-2.0; see [NOTICE](NOTICE).
 
 ## References
 
