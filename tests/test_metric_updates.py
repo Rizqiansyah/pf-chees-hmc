@@ -1,6 +1,6 @@
 """Metric updates during the ChEES warmup (``chees_kwargs["metric_updates"]``).
 
-The Pathfinder metric is fitted once, before any chain has moved, and frozen. On the bridge-load model
+The Pathfinder metric is fitted once, before any chain has moved, and frozen. On a stiff hierarchical model
 it under-reads one slow coordinate, and that coordinate then stays slow for the whole run. The option
 re-estimates the metric from the chain positions at given warmup fractions and restarts the step size.
 What must hold:
