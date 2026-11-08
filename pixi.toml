@@ -25,7 +25,7 @@ numba = "==0.66.0"
 # the package itself, so `import pfcheeshmc` works from anywhere in the repo
 pfcheeshmc = { path = ".", editable = true }
 pymc = ">=5.0,<6.0"
-# >= 1.7: the floor pyproject.toml declares (pfcheeshmc/chees.py is a copy of 1.7.1's ChEES adapter)
+# >= 1.7: the floor pyproject.toml declares (the ChEES adapter is blackjax.adaptation.chees_adaptation.base)
 blackjax = ">=1.7.0"
 # Driver 580.178.04 + sm_86: CUDA 13 wheels (JAX default). CUDA 12 also works
 # but is on the deprecation path.

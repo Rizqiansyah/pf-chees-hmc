@@ -37,12 +37,12 @@ import optax
 from jax import lax
 from jax.flatten_util import ravel_pytree
 
+import blackjax.adaptation.chees_adaptation as chees_adaptation
 import blackjax.mcmc.dynamic_hmc as dynamic_hmc
 import blackjax.optimizers.dual_averaging as dual_averaging
 
-from . import chees as _chees_vendored
-
 __all__ = [
+    "ChEESTrace",
     "HALTON_BITS",
     "JITTER_STREAM",
     "LogDensity",
@@ -414,17 +414,50 @@ def integration_steps(random_generator_arg, trajectory_length_adjusted, jitter_a
         dtype=int)
 
 
-_ADAPTER = ("optim", "target_accept", "decay_rate", "jitter_amount", "max_leapfrog_steps", "single_step_iters")
+_ADAPTER = ("optim", "target_accept", "decay_rate", "jitter_amount", "max_leapfrog_steps")
 
 
-def _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, single_step_iters):
-    """The vendored ChEES adapter ``(init, update)``. ``optim`` is an Adam learning rate (a stable static
-    argument: an optax object is a new value on every call) or an optax transformation."""
+class ChEESTrace(NamedTuple):
+    """Per-step scalar trace of one ChEES update, built beside BlackJAX's adapter state.
+
+    step
+        1-based update index (the step number just executed).
+    step_size
+        The step size the state carries after this update.
+    trajectory_length
+        The trajectory length (time, T = L * eps) the state carries after this update -- what the kernel
+        consumes next. trajectory_length / step_size is the nominal leapfrog count L at this step.
+    harmonic_acceptance
+        `chees_harmonic_acceptance` of this update's chains: the quantity ChEES adapts the step size
+        against, not the arithmetic mean of per-chain acceptances.
+    """
+
+    step: Any
+    step_size: Any
+    trajectory_length: Any
+    harmonic_acceptance: Any
+
+
+def _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps):
+    """BlackJAX's ChEES adapter ``(init, update)``, its ``update`` returning ``(state, ChEESTrace)``.
+
+    ``optim`` is an Adam learning rate (a stable static argument: an optax object is a new value on every
+    call) or an optax transformation. The state is BlackJAX's, untouched; the trace is read off it.
+    """
     if not hasattr(optim, "init"):
         optim = optax.adam(optim)
-    return _chees_vendored.base(
+    init, update = chees_adaptation.base(
         lambda i: halton_jitter(i, jitter_amount), _next_random_arg, optim, target_accept, decay_rate,
-        max_leapfrog_steps, single_step_iters=single_step_iters)
+        max_leapfrog_steps)
+
+    def update_with_trace(state, proposed_positions, proposed_momentums, initial_positions, acceptance,
+                          is_divergent, inverse_mass_matrix):
+        new = update(state, proposed_positions, proposed_momentums, initial_positions, acceptance,
+                     is_divergent, inverse_mass_matrix)
+        return new, ChEESTrace(new.step, new.step_size, new.trajectory_length,
+                               chees_harmonic_acceptance(acceptance, is_divergent))
+
+    return init, update_with_trace
 
 
 def _strong(tree):
@@ -459,14 +492,13 @@ def _chunk_scan(step, carry, start, n, chunk):
 
 @partial(jax.jit, static_argnames=_STATIC + _ADAPTER)
 def warmup_init(fn, names, values, positions, initial_step_size, *, optim, target_accept, decay_rate,
-                jitter_amount, max_leapfrog_steps, single_step_iters):
+                jitter_amount, max_leapfrog_steps):
     """The warmup's start: HMC states for a dict of ``(chains, ...)`` positions, and the adapter's state.
 
     ``initial_step_size`` is a value (dynamic).
     """
     ld = _logdensity(fn, names, values)
-    init_adapt, _ = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps,
-                             single_step_iters)
+    init_adapt, _ = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps)
     states = jax.vmap(lambda p: dynamic_hmc.init(p, ld, 0))(positions)
     return _strong(states), _strong(init_adapt(0, initial_step_size))
 
@@ -514,7 +546,7 @@ def restart_step_size(astate, step_size):
 
 @partial(jax.jit, static_argnames=_STATIC + _ADAPTER + ("chunk", "stack_positions"))
 def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *, chunk, stack_positions,
-                 optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, single_step_iters):
+                 optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps):
     """``chunk`` ChEES warmup steps (the first ``n`` real) from ``carry = (HMC states, adapter state)``.
 
     Step ``j`` is global step ``start + j``: its key is ``fold_in(key, start + j)`` and its Halton jitter
@@ -524,8 +556,7 @@ def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *
     reads them; stacking them is the memory wall at C=1,024).
     """
     ld = _logdensity(fn, names, values)
-    _, update_adapt = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps,
-                               single_step_iters)
+    _, update_adapt = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps)
     kernel = dynamic_hmc.build_kernel(
         next_random_arg_fn=_next_random_arg,
         integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount))
@@ -559,7 +590,7 @@ def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *
         # keep, and was the warmup memory wall at large C (~14 GB at d=175, W=2,000, C=1,024).
         proj = WarmupScanInfo(info.num_integration_steps, info.is_divergent, acc_vals)
 
-        # Update adaptation state (vendored adapter: state + scalar trace)
+        # Update adaptation state (BlackJAX's adapter state + the scalar trace)
         new_astate, trace = update_adapt(
             astate,
             info.proposal.position,

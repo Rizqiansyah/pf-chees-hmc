@@ -1,10 +1,8 @@
-"""CPU tests for the vendored ChEES adapter (pfcheeshmc/chees.py).
+"""CPU tests for the ChEES adapter (`compiled._adapter`: BlackJAX's `base` plus a per-step trace).
 
-The load-bearing one is test_the_vendored_adapter_is_bit_for_bit_upstream: it feeds the
-vendored adapter and the installed BlackJAX base() the same deterministic inputs
-for 64 updates and requires every state field to match exactly. That is what
-makes the vendored copy reviewable: it is provably the installed code, plus a
-scalar trace.
+The load-bearing one is test_the_adapter_state_is_bit_for_bit_upstream: it feeds the adapter and
+BlackJAX's base() the same deterministic inputs for 64 updates and requires every state field to
+match exactly, so the trace beside the state changes nothing in it.
 """
 
 import numpy as np
@@ -17,8 +15,7 @@ jax.config.update("jax_enable_x64", True)
 
 import blackjax.adaptation.chees_adaptation as upstream_chees
 
-from pfcheeshmc import chees as vendored
-from pfcheeshmc.chees import ChEESAdaptationState, ChEESTrace, base as vendored_base
+from pfcheeshmc.compiled import ChEESTrace, _adapter, chees_harmonic_acceptance, halton_jitter
 
 
 def _inputs(n_steps, n_chains=8, dim=3, seed=0):
@@ -77,20 +74,18 @@ def _assert_states_equal(a, b, label):
             assert bool(jnp.all(jnp.equal(xa, xb))), f"{label}: arrays differ"
 
 
-def test_the_vendored_adapter_is_bit_for_bit_upstream():
-    jit_gn = lambda i: jnp.asarray(0.5 + 0.5 * jnp.sin(0.31 * jnp.asarray(i, dtype=jnp.float64)), dtype=jnp.float64)
-    next_rarg = lambda i: i + 1
+def _upstream():
+    """BlackJAX's base() with the adapter's jitter (Halton, jitter_amount 1) and Adam(0.05)."""
+    return upstream_chees.base(lambda i: halton_jitter(i, 1.0), lambda i: i + 1, optax.adam(0.05), 0.651, 0.5, 1000)
+
+
+def test_the_adapter_state_is_bit_for_bit_upstream():
     imm = jnp.array([4.0, 1.0, 0.25], dtype=jnp.float64)
+    init_up, upd_up = _upstream()
+    init_my, upd_my = _adapter(0.05, 0.651, 0.5, 1.0, 1000)
 
-    init_up, upd_up = upstream_chees.base(
-        jit_gn, next_rarg, optax.adam(0.05), 0.651, 0.5, 1000
-    )
-    init_my, upd_my = vendored_base(
-        jit_gn, next_rarg, optax.adam(0.05), 0.651, 0.5, 1000
-    )
-
-    su = init_up(jnp.float64(0.0), jnp.float64(0.1))
-    sm = init_my(jnp.float64(0.0), jnp.float64(0.1))
+    su = init_up(jnp.int32(0), jnp.float64(0.1))
+    sm = init_my(jnp.int32(0), jnp.float64(0.1))
     _assert_states_equal(su, sm, "init")
 
     for t, (pp, pm, pi, acc, div) in enumerate(_inputs(64)):
@@ -101,40 +96,32 @@ def test_the_vendored_adapter_is_bit_for_bit_upstream():
         assert int(trace.step) == int(su.step)
         assert float(trace.step_size) == float(su.step_size)
         assert float(trace.trajectory_length) == float(su.trajectory_length)
-        assert 0.0 <= float(trace.harmonic_acceptance) <= 1.0 or float(trace.harmonic_acceptance) == 0.0
+        assert float(trace.harmonic_acceptance) == float(chees_harmonic_acceptance(acc, div))
+        assert 0.0 <= float(trace.harmonic_acceptance) <= 1.0
 
 
-def test_optim_default_matches_positional():
-    """optim=None with the default adam kwargs == passing optax.adam(0.05) explicitly."""
-    jit_gn = lambda i: jnp.asarray(0.5, dtype=jnp.float64)
-    init_a, upd_a = vendored_base(jit_gn, lambda i: i + 1, None, 0.651, 0.5, 1000)
-    init_b, upd_b = vendored_base(jit_gn, lambda i: i + 1, optax.adam(0.05), 0.651, 0.5, 1000)
-    sa, sb = init_a(0, 0.1), init_b(0, 0.1)
+def test_learning_rate_matches_optax_adam():
+    """A learning rate builds optax.adam(lr): the same states as passing optax.adam(0.05) itself."""
+    init_a, upd_a = _adapter(0.05, 0.651, 0.5, 1.0, 1000)
+    init_b, upd_b = _adapter(optax.adam(0.05), 0.651, 0.5, 1.0, 1000)
+    sa, sb = init_a(jnp.int32(0), 0.1), init_b(jnp.int32(0), 0.1)
     for pp, pm, pi, acc, div in _inputs(5):
         imm = jnp.ones(3, dtype=jnp.float64)
         sa, _ = upd_a(sa, pp, pm, pi, acc, div, imm)
         sb, _ = upd_b(sb, pp, pm, pi, acc, div, imm)
-    _assert_states_equal(sa, sb, "optim default")
-
-
-def test_init_is_bit_for_bit_upstream():
-    jit_gn = lambda i: jnp.asarray(0.5, dtype=jnp.float64)
-    init_up, _ = upstream_chees.base(jit_gn, lambda i: i + 1, optax.adam(0.05), 0.651, 0.5, 1000)
-    init_my, _ = vendored_base(jit_gn, lambda i: i + 1, optax.adam(0.05), 0.651, 0.5, 1000)
-    _assert_states_equal(init_up(0, 0.1), init_my(0, 0.1), "init")
+    _assert_states_equal(sa, sb, "learning rate")
 
 
 def test_harmonic_pooling_excludes_divergent_chains():
     """A divergent chain contributes nothing to the step-size adaptation, no
     matter its acceptance value: (acc=0.5, div=True) and (acc=0.0, div=True)
     must drive the step-size state identically."""
-    jit_gn = lambda i: jnp.asarray(0.5, dtype=jnp.float64)
-    init_my, upd_my = vendored_base(jit_gn, lambda i: i + 1, optax.adam(0.05), 0.651, 0.5, 1000)
+    init_my, upd_my = _adapter(0.05, 0.651, 0.5, 1.0, 1000)
     imm = jnp.ones(3, dtype=jnp.float64)
 
     results = []
     for acc_val in (0.5, 0.0):
-        s = init_my(0, 0.1)
+        s = init_my(jnp.int32(0), 0.1)
         for pp, pm, pi, acc, div in _inputs(10):
             acc = jnp.where(div, jnp.asarray(acc_val, dtype=acc.dtype), acc)
             s, tr = upd_my(s, pp, pm, pi, acc, div, imm)
@@ -146,7 +133,7 @@ def test_harmonic_pooling_excludes_divergent_chains():
     # And step by step, including the trace's harmonic acceptance:
     runs = []
     for acc_val in (0.5, 0.0):
-        s = init_my(0, 0.1)
+        s = init_my(jnp.int32(0), 0.1)
         trace = []
         for pp, pm, pi, acc, div in _inputs(10):
             acc = jnp.where(div, jnp.asarray(acc_val, dtype=acc.dtype), acc)
@@ -156,13 +143,6 @@ def test_harmonic_pooling_excludes_divergent_chains():
     for i, (a, b) in enumerate(zip(runs[0], runs[1])):
         assert a == b, f"step {i}: divergent-chain acceptance leaked into the state: {a} vs {b}"
 
-
-def test_bad_single_step_iters_raises():
-    with pytest.raises(ValueError, match="single_step_iters"):
-        vendored_base(lambda i: 0.5, lambda i: i + 1, optax.adam(0.05), 0.651, 0.5, 1000, single_step_iters=-1)
-
-
-# --- the warmup around the adapter and its utils-level guards -------------------
 
 def _aniso_gaussian(sd):
     """log-density of an anisotropic 2-D Gaussian, dict-of-arrays pytree.

@@ -291,8 +291,7 @@ def _jaxprs():
     names = ld.names
     pos = {n: jnp.zeros((CH,) + np.shape(v)) for n, v in s.model.initial_point().items() if n in names}
     d = sum(int(np.prod(np.shape(v))) for v in pos.values()) // CH
-    settings = dict(optim=0.05, target_accept=0.651, decay_rate=0.5, jitter_amount=1.0, max_leapfrog_steps=100,
-                    single_step_iters=0)
+    settings = dict(optim=0.05, target_accept=0.651, decay_rate=0.5, jitter_amount=1.0, max_leapfrog_steps=100)
     states, astate = compiled.warmup_init(ld.fn, ld.names, ld.values, pos, jnp.asarray(0.1), **settings)
     key, imm = jax.random.key(0), jnp.eye(d)
     z = np.int32(0)

@@ -3,7 +3,6 @@ Copyright 2025-2026 Rizqiansyah
 
 Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-This product includes software from BlackJAX (https://github.com/blackjax-devs/blackjax),
-Copyright 2020- The Blackjax developers, licensed under the Apache License, Version 2.0:
-  pfcheeshmc/chees.py is a modified copy of blackjax/adaptation/chees_adaptation.py (BlackJAX 1.7.1,
-  function `base` and its module-level helpers). The changes are listed in that file's docstring.
+Versions 0.3.1 and earlier included pfcheeshmc/chees.py, a modified copy of BlackJAX's
+blackjax/adaptation/chees_adaptation.py (https://github.com/blackjax-devs/blackjax, Copyright 2020- The
+Blackjax developers, Apache License 2.0). From 0.3.2 the package calls BlackJAX's adapter instead.

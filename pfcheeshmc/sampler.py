@@ -1047,7 +1047,7 @@ class PfCheesHMC:
         )
         self._resolved["warmup"]["metric_update_log"] = chees_parameters.get("metric_updates", [])
         if hasattr(chees_info, "info"):
-            # utils.WarmupInfo (the vendored-adapter path) wraps the stacked HMCInfo together with
+            # utils.WarmupInfo wraps the stacked HMCInfo together with
             # the per-step scalar trace. Everything downstream reads HMCInfo fields
             # (num_integration_steps, is_divergent), so unwrap once at the seam and keep the trace
             # for whoever wants the growth curve. Without it:
