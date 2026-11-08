@@ -1,0 +1,33 @@
+# Troubleshooting
+
+## The sampler is not converging
+
+1. Raise the warmup (`chees_kwargs={"draws": 2_000}`), and compare with `benchmarks/bias.py` on a model that has a NUTS
+   reference.
+2. **If the chains stay near their starts** (R-hat far above the 1.5 to 1.9 of 10-draw chains, `lp` in `sample_stats` well
+   below the log-density near the mode), check Pathfinder first. The starts and the metric both come from its one L-BFGS
+   path, and BlackJAX's defaults can stop it far from the mode on a stiff posterior: raise
+   `pathfinder_kwargs={"pf_maxiter": 1000, "pf_ftol": 1e-12}` ([Metrics](metrics.md#pathfinders-l-bfgs-settings)). A longer
+   warmup cannot fix this, because the metric is frozen after Pathfinder (unless `metric_updates` is set, and even then the
+   starts still come from Pathfinder).
+3. **If one coordinate mixes far more slowly than the others**, try
+   [metric updates](metrics.md#metric-updates-during-the-warmup-opt-in).
+
+## Divergences
+
+Read `diverging` in `sample_stats`. The frozen step size and metric are in `idata.attrs`, so a divergent transition can be
+replayed with the sampler's own settings. On the GPU, make the run bit-identical first
+([GPU notes](gpu-notes.md#runs-at-the-same-seed-can-differ-on-the-gpu)).
+
+## A `TypeError` naming an option
+
+A stage was given a key it does not read (or one that was removed). The message lists the valid keys.
+
+## The GPU runs out of memory, or other users do
+
+[Shared GPUs](gpu-notes.md#shared-gpus).
+
+## The first call in every new process is slow
+
+That is the compile. Check that the [disk cache](compile-and-cache.md#the-disk-cache-is-on-by-default) is on, and that its
+directory is yours and not group- or world-writable (otherwise it stays off with a `RuntimeWarning`).
