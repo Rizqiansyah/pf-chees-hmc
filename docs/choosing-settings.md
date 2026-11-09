@@ -46,3 +46,23 @@ It is off by default. On all four benchmark models it cost more time at the bloc
 for instrumentation only, and it cannot be combined with `metric_updates`.
 
 `step_size_tune_kwargs` takes `eps0_probes` (32): how many starts the initial step-size search uses.
+
+## Divergences in a rare region: delayed rejection (opt-in)
+
+`dynamic_hmc_kwargs={"delayed_rejection": a}` (an integer `a >= 2`; off by default) retries a divergent transition once
+from the same point, with the step divided by `a` and `a` times the steps (the same trajectory length). The retry is
+accepted with the delayed-rejection probability of Modi, Barnett & Carpenter (2023, *Bayesian Analysis*, eq. 30, with
+the retry probability set to 1 on a divergence and 0 otherwise), so the sampler stays exact: a retry is accepted only
+if the reverse first proposal from its end point would also have diverged.
+
+Use it after you have diagnosed the divergences, for a region the tuned step was never meant for (for example a hard
+edge of the support that the posterior reaches rarely). It is not a substitute for a reparameterisation: divergences
+spread over the bulk mean the geometry or the model needs fixing. The run reports both sides:
+
+- `diverging` stays the first-stage divergence, as without the option;
+- `retried`, `retry_accepted`, `diverging_after_retry` and `retry_integration_steps` in `sample_stats`, and
+  `sampling_retry_grad_evals_per_chain` in the attributes, say what the retries did and cost;
+- a `RuntimeWarning` when more than 0.1% of transitions are retried.
+
+Cost: an iteration in which any chain retries runs `(a + 1) n` extra leapfrog steps for every chain (chains move in
+lockstep on the GPU); other iterations cost nothing extra.

@@ -55,7 +55,9 @@ _STEP_SIZE_OPTIONS = _COMMON_OPTIONS | frozenset({"eps0_probes"})
 _CHEES_OPTIONS = _COMMON_OPTIONS | frozenset({
     "draws", "adam_lr", "target_accept", "max_leapfrog_steps", "warmup_stop", "progressbar",
     "metric_updates", "metric_shrinkage"})
-_DYNAMIC_HMC_OPTIONS = _COMMON_OPTIONS | frozenset({"draws", "progressbar"})
+_DYNAMIC_HMC_OPTIONS = _COMMON_OPTIONS | frozenset({"draws", "progressbar", "delayed_rejection"})
+# Delayed rejection (opt-in): a retry rate above this share of transitions is a warning (see `_run_dynamic_hmc`).
+DR_RETRY_WARN = 1e-3
 _SAMPLE_OPTIONS = frozenset({"chains", "draws"})
 
 
@@ -1078,8 +1080,15 @@ class PfCheesHMC:
         rng = jax.random.fold_in(jax.random.key(kwargs["seed"]), 2)  # 2 = sampling stage, see _run_chees
         num_chains = kwargs["chains"]
         num_draws = int(kwargs["draws"])
+        # Opt-in delayed rejection on divergence (`compiled.delayed_rejection_step`): an integer a >= 2, the
+        # second proposal's step-size divisor. A surgical tool for rare regions the tuned step was never meant
+        # for, after the divergences have been diagnosed; not a substitute for a reparameterisation.
+        dr = kwargs.get("delayed_rejection")
+        if dr is not None and (isinstance(dr, bool) or int(dr) != dr or int(dr) < 2):
+            raise ValueError(f"delayed_rejection must be None or an integer >= 2, got {dr!r}")
+        dr = None if dr is None else int(dr)
         self._resolved["sampling"] = {"seed": int(kwargs["seed"]), "chains": int(num_chains),
-                                      "num_draws": int(num_draws)}
+                                      "num_draws": int(num_draws), "delayed_rejection": dr}
 
         ld = self._logdensity()
         imm = jnp.asarray(inverse_mass_matrix)
@@ -1094,6 +1103,7 @@ class PfCheesHMC:
         hmc_bar = (tqdm(total=num_draws, desc="Sampling Dynamic HMC", position=0, leave=True)
                    if progressbar else None)
         div_total = [0]
+        retry_total = [0, 0]   # retries, accepted retries
         stack = compiled.HostStack(num_draws)
 
         def consume(start, n, out):
@@ -1107,18 +1117,31 @@ class PfCheesHMC:
             # Show the acceptance ChEES targeted, not the arithmetic mean of trajectories
             # (see utils.chees_harmonic_acceptance), at the chunk's last draw.
             acc_mean = compiled.chees_harmonic_acceptance_np(info.acceptance_rate[n - 1], info.is_divergent[n - 1])
-            hmc_bar.set_postfix_str(f"Divergence: {div_total[0]}, Acceptance Rate: {acc_mean:.3f}")
+            retry = ""
+            if info.retried is not None:
+                retry_total[0] += int(np.sum(info.retried[:n]))
+                retry_total[1] += int(np.sum(info.retry_accepted[:n]))
+                retry = f" (retried {retry_total[0]}, accepted {retry_total[1]})"
+            hmc_bar.set_postfix_str(f"Divergence: {div_total[0]}{retry}, Acceptance Rate: {acc_mean:.3f}")
             hmc_bar.refresh()
 
         def call(state, start, n):
             return compiled.sampling_chunk(
                 ld.fn, ld.names, ld.values, state, imm, step_size, traj_len_adj, key_sample,
-                np.int32(start), np.int32(n), chunk=compiled.SAMPLE_CHUNK, jitter_amount=jitter_amount)
+                np.int32(start), np.int32(n), chunk=compiled.SAMPLE_CHUNK, jitter_amount=jitter_amount,
+                dr_factor=dr)
 
         dhmc_state = compiled.run_chunks(call, chees_states, num_draws, compiled.SAMPLE_CHUNK, consume)
         if hmc_bar is not None:
             hmc_bar.close()
         states_hist, infos_hist = stack.result()
+        if dr is not None:
+            rate = float(np.mean(infos_hist.retried))
+            if rate > DR_RETRY_WARN:
+                warnings.warn(
+                    f"delayed rejection retried {rate:.2%} of transitions (warning above {DR_RETRY_WARN:.2%}): the "
+                    "first-stage step diverges in the bulk, not in a rare region. Diagnose the divergences "
+                    "(reparameterise or fix the model) rather than rely on retries.", RuntimeWarning, stacklevel=3)
         return dhmc_state, states_hist, infos_hist
 
 
@@ -1323,6 +1346,14 @@ class PfCheesHMC:
                 "energy": _swap_cd(infos_hist.energy),
                 "num_integration_steps": _swap_cd(infos_hist.num_integration_steps),
             }
+            if getattr(infos_hist, "retried", None) is not None:
+                # Delayed rejection: "diverging" stays the first-stage divergence; these say what the retry did.
+                sample_stats.update({
+                    "retried": _swap_cd(infos_hist.retried).astype(bool),
+                    "retry_accepted": _swap_cd(infos_hist.retry_accepted).astype(bool),
+                    "diverging_after_retry": _swap_cd(infos_hist.retry_divergent).astype(bool),
+                    "retry_integration_steps": _swap_cd(infos_hist.retry_integration_steps),
+                })
 
         # ---- 3) Build InferenceData
         idata = az.from_dict(
@@ -1416,6 +1447,10 @@ class PfCheesHMC:
         samp_n = _np.asarray(infos_hist.num_integration_steps, dtype=_np.int64)   # (draws, chains)
         idata.attrs["warmup_grad_evals_per_chain"] = int(warm_n.sum() // warm_n.shape[1])
         idata.attrs["sampling_grad_evals_per_chain"] = int(samp_n.sum() // samp_n.shape[1])
+        if getattr(infos_hist, "retry_integration_steps", None) is not None:
+            # The retry branch's leapfrog steps (every chain runs it on an iteration where any chain retries).
+            retry_n = _np.asarray(infos_hist.retry_integration_steps, dtype=_np.int64)
+            idata.attrs["sampling_retry_grad_evals_per_chain"] = int(retry_n.sum() // retry_n.shape[1])
         # R2-WP2: the resolved configuration, one JSON string (key list: see _config_record).
         idata.attrs["config"] = self._config_record(idata, chees_parameters, eps0)
         return idata
@@ -1439,7 +1474,7 @@ class PfCheesHMC:
             with a stop rule), ``adam_lr``, ``target_accept``, ``max_leapfrog_steps``,
             ``warmup_stop`` (null = no stop rule).
         Sampling (``_run_dynamic_hmc``)
-            ``chains``, ``num_draws``.
+            ``chains``, ``num_draws``; ``delayed_rejection`` (only when on).
         Frozen at the end of warmup
             ``frozen_step_size`` (eps) and ``frozen_L_nominal`` (L = T/eps).
         Seeds
@@ -1481,6 +1516,8 @@ class PfCheesHMC:
                             "warmup": wu["seed"], "sampling": sm["seed"]},
             "jax_enable_x64": bool(jax.config.jax_enable_x64),
         }
+        if sm["delayed_rejection"] is not None:   # recorded only when on, so a default run's record is unchanged
+            cfg["delayed_rejection"] = sm["delayed_rejection"]
         return json.dumps(cfg, sort_keys=True, default=_json_default)
     
 

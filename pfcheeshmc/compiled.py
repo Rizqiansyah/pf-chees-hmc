@@ -39,6 +39,10 @@ from jax.flatten_util import ravel_pytree
 
 import blackjax.adaptation.chees_adaptation as chees_adaptation
 import blackjax.mcmc.dynamic_hmc as dynamic_hmc
+import blackjax.mcmc.hmc as bj_hmc
+import blackjax.mcmc.integrators as bj_integrators
+import blackjax.mcmc.metrics as bj_metrics
+import blackjax.mcmc.trajectory as bj_trajectory
 import blackjax.optimizers.dual_averaging as dual_averaging
 
 __all__ = [
@@ -56,6 +60,7 @@ __all__ = [
     "batch_init",
     "chees_harmonic_acceptance",
     "chees_harmonic_acceptance_np",
+    "delayed_rejection_step",
     "feasible_mask",
     "halton_jitter",
     "initial_point",
@@ -374,6 +379,12 @@ class SampledInfo(NamedTuple):
     is_accepted: Any
     num_integration_steps: Any
     energy: Any
+    # Delayed rejection only (`sampling_chunk(..., dr_factor=a)`); None otherwise, so the default stack is unchanged.
+    # is_divergent stays the FIRST-stage divergence: the retry never hides the diagnostic.
+    retried: Any = None                  # first stage divergent and rejected: a second proposal was made
+    retry_accepted: Any = None           # ... and accepted
+    retry_divergent: Any = None          # ... and the second proposal itself diverged
+    retry_integration_steps: Any = None  # leapfrog steps the retry branch ran for this chain (0 if not run)
 
 
 def chees_harmonic_acceptance(acc_vals, is_divergent):
@@ -608,14 +619,17 @@ def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *
     return _chunk_scan(step, carry, start, n, chunk)
 
 
-@partial(jax.jit, static_argnames=_STATIC + ("chunk", "jitter_amount"))
+@partial(jax.jit, static_argnames=_STATIC + ("chunk", "jitter_amount", "dr_factor"))
 def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, traj_len_adj, key, start, n, *,
-                   chunk, jitter_amount):
+                   chunk, jitter_amount, dr_factor=None):
     """``chunk`` dynamic-HMC draws (the first ``n`` real) from ``state`` (a batch of `DynamicHMCState`).
 
     The frozen step size, metric and trajectory-length adjustment are arguments of the kernel call, as
     BlackJAX's dynamic kernel takes them (`blackjax/mcmc/dynamic_hmc.py:101-111`). Returns
     ``(state, (SampledState, SampledInfo))``, the second the per-draw stack (rows ``>= n`` are zeros).
+
+    ``dr_factor`` (opt-in, an integer a >= 2): delayed rejection on divergence (`delayed_rejection_step`).
+    None runs BlackJAX's kernel alone, the same program as before the option existed.
     """
     ld = _logdensity(fn, names, values)
     kernel = dynamic_hmc.build_kernel(
@@ -629,6 +643,9 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
         _step = partial(kernel, logdensity_fn=ld, step_size=step_size, inverse_mass_matrix=imm,
                         integration_steps_params=(traj_len_adj,))
         new_state, info = jax.vmap(_step)(keys, s)
+        retry = ()
+        if dr_factor is not None:
+            new_state, retry = delayed_rejection_step(ld, imm, step_size, dr_factor, keys, s, new_state, info)
         # Projection: keep only what _to_inference_data reads (position + logdensity for the
         # posterior/lp, and the five sample_stats fields). momentum, proposal.position,
         # proposal.momentum and proposal.logdensity_grad duplicate state leaves and are the
@@ -636,9 +653,75 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
         return _like(new_state, s), (
             SampledState(new_state.position, new_state.logdensity),
             SampledInfo(info.is_divergent, info.acceptance_rate, info.is_accepted,
-                        info.num_integration_steps, info.energy))
+                        info.num_integration_steps, info.energy, *retry))
 
     return _chunk_scan(step, state, start, n, chunk)
+
+
+def _log1m_accept(delta_h):
+    """log(1 - min(1, exp(-delta_h))), delta_h = H(end) - H(start): -inf where the move is always accepted."""
+    return jnp.where(delta_h > 0, jnp.log(-jnp.expm1(-jnp.where(delta_h > 0, delta_h, 1.0))), -jnp.inf)
+
+
+def _delta_h(energy, z0, z1):
+    """H(z1) - H(z0), with NaN as +inf (BlackJAX's `safe_energy_diff` convention, sign reversed)."""
+    d = energy(z1) - energy(z0)
+    return jnp.where(jnp.isnan(d), jnp.inf, d)
+
+
+def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old, new, info,
+                           divergence_threshold=1000.0):
+    """Second proposal of two-stage delayed-rejection HMC, on the chains whose first proposal diverged.
+
+    Modi, Barnett & Carpenter (2023), "Delayed rejection Hamiltonian Monte Carlo for sampling multiscale
+    distributions", Bayesian Analysis, eq. (30) with the retry probability p2(x, s) = 1{x -> s diverged}:
+    a second proposal is made only when the first diverged (and was rejected). With F1 = flip . L^n_eps (the
+    first proposal, BlackJAX's) and F2 = flip . L^(a n)_(eps/a) (same integration time, step / a), both
+    volume-preserving involutions, the second proposal y = F2(x) is accepted with probability
+
+        min{1, pi(y) [1 - alpha1(y)] p2(y) / (pi(x) [1 - alpha1(x)] p2(x))},   p2(x) = 1,
+
+    where alpha1(y) and p2(y) belong to the ghost g = F1(y): the first proposal a chain at y would have made.
+    So a retry is accepted only if the reverse first proposal also diverges; this is what keeps the kernel
+    exact when retries are restricted to divergences. n is the iteration's step count (a function of the
+    iteration only), so F1 at y is the same map as at x.
+
+    Cost: the branch runs (a + 1) n leapfrog steps for every chain, and only on iterations where at least one
+    chain needs a retry (`lax.cond` on a scalar, outside the per-chain vmap). Returns (state, retry fields of
+    `SampledInfo`).
+    """
+    metric = bj_metrics.default_metric(inverse_mass_matrix)
+    integrate = bj_trajectory.static_integration(bj_integrators.velocity_verlet(ld, metric.kinetic_energy))
+    energy = bj_trajectory.hmc_energy(metric.kinetic_energy)
+    need = info.is_divergent & ~info.is_accepted
+    n = info.num_integration_steps
+
+    def second(_):
+        def one(k, pos, lp, grad, momentum, p1, n_c):
+            x = bj_integrators.IntegratorState(pos, momentum, lp, grad)
+            y = bj_hmc.flip_momentum(integrate(x, step_size / factor, factor * n_c))
+            g = bj_hmc.flip_momentum(integrate(y, step_size, n_c))
+            dh_y, dh_g = _delta_h(energy, x, y), _delta_h(energy, y, g)
+            log_a = (-dh_y + _log1m_accept(dh_g) - jnp.log1p(-p1)
+                     + jnp.where(dh_g > divergence_threshold, 0.0, -jnp.inf))
+            log_a = jnp.where(jnp.isfinite(dh_y), log_a, -jnp.inf)
+            accept = jnp.log(jax.random.uniform(jax.random.fold_in(k, 1))) < log_a
+            return y, accept, dh_y > divergence_threshold
+
+        y, accept, div2 = jax.vmap(one)(keys, old.position, old.logdensity, old.logdensity_grad, info.momentum,
+                                        info.acceptance_rate, n)
+        take = need & accept
+        pick = lambda a, b: jax.tree_util.tree_map(
+            lambda u, v: jnp.where(take.reshape(take.shape + (1,) * (u.ndim - 1)), u, v), a, b)
+        state = new._replace(position=pick(y.position, new.position), logdensity=pick(y.logdensity, new.logdensity),
+                             logdensity_grad=pick(y.logdensity_grad, new.logdensity_grad))
+        return state, (need, take, need & div2, jnp.full_like(n, factor + 1) * n)
+
+    def skip(_):
+        f = jnp.zeros_like(need)
+        return new, (f, f, f, jnp.zeros_like(n))
+
+    return lax.cond(jnp.any(need), second, skip, None)
 
 
 @functools.lru_cache(maxsize=64)
