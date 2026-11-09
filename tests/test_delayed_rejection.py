@@ -29,13 +29,13 @@ def _logp(pos):
     return jnp.where(x > 0, 2.7 * jnp.log(jnp.abs(x) + 1e-300) - x, -jnp.inf)
 
 
-def _final_draws(sampling_chunk, dr, batch=None):
+def _final_draws(sampling_chunk, dr, batch=None, stages=2, eps=EPS):
     ld = compiled.plain_log_density(_logp, ["x"])
     x0 = EXACT.rvs(N, random_state=np.random.default_rng(0))
     state = compiled.batch_init(ld.fn, ld.names, ld.values, {"x": jnp.asarray(x0)}, 0)
-    s, (_, info) = sampling_chunk(ld.fn, ld.names, ld.values, state, jnp.ones(1), EPS, L, jax.random.key(7),
+    s, (_, info) = sampling_chunk(ld.fn, ld.names, ld.values, state, jnp.ones(1), eps, L, jax.random.key(7),
                                   np.int32(0), np.int32(K), chunk=K, jitter_amount=1.0, dr_factor=dr,
-                                  dr_batch=batch)
+                                  dr_batch=batch, dr_stages=stages)
     return np.asarray(s.position["x"]), info
 
 
@@ -63,8 +63,7 @@ def test_batch_size_does_not_change_the_draws():
 
 def test_invariance_test_has_power(monkeypatch):
     src = textwrap.dedent(inspect.getsource(compiled.delayed_rejection_step))
-    bad = src.replace("log_a = (-dh_y + _log1m_accept(dh_g) - jnp.log1p(-p1)\n"
-                      "                 + jnp.where(dh_g > divergence_threshold, 0.0, -jnp.inf))", "log_a = -dh_y")
+    bad = src.replace("log_a = jnp.minimum(0.0, -dh + ghost_terms(y, k - 1, n_c) - s_x)", "log_a = jnp.minimum(0.0, -dh)")
     assert bad != src
     ns = dict(vars(compiled))
     exec(bad, ns)
@@ -74,7 +73,8 @@ def test_invariance_test_has_power(monkeypatch):
     f = compiled.sampling_chunk.__wrapped__
     fresh = types.FunctionType(f.__code__, f.__globals__, "wrong_chunk", f.__defaults__, f.__closure__)
     fresh.__kwdefaults__ = f.__kwdefaults__
-    wrong_chunk = jax.jit(fresh, static_argnames=("fn", "names", "chunk", "jitter_amount", "dr_factor", "dr_batch"))
+    wrong_chunk = jax.jit(fresh, static_argnames=("fn", "names", "chunk", "jitter_amount", "dr_factor", "dr_batch",
+                                                  "dr_stages"))
     x, _ = _final_draws(wrong_chunk, 4)
     assert _tail_z(x) > 10      # the wrong rule over-weights the edge (z about 30 here)
 
@@ -84,7 +84,7 @@ def test_off_by_default_has_no_retry_fields():
     assert info.retried is None and info.retry_accepted is None
 
 
-@pytest.mark.parametrize("bad", [1, 0, 2.5, True, "4"])
+@pytest.mark.parametrize("bad", [1, 0, 2.5, True, "4", {"factor": 4, "stages": 1}, {"factor": 4, "x": 2}])
 def test_option_is_checked(bad):
     import pymc as pm
     with pm.Model() as m:
@@ -94,3 +94,34 @@ def test_option_is_checked(bad):
     with pytest.raises((ValueError, TypeError)):
         sampler._run_dynamic_hmc(None, {"step_size": 0.1, "frozen_L_nominal": 4.0}, np.ones(1),
                                  chains=2, draws=1, delayed_rejection=bad, progressbar=False)
+
+
+EPS3 = 4.0   # so large that the second proposal (step 1.0) also diverges often and the third stage runs
+
+
+def test_three_stages_invariance():
+    x, info = _final_draws(compiled.sampling_chunk, 4, stages=3, eps=EPS3)
+    x2, info2 = _final_draws(compiled.sampling_chunk, 4, stages=2, eps=EPS3)
+    # the third stage recovers transitions the second could not
+    assert int(np.sum(info.retry_divergent)) < int(np.sum(info2.retry_divergent))
+    assert int(np.sum(info.retry_accepted)) > int(np.sum(info2.retry_accepted))
+    assert st.kstest(x, EXACT.cdf).pvalue > 1e-3
+    assert abs(_tail_z(x)) < 4
+
+
+def test_three_stages_power(monkeypatch):
+    """Dropping the ghost factors at the third stage only must break the law."""
+    src = textwrap.dedent(inspect.getsource(compiled.delayed_rejection_step))
+    bad = src.replace("log_a = jnp.minimum(0.0, -dh + ghost_terms(y, k - 1, n_c) - s_x)",
+                      "log_a = jnp.minimum(0.0, -dh + jnp.where(k == 3, s_x, ghost_terms(y, k - 1, n_c)) - s_x)")
+    assert bad != src
+    ns = dict(vars(compiled))
+    exec(bad, ns)
+    monkeypatch.setattr(compiled, "delayed_rejection_step", ns["delayed_rejection_step"])
+    f = compiled.sampling_chunk.__wrapped__
+    fresh = types.FunctionType(f.__code__, f.__globals__, "wrong3_chunk", f.__defaults__, f.__closure__)
+    fresh.__kwdefaults__ = f.__kwdefaults__
+    wrong = jax.jit(fresh, static_argnames=("fn", "names", "chunk", "jitter_amount", "dr_factor", "dr_batch",
+                                            "dr_stages"))
+    x, _ = _final_draws(wrong, 4, stages=3, eps=EPS3)
+    assert abs(_tail_z(x)) > 10

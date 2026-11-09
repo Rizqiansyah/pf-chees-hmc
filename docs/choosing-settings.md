@@ -50,7 +50,11 @@ for instrumentation only, and it cannot be combined with `metric_updates`.
 ## Divergences in a rare region: delayed rejection (opt-in)
 
 `dynamic_hmc_kwargs={"delayed_rejection": a}` (an integer `a >= 2`; off by default) retries a divergent transition once
-from the same point, with the step divided by `a` and `a` times the steps (the same trajectory length). The retry is
+from the same point, with the step divided by `a` and `a` times the steps (the same trajectory length).
+`{"delayed_rejection": {"factor": a, "stages": k}}` allows up to `k - 1` retries, at step `/ a`, `/ a^2`, ..., each made
+only if the previous one diverged (eq. 29 of the paper; a stage-`j` acceptance needs the reverse proposals of all
+earlier stages from its end point, the "ghosts", so stage 3 costs `a^2 + a + 2` trajectories for the chains that reach
+it). On a hard-edge test with frequent divergences, 3 stages left 294 transitions divergent where 2 left 11,234. The retry is
 accepted with the delayed-rejection probability of Modi, Barnett & Carpenter (2023, *Bayesian Analysis*, eq. 30, with
 the retry probability set to 1 on a divergence and 0 otherwise), so the sampler stays exact: a retry is accepted only
 if the reverse first proposal from its end point would also have diverged.

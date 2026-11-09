@@ -1083,10 +1083,20 @@ class PfCheesHMC:
         # Opt-in delayed rejection on divergence (`compiled.delayed_rejection_step`): an integer a >= 2, the
         # second proposal's step-size divisor. A surgical tool for rare regions the tuned step was never meant
         # for, after the divergences have been diagnosed; not a substitute for a reparameterisation.
+        # An integer a is {"factor": a, "stages": 2}; "stages" k >= 2 adds proposals at step / a^2, ... / a^(k-1).
         dr = kwargs.get("delayed_rejection")
-        if dr is not None and (isinstance(dr, bool) or int(dr) != dr or int(dr) < 2):
-            raise ValueError(f"delayed_rejection must be None or an integer >= 2, got {dr!r}")
-        dr = None if dr is None else int(dr)
+        dr_cfg = None
+        if dr is not None:
+            spec = dr if isinstance(dr, dict) else {"factor": dr}
+            if not isinstance(spec, dict) or set(spec) - {"factor", "stages"}:
+                raise ValueError(f"delayed_rejection must be None, an integer >= 2 or a dict with 'factor' and "
+                                 f"'stages', got {dr!r}")
+            factor, stages = spec.get("factor"), spec.get("stages", 2)
+            for name, v in (("factor", factor), ("stages", stages)):
+                if isinstance(v, bool) or not isinstance(v, (int, np.integer)) or int(v) < 2:
+                    raise ValueError(f"delayed_rejection {name} must be an integer >= 2, got {dr!r}")
+            dr_cfg = {"factor": int(factor), "stages": int(stages)}
+        dr = dr_cfg
         self._resolved["sampling"] = {"seed": int(kwargs["seed"]), "chains": int(num_chains),
                                       "num_draws": int(num_draws), "delayed_rejection": dr}
 
@@ -1129,7 +1139,7 @@ class PfCheesHMC:
             return compiled.sampling_chunk(
                 ld.fn, ld.names, ld.values, state, imm, step_size, traj_len_adj, key_sample,
                 np.int32(start), np.int32(n), chunk=compiled.SAMPLE_CHUNK, jitter_amount=jitter_amount,
-                dr_factor=dr)
+                dr_factor=None if dr is None else dr["factor"], dr_stages=2 if dr is None else dr["stages"])
 
         dhmc_state = compiled.run_chunks(call, chees_states, num_draws, compiled.SAMPLE_CHUNK, consume)
         if hmc_bar is not None:
