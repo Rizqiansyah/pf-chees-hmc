@@ -8,9 +8,8 @@ Expected Square, is the criterion it maximises), then runs plain HMC with those 
 each step, so thousands of chains cost little more than a few.
 
 ChEES adapts the step size and trajectory length only, not the metric; this package takes the metric from Pathfinder. The
-warmup adapter is a vendored copy of BlackJAX 1.7.1's `chees_adaptation.base` (`pfcheeshmc/chees.py`), with three listed
-differences: an optional number of single-leapfrog steps at the start, an Adam optimiser built from a learning rate, and a
-per-step trace returned beside the state.
+warmup adapter is BlackJAX's `chees_adaptation.base`, called as it is; the package records a per-step trace (step size,
+trajectory length, harmonic-mean acceptance) beside its state for the progress bar and diagnostics.
 
 ## The pipeline
 

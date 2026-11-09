@@ -26,8 +26,8 @@ class WarmupInfo(NamedTuple):
         scan the device-memory wall at C=1,024 (measured: ~14 GB at d=175, W=2,000).
     trace
         A (steps, 4) float stack: (step, step_size, trajectory_length,
-        harmonic_acceptance) at each warmup step, from the vendored adapter's
-        ChEESTrace. trace.trajectory_length / trace.step_size is the nominal
+        harmonic_acceptance) at each warmup step, from the adapter's
+        ChEESTrace (`compiled.ChEESTrace`). trace.trajectory_length / trace.step_size is the nominal
         leapfrog count L at each step; that is the curve the trajectory-growth
         reproduction reads. harmonic_acceptance is the quantity ChEES adapts
         the step size on (harmonic mean over non-divergent chains), not the
@@ -99,7 +99,6 @@ def chees_warmup_with_progress(
                              #     Measured net negative on all four ladder models (block
                              #     boundaries cost 6.7-9.0 s, more than any warmup saving);
                              #     kept opt-in for instrumentation
-    single_step_iters=0,       # run L=1 for this many steps while the step size settles
     metric_updates=None,       # None = the metric is fixed, identical to the previous behaviour. Else
                              #     warmup fractions in (0, 1) at which the metric is re-estimated from
                              #     the chains (`compiled.ensemble_metric`) and the step size restarted
@@ -153,12 +152,11 @@ def chees_warmup_with_progress(
 
     # Settings the chunk programs branch on (static for jit); everything else is an argument.
     if optim is None:
-        optim = 0.05                       # the vendored adapter's own default learning rate
+        optim = 0.05                       # the Adam learning rate when none is given
     settings = dict(
         optim=optim if hasattr(optim, "init") else float(optim),
         target_accept=float(target_acceptance_rate), decay_rate=float(decay_rate),
-        jitter_amount=float(jitter_amount), max_leapfrog_steps=int(max_leapfrog_steps),
-        single_step_iters=int(single_step_iters))
+        jitter_amount=float(jitter_amount), max_leapfrog_steps=int(max_leapfrog_steps))
 
     # Start: HMC states for every chain, and the adapter's state. The step size is a value.
     eps0 = jnp.asarray(initial_step_size, dtype=jnp.result_type(initial_step_size))

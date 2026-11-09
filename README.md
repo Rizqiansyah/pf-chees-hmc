@@ -4,7 +4,7 @@
 which is what a GPU does well. Give it a PyMC model with continuous variables; get back an `arviz.InferenceData`.
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![version](https://img.shields.io/badge/version-0.3.1-informational)
+![version](https://img.shields.io/badge/version-0.3.2-informational)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 [![docs](https://github.com/Rizqiansyah/pf-chees-hmc/actions/workflows/docs.yml/badge.svg)](https://rizqiansyah.github.io/pf-chees-hmc/)
 ![backend](https://img.shields.io/badge/backend-JAX%20%7C%20BlackJAX-orange)
@@ -28,6 +28,9 @@ with pm.Model() as model:
 
 - **PyMC in, ArviZ out.** `posterior` in problem space (deterministics included), `sample_stats` with `lp`, `diverging`,
   `energy`, `num_integration_steps` and more, and the resolved configuration in `idata.attrs`.
+- **Case study: 19 to 76x faster than NUTS on a whole 56-core CPU** at the same effective sample size, on a stiff
+  hierarchical extreme-value regression (five datasets; RTX A2000; same quality bar, quantiles within 0.3%)
+  ([Case study](docs/case-study-gev-regression.md)).
 - **Fast on a GPU.** One warm call against PyMC NUTS on 32 CPU cores, both at settings that pass the same bias test
   against a long NUTS reference: 15x faster on 8 Schools, 9.4x on a GEV model, 6.8x on a 1000 x 25 logistic regression,
   2.5 to 3.8x on non-centred radon (RTX A2000, [Performance](docs/performance.md)).
@@ -76,6 +79,7 @@ sphinx-build -b html docs docs/_build/html
 | [Choosing chains, draws and warmup](docs/choosing-settings.md) | the bias gate, warmup lengths that pass it, warmup options |
 | [Metrics](docs/metrics.md) | metric sources, Pathfinder's L-BFGS settings, metric updates |
 | [Performance](docs/performance.md) | against PyMC NUTS, with the commands |
+| [Case study](docs/case-study-gev-regression.md) | a stiff extreme-value regression: one GPU against NUTS on 56 cores |
 | [Compile once, and the disk cache](docs/compile-and-cache.md) | what compiles when; the on-disk cache |
 | [float32](docs/float32.md) | opt-in; where it helps and where it silently fails |
 | [GPU notes](docs/gpu-notes.md) | the Hessian warning, reproducibility, shared GPUs |
@@ -88,16 +92,16 @@ Example notebooks are in [`examples/`](examples/); the benchmark harness in [`be
 ## Tests
 
 ```bash
-pixi run python -m pytest tests -q
+JAX_PLATFORMS=cpu REFERENCE_FILES_OPTIONAL=1 pixi run python -m pytest tests -q
 ```
 
-The suite runs on the CPU in one process: 557 passed, 2 skipped in 8 min 44 s (2026-11-08, shared host).
+The suite runs on the CPU in one process: 555 passed, 2 skipped in 8 min 45 s (2026-11-09, shared host; the skips need
+reference files built by `benchmarks/make_reference.py`).
 `tests/test_golden.py` pins the draws of the default path on the benchmark models.
 
 ## License
 
-Apache-2.0 ([LICENSE](LICENSE)). `pfcheeshmc/chees.py` is a modified copy of BlackJAX's ChEES adapter, also
-Apache-2.0; see [NOTICE](NOTICE).
+Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)).
 
 ## References
 
