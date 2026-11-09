@@ -29,12 +29,13 @@ def _logp(pos):
     return jnp.where(x > 0, 2.7 * jnp.log(jnp.abs(x) + 1e-300) - x, -jnp.inf)
 
 
-def _final_draws(sampling_chunk, dr):
+def _final_draws(sampling_chunk, dr, batch=None):
     ld = compiled.plain_log_density(_logp, ["x"])
     x0 = EXACT.rvs(N, random_state=np.random.default_rng(0))
     state = compiled.batch_init(ld.fn, ld.names, ld.values, {"x": jnp.asarray(x0)}, 0)
     s, (_, info) = sampling_chunk(ld.fn, ld.names, ld.values, state, jnp.ones(1), EPS, L, jax.random.key(7),
-                                  np.int32(0), np.int32(K), chunk=K, jitter_amount=1.0, dr_factor=dr)
+                                  np.int32(0), np.int32(K), chunk=K, jitter_amount=1.0, dr_factor=dr,
+                                  dr_batch=batch)
     return np.asarray(s.position["x"]), info
 
 
@@ -51,10 +52,19 @@ def test_invariance_with_frequent_retries():
     assert abs(_tail_z(x)) < 4
 
 
+def test_batch_size_does_not_change_the_draws():
+    """A chain's retry is the same computation whichever batch it lands in: batch 8 (many batches per step)
+    and one batch holding every chain give the same draws."""
+    x8, i8 = _final_draws(compiled.sampling_chunk, 4, batch=8)
+    xa, ia = _final_draws(compiled.sampling_chunk, 4, batch=N)
+    assert np.array_equal(np.asarray(i8.retry_accepted), np.asarray(ia.retry_accepted))
+    np.testing.assert_allclose(x8, xa, rtol=1e-12, atol=0)
+
+
 def test_invariance_test_has_power(monkeypatch):
     src = textwrap.dedent(inspect.getsource(compiled.delayed_rejection_step))
     bad = src.replace("log_a = (-dh_y + _log1m_accept(dh_g) - jnp.log1p(-p1)\n"
-                      "                     + jnp.where(dh_g > divergence_threshold, 0.0, -jnp.inf))", "log_a = -dh_y")
+                      "                 + jnp.where(dh_g > divergence_threshold, 0.0, -jnp.inf))", "log_a = -dh_y")
     assert bad != src
     ns = dict(vars(compiled))
     exec(bad, ns)
@@ -64,7 +74,7 @@ def test_invariance_test_has_power(monkeypatch):
     f = compiled.sampling_chunk.__wrapped__
     fresh = types.FunctionType(f.__code__, f.__globals__, "wrong_chunk", f.__defaults__, f.__closure__)
     fresh.__kwdefaults__ = f.__kwdefaults__
-    wrong_chunk = jax.jit(fresh, static_argnames=("fn", "names", "chunk", "jitter_amount", "dr_factor"))
+    wrong_chunk = jax.jit(fresh, static_argnames=("fn", "names", "chunk", "jitter_amount", "dr_factor", "dr_batch"))
     x, _ = _final_draws(wrong_chunk, 4)
     assert _tail_z(x) > 10      # the wrong rule over-weights the edge (z about 30 here)
 

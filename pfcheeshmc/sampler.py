@@ -1448,7 +1448,7 @@ class PfCheesHMC:
         idata.attrs["warmup_grad_evals_per_chain"] = int(warm_n.sum() // warm_n.shape[1])
         idata.attrs["sampling_grad_evals_per_chain"] = int(samp_n.sum() // samp_n.shape[1])
         if getattr(infos_hist, "retry_integration_steps", None) is not None:
-            # The retry branch's leapfrog steps (every chain runs it on an iteration where any chain retries).
+            # The retried chains' leapfrog steps ((a + 1) n each; padded batch slots not counted).
             retry_n = _np.asarray(infos_hist.retry_integration_steps, dtype=_np.int64)
             idata.attrs["sampling_retry_grad_evals_per_chain"] = int(retry_n.sum() // retry_n.shape[1])
         # R2-WP2: the resolved configuration, one JSON string (key list: see _config_record).

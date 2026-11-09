@@ -64,5 +64,10 @@ spread over the bulk mean the geometry or the model needs fixing. The run report
   `sampling_retry_grad_evals_per_chain` in the attributes, say what the retries did and cost;
 - a `RuntimeWarning` when more than 0.1% of transitions are retried.
 
-Cost: an iteration in which any chain retries runs `(a + 1) n` extra leapfrog steps for every chain (chains move in
-lockstep on the GPU); other iterations cost nothing extra.
+Cost: `(a + 1) n` leapfrog steps per retried chain, `n` the iteration's step count. Only the chains that need a retry
+run it, eight at a time (`compiled.DR_BATCH`), so an iteration without retries costs nothing extra and one with `r`
+retries costs `ceil(r / 8)` batches. On a GPU the time follows the leapfrog steps run one after another, not the
+gradient count: a step with any retry takes about `a + 1` trajectories longer, whatever the number of chains
+retried. Example (1,024 chains, `a = 4`, retries on 10% of steps): gradients +0.06%, sampling time +30%, and the
+retry branch adds about 20 s of compilation. `a = 2` is cheaper but recovered fewer divergences there (6 of 101
+accepted against 36).
