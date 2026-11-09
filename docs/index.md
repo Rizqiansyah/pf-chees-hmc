@@ -18,8 +18,7 @@ Compiled Hessians on the GPU can be wrong. Set `XLA_FLAGS=--xla_gpu_enable_trito
 gradients only; see [GPU notes](gpu-notes.md).
 :::
 
-Source: <https://github.com/Rizqiansyah/pf-chees-hmc>. License: Apache-2.0; `pfcheeshmc/chees.py` is a modified copy of
-BlackJAX's ChEES adapter (Apache-2.0, see `NOTICE`).
+Source: <https://github.com/Rizqiansyah/pf-chees-hmc>. License: Apache-2.0.
 
 ```{toctree}
 :maxdepth: 2
@@ -31,6 +30,7 @@ how-it-works
 choosing-settings
 metrics
 performance
+case-study-gev-regression
 compile-and-cache
 float32
 gpu-notes
