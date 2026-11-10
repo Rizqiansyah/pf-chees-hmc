@@ -166,3 +166,23 @@ register JAX's function directly once the floor is `jax>=0.12` (`tests/test_lift
 `sampler.py:_warn_if_x64_contradicts_floatx` warns when floatX is narrower than float64 and x64 is on, because the
 log-density would then be float64 at a float32 position. `lifted.py:_quiet_truncation` drops JAX's "Explicitly requested dtype
 float64" warning while x64 is off, since its advice would undo the float32 run.
+
+## 8. Tried and not adopted (0.4)
+
+- **SNAPER in place of ChEES** (Sountsov & Hoffman 2021): the trajectory-length gradient of the ESJD of the squared
+  projection on the leading principal component (of the chains, whitened by the dense metric), per unit length, in
+  BlackJAX's adapter. On an upper-bounded GEV regression (1,024 chains, seeds 1-5) the tuned length varied as much
+  between seeds as under ChEES (4.2x in both on one case), and the ESS per gradient changed by +7% to +13% on the GEV
+  cases and -8% to -12% on two benchmark models, inside the seed-to-seed range (about 3x). Not added.
+- **An R-hat implied by the ESS.** sqrt((n - 1)/n + m/ESS) matches the observed R-hat whether chains mix slowly or
+  disagree, because ArviZ's ESS uses the between-chain variance as R-hat does; it carries no information beyond R-hat. A
+  within-chain-only autocorrelation estimate is biased low on short chains (centring each chain on its own mean).
+  The docs give the check that separates the cases instead (R-hat at half the draws; [R-hat](rhat-many-chains.md)).
+- **Leapfrog unrolling under delayed rejection before the ghost loop**: unrolling multiplied each of the 15 integration
+  loops of a 4-stage program (compile 98 s -> 286 s at two steps per pass on a GPU); with the ghost loop (one loop per
+  stage) the cost is per stage.
+- **MALT in the sampling phase** (Riou-Durand & Vogrinc; Algorithm 2: partial momentum refreshes between leapfrog steps,
+  one accept per trajectory), at ChEES's tuned length, from the same warmed-up state as HMC: friction 0.5 gave 1.17-1.22x
+  HMC's ESS per gradient on one GEV case and 0.75-0.87x on another, with twice the divergences; friction 2 gave
+  0.4-0.7x. Not added; it also cannot be combined with delayed rejection as built (a deterministic proposal is assumed).
+  Tuning the length for MALT itself (adaptive MALT) was not tried. Both prototypes: branch `p7-prototypes`.

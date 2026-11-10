@@ -79,9 +79,14 @@ accepted against 36).
 Later stages cost more per chain that reaches them: the proposal at stage `k` and the ghosts its acceptance needs take
 `a + 1`, `a^2 + a + 2` and `a^3 + a^2 + 2a + 4` trajectories at stages 2, 3 and 4 (9, 74 and 596 at `a = 8`). They run
 only where the stage before diverged, so in practice they are rare. Each stage enlarges the compiled sampling program
-once; it is then kept in the [disk cache](compile-and-cache.md). Measured on an upper-bounded GEV regression in float32
-on a GPU (1,024 chains x 1,000 draws): `{"factor": 8, "stages": 4}` took 25 to 123 first-stage divergences per run to
-none left, for at most 0.2% more gradients; the first run compiled for about 100 s in all.
+once; it is then kept in the [disk cache](compile-and-cache.md). A stage's proposal and its ghosts (`2^(k-1)`
+integrations at stage `k`) run in one loop over the tree of integrations, so the integrator is compiled once per stage
+and each stage adds about a constant to the compile time (until 0.4 the ghosts were traced one by one and the compile
+time about doubled per stage). Cold, a = 8, sampling program only: on a CPU, a 3-parameter GEV model compiled in 0.6 s
+without retries and 1.3, 2.1 and 2.5 s with 2, 3 and 4 stages (before: 1.5, 3.0 and 6.2 s); on a GPU, an upper-bounded
+GEV regression in float32 took 5.6 s without retries and 16.7, 39.4 and 91.4 s with 2, 3 and 4 stages before the change
+(after: 12.0, 17.8 and 24.5 s). Measured on that regression (1,024 chains x 1,000 draws): `{"factor": 8, "stages": 4}` took 25 to 123
+first-stage divergences per run to none left, for at most 0.2% more gradients.
 
 Scope and checks:
 
@@ -110,8 +115,12 @@ Every rule keeps the sampler exact: the retry probability enters the acceptance 
 applies to the default rule only, since the others retry ordinary rejections by design.
 
 These rules retry far more transitions than the default, and on a GPU every iteration with any retry waits for the
-retried chains' `(a + 1) n` extra steps. They pay where ordinary rejections, not divergences, are what holds the sampler
-back (Neal's funnel: the neck), and mostly on a CPU, where the cost follows the gradients. Tests
+retried chains' `(a + 1) n` extra steps. Measured (a = 4, two stages, warmup 500, 1,000 draws, seeds 1-3): on Neal's
+funnel in 10 dimensions and on a hard edge, no rule changed the ESS per gradient of the hard coordinate (the funnel's
+log-scale: 1.6-2.4e-5 with or without retries); on a GPU with 1,024 chains the funnel's ESS per second fell from 350-490
+without retries to 120-150 with the default rule and 107-125 with the other two, and on a CPU with 256 chains to 240-420
+and 280-335 (340-450 without). They are groundwork: for a target where ordinary rejections, not divergences, hold the sampler back in a
+region the first-stage step cannot serve, and on a CPU, where the cost follows the gradients. Tests
 (`tests/test_dr_retry_rules.py`): two and three stages keep the law of a hard-edge target and of Neal's funnel under both
 rules; dropping the ghost terms breaks it under both; dropping the threshold rule's factor at the ghosts breaks it on the
 funnel. Dropping the probabilistic rule's factor moved the test statistic too little to detect at 200,000 chains (the

@@ -1247,7 +1247,7 @@ class PfCheesHMC:
             warnings.warn(
                 f"{failed} of {n_div} divergent transitions ended at a NaN (or -inf) energy: the log density or its "
                 "gradient failed to evaluate there (an overflow, a function outside the range where it keeps its "
-                "digits, float32 rounding), which a smaller step does not fix. Counts by energy are in "
+                "digits, float32 rounding): often the model's arithmetic rather than the step size. Counts by energy are in "
                 "idata.attrs[\"diagnostics\"] (Troubleshooting, \"Divergences\").", RuntimeWarning, stacklevel=3)
         if dr is not None and dr_retry == "divergent":
             # (the other rules retry ordinary rejections by design)
