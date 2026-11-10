@@ -623,6 +623,10 @@ def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *
 # Delayed rejection: chains retried per batch (`delayed_rejection_step`). Retries are rare (they follow
 # divergences), so a small batch keeps the padded waste small; more retries in one step take more batches.
 DR_BATCH = 8
+# The acceptance test of retry stage k uses fold_in(key, DR_STREAM + k), key being the chain's key for the
+# iteration. BlackJAX's kernel splits that key in two (momentum, its own accept test), and with JAX's partitionable
+# keys (the default) fold_in(key, i) is split(key, n)[i]: a small i would reuse one of those two numbers.
+DR_STREAM = 0x44520000
 
 
 @partial(jax.jit, static_argnames=_STATIC + ("chunk", "jitter_amount", "dr_factor", "dr_batch", "dr_stages"))
@@ -738,7 +742,7 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
             dh = _delta_h(energy, x, y)
             log_a = jnp.minimum(0.0, -dh + ghost_terms(y, k - 1, n_c) - s_x)
             log_a = jnp.where(jnp.isfinite(dh), log_a, -jnp.inf)
-            accept = jnp.log(jax.random.uniform(jax.random.fold_in(key, k - 1))) < log_a
+            accept = jnp.log(jax.random.uniform(jax.random.fold_in(key, DR_STREAM + k))) < log_a
             # s_x for stage k + 1 if this one is rejected; its p is 1 (the chain only gets there if it diverged)
             return y, accept, dh > divergence_threshold, s_x + _log1m_exp(log_a)
         return one
