@@ -1153,19 +1153,36 @@ class PfCheesHMC:
         # second proposal's step-size divisor. A surgical tool for rare regions the tuned step was never meant
         # for, after the divergences have been diagnosed; not a substitute for a reparameterisation.
         # An integer a is {"factor": a, "stages": 2}; "stages" k >= 2 adds proposals at step / a^2, ... / a^(k-1).
+        # "retry" (default "divergent"): when a later proposal is made, `compiled.delayed_rejection_step`.
         dr = kwargs.get("delayed_rejection")
         dr_cfg = None
         if dr is not None:
             spec = dr if isinstance(dr, dict) else {"factor": dr}
-            if not isinstance(spec, dict) or set(spec) - {"factor", "stages"}:
-                raise ValueError(f"delayed_rejection must be None, an integer >= 2 or a dict with 'factor' and "
-                                 f"'stages', got {dr!r}")
+            if not isinstance(spec, dict) or set(spec) - {"factor", "stages", "retry"}:
+                raise ValueError(f"delayed_rejection must be None, an integer >= 2 or a dict with 'factor', "
+                                 f"'stages' and 'retry', got {dr!r}")
             factor, stages = spec.get("factor"), spec.get("stages", 2)
             for name, v in (("factor", factor), ("stages", stages)):
                 if isinstance(v, bool) or not isinstance(v, (int, np.integer)) or int(v) < 2:
                     raise ValueError(f"delayed_rejection {name} must be an integer >= 2, got {dr!r}")
             dr_cfg = {"factor": int(factor), "stages": int(stages)}
+            rule = spec.get("retry", "divergent")
+            if isinstance(rule, dict) and set(rule) == {"energy_above"}:
+                c = rule["energy_above"]
+                if isinstance(c, bool) or not isinstance(c, (int, float, np.integer, np.floating)) or not c > 0:
+                    raise ValueError(f"delayed_rejection retry energy_above must be a number > 0, got {rule!r}")
+                dr_cfg["retry"] = {"energy_above": float(c)}
+            elif rule == "probabilistic":
+                dr_cfg["retry"] = "probabilistic"
+            elif rule != "divergent":
+                raise ValueError(f"delayed_rejection retry must be 'divergent', 'probabilistic' or "
+                                 f"{{'energy_above': c}}, got {rule!r}")
         dr = dr_cfg
+        # the static form of the rule for the chunk program; "divergent" is not recorded (the config of a run with
+        # the default rule is unchanged)
+        dr_retry = "divergent"
+        if dr is not None and "retry" in dr:
+            dr_retry = dr["retry"] if dr["retry"] == "probabilistic" else ("energy_above", dr["retry"]["energy_above"])
         self._resolved["sampling"] = {"seed": int(kwargs["seed"]), "chains": int(num_chains),
                                       "num_draws": int(num_draws), "delayed_rejection": dr}
 
@@ -1208,7 +1225,8 @@ class PfCheesHMC:
             return compiled.sampling_chunk(
                 ld.fn, ld.names, ld.values, state, imm, step_size, traj_len_adj, key_sample,
                 np.int32(start), np.int32(n), chunk=compiled.SAMPLE_CHUNK, jitter_amount=jitter_amount,
-                dr_factor=None if dr is None else dr["factor"], dr_stages=2 if dr is None else dr["stages"])
+                dr_factor=None if dr is None else dr["factor"], dr_stages=2 if dr is None else dr["stages"],
+                dr_retry=dr_retry)
 
         dhmc_state = compiled.run_chunks(call, chees_states, num_draws, compiled.SAMPLE_CHUNK, consume)
         if hmc_bar is not None:
@@ -1224,7 +1242,8 @@ class PfCheesHMC:
                 "gradient failed to evaluate there (an overflow, a function outside the range where it keeps its "
                 "digits, float32 rounding), which a smaller step does not fix. Counts by energy are in "
                 "idata.attrs[\"diagnostics\"] (Troubleshooting, \"Divergences\").", RuntimeWarning, stacklevel=3)
-        if dr is not None:
+        if dr is not None and dr_retry == "divergent":
+            # (the other rules retry ordinary rejections by design)
             rate = float(np.mean(infos_hist.retried))
             if rate > DR_RETRY_WARN:
                 warnings.warn(
