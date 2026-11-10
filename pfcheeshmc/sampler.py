@@ -26,6 +26,7 @@ import json
 import re
 import logging
 import contextlib
+import inspect
 import warnings
 
 __all__ = ["sample_pf_chees_hmc"]
@@ -90,6 +91,48 @@ def _warn_if_x64_contradicts_floatx():
             "notebook's jax.config.update(\"jax_enable_x64\", True) does). Turn it off again with "
             "jax.config.update(\"jax_enable_x64\", False) before sampling.",
             RuntimeWarning, stacklevel=3)
+
+
+# BlackJAX's L-BFGS iteration cap for Pathfinder (`approximate(maxiter=...)`), read from its signature so the
+# recorded cap is the one that applied.
+_PF_DEFAULT_MAXITER = int(inspect.signature(bj.vi.pathfinder.approximate).parameters["maxiter"].default)
+
+
+def _tf32_message(floatx, backend, capabilities, precision):
+    """The TF32 warning's text, or None: float32 on a GPU with compute capability 8.0 or above (Ampere and later), and
+    ``jax_default_matmul_precision`` unset. XLA then runs float32 matrix products in TF32 (a 10-bit mantissa)."""
+    def major_minor(c):
+        try:
+            return tuple(int(v) for v in str(c).split(".")[:2])
+        except ValueError:
+            return None
+    caps = [major_minor(c) for c in capabilities]
+    if floatx != "float32" or backend != "gpu" or precision is not None or not any(c and c >= (8, 0) for c in caps):
+        return None
+    shown = ", ".join(sorted({str(c) for c in capabilities}))
+    return (f"float32 on a GPU of compute capability {shown}: XLA runs float32 matrix products in TF32 (a 10-bit "
+            "mantissa) unless jax_default_matmul_precision is set, so the log density and its gradient lose digits "
+            "the model's float32 arithmetic would keep. Set JAX_DEFAULT_MATMUL_PRECISION=highest in the environment, "
+            "or jax.config.update(\"jax_default_matmul_precision\", \"highest\"), before sampling (GPU notes, "
+            "\"float32 matrix products run in TF32 by default\").")
+
+
+def _warn_if_tf32():
+    """Warn when float32 matrix products would run in TF32 (`_tf32_message`)."""
+    backend = jax.default_backend()
+    caps = [getattr(d, "compute_capability", None) for d in jax.devices()] if backend == "gpu" else []
+    msg = _tf32_message(pytensor.config.floatX, backend, caps, jax.config.jax_default_matmul_precision)
+    if msg is not None:
+        warnings.warn(msg, RuntimeWarning, stacklevel=3)
+
+
+def _divergence_energy(is_divergent, energy):
+    """Counts of the divergent transitions by the energy at the trajectory's end (BlackJAX's ``info.energy``):
+    ``inf`` (the proposal left the support), ``nan`` (the arithmetic failed), ``-inf`` (the log density was
+    ``+inf``, an arithmetic failure as well) and ``finite`` (the step was too large for the curvature)."""
+    e = np.asarray(energy)[np.asarray(is_divergent, dtype=bool)]
+    return {"inf": int(np.sum(np.isposinf(e))), "-inf": int(np.sum(np.isneginf(e))),
+            "nan": int(np.sum(np.isnan(e))), "finite": int(np.sum(np.isfinite(e)))}
 
 
 # The sampling scan's per-draw projections are defined with the chunk program that returns them.
@@ -237,6 +280,9 @@ class PfCheesHMC:
         # stage methods, composed into idata.attrs["config"] by sample(). Stages can be called on
         # their own (tests, tools), so every stage overwrites only its own entry.
         self._resolved = {}
+        # What the run found (not what was configured), composed into idata.attrs["diagnostics"] by sample(); the
+        # same per-stage overwrite as _resolved. Not in the golden files: it follows from the draws and the path.
+        self._diagnostics = {}
 
         self.rvs = [rv.name for rv in model.value_vars]
         # The log-density with the model's data and prior values as runtime arguments (F2a). The
@@ -760,10 +806,22 @@ class PfCheesHMC:
 
         # 3) Fit Pathfinder. The L-BFGS settings are passed only when given, so the default call is unchanged.
         lbfgs = tuple(sorted((_PF_LBFGS_OPTIONS[k], v) for k, v in kwargs.items() if k in _PF_LBFGS_OPTIONS))
-        pf_state = compiled.pathfinder_fit(
+        pf_state, pf_iterations = compiled.pathfinder_fit(
             bj.vi.pathfinder.approximate, ld.fn, ld.names, ld.values,
             key_pf, tuple(x0_pf[n] for n in self.rvs), **({"lbfgs": lbfgs} if lbfgs else {}),
         )
+        # BlackJAX drops L-BFGS's status; the path shows how many iterations ran (`compiled.pathfinder_fit`). Every
+        # iteration used means L-BFGS may have stopped before its tolerances were met, and the starts and the metric
+        # come from where it stopped.
+        pf_maxiter = int(dict(lbfgs).get("maxiter", _PF_DEFAULT_MAXITER))
+        pf_iterations = int(pf_iterations)
+        self._diagnostics["pathfinder"] = {"lbfgs_iterations": pf_iterations, "lbfgs_maxiter": pf_maxiter}
+        if pf_iterations >= pf_maxiter:
+            warnings.warn(
+                f"Pathfinder's L-BFGS used all {pf_maxiter} of its iterations (pathfinder_kwargs['pf_maxiter']): it "
+                "may have stopped before its tolerances were met, far from the mode, and the starts and the metric "
+                "come from where it stopped. Raise pf_maxiter (Troubleshooting, \"The sampler is not converging\").",
+                RuntimeWarning, stacklevel=3)
 
         # 4) Draw the start pool, bounded by `pf_pool_cap` rows (see default_pool_cap for why the
         # default is dimension-aware rather than a multiple of `chains`). pf_pool_cap=0 is the
@@ -1145,6 +1203,16 @@ class PfCheesHMC:
         if hmc_bar is not None:
             hmc_bar.close()
         states_hist, infos_hist = stack.result()
+        counts = _divergence_energy(infos_hist.is_divergent, infos_hist.energy)
+        self._diagnostics["divergence_energy"] = counts
+        failed = counts["nan"] + counts["-inf"]
+        if failed:
+            n_div = sum(counts.values())
+            warnings.warn(
+                f"{failed} of {n_div} divergent transitions ended at a NaN (or -inf) energy: the log density or its "
+                "gradient failed to evaluate there (an overflow, a function outside the range where it keeps its "
+                "digits, float32 rounding), which a smaller step does not fix. Counts by energy are in "
+                "idata.attrs[\"diagnostics\"] (Troubleshooting, \"Divergences\").", RuntimeWarning, stacklevel=3)
         if dr is not None:
             rate = float(np.mean(infos_hist.retried))
             if rate > DR_RETRY_WARN:
@@ -1405,6 +1473,7 @@ class PfCheesHMC:
         
 
         self._resolved = {}
+        self._diagnostics = {}
         self._refresh_values()
         pf_samples, inverse_mass_matrix = self._run_pathfinder(**pathfinder_kwargs)
         eps0 = self._run_step_size_tune(pf_samples, inverse_mass_matrix, **step_size_tune_kwargs)
@@ -1467,6 +1536,8 @@ class PfCheesHMC:
         # golden files (tests/make_golden.py:_collect), so a version bump does not change them.
         from . import __version__ as _pkg_version
         idata.attrs["pfcheeshmc_version"] = _pkg_version
+        # What the run found: L-BFGS iterations against the cap, divergences by energy (one JSON string, as config).
+        idata.attrs["diagnostics"] = json.dumps(self._diagnostics, sort_keys=True)
         return idata
 
     def _config_record(self, idata, chees_parameters, eps0) -> str:
@@ -1589,6 +1660,7 @@ def sample_pf_chees_hmc(
     # their own (README, "Compile once, and the disk cache"); does nothing after the first call.
     ensure_default_compilation_cache()
     _warn_if_x64_contradicts_floatx()
+    _warn_if_tf32()
 
     m = modelcontext(model)  # supports both inside/outside context usage
 
