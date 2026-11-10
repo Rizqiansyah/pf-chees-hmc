@@ -695,11 +695,16 @@ DR_BATCH = 8
 # iteration. BlackJAX's kernel splits that key in two (momentum, its own accept test), and with JAX's partitionable
 # keys (the default) fold_in(key, i) is split(key, n)[i]: a small i would reuse one of those two numbers.
 DR_STREAM = 0x44520000
+# The retry decision of a rule with a retry probability below 1 ("probabilistic"): proposal k is made if
+# uniform(fold_in(key, DR_RETRY_STREAM + k)) < p_k, apart from the acceptance uniforms above.
+DR_RETRY_STREAM = DR_STREAM + 0x8000
+# Retry rules of `delayed_rejection_step`: when a later proposal is made after a rejection.
+DR_RETRY_RULES = ("divergent", "energy_above", "probabilistic")
 
 
-@partial(jax.jit, static_argnames=_STATIC + ("chunk", "jitter_amount", "dr_factor", "dr_batch", "dr_stages"))
+@partial(jax.jit, static_argnames=_STATIC + ("chunk", "jitter_amount", "dr_factor", "dr_batch", "dr_stages", "dr_retry"))
 def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, traj_len_adj, key, start, n, *,
-                   chunk, jitter_amount, dr_factor=None, dr_batch=None, dr_stages=2):
+                   chunk, jitter_amount, dr_factor=None, dr_batch=None, dr_stages=2, dr_retry="divergent"):
     """``chunk`` dynamic-HMC draws (the first ``n`` real) from ``state`` (a batch of `DynamicHMCState`).
 
     The frozen step size, metric and trajectory-length adjustment are arguments of the kernel call, as
@@ -724,7 +729,7 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
         retry = ()
         if dr_factor is not None:
             new_state, retry = delayed_rejection_step(ld, imm, step_size, dr_factor, keys, s, new_state, info,
-                                                      batch=dr_batch, stages=dr_stages)
+                                                      batch=dr_batch, stages=dr_stages, retry=dr_retry)
         # Projection: keep only what _to_inference_data reads (position + logdensity for the
         # posterior/lp, and the five sample_stats fields). momentum, proposal.position,
         # proposal.momentum and proposal.logdensity_grad duplicate state leaves and are the
@@ -755,7 +760,7 @@ def _log1m_exp(log_a):
 
 
 def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old, new, info,
-                           divergence_threshold=1000.0, batch=None, stages=2):
+                           divergence_threshold=1000.0, batch=None, stages=2, retry="divergent"):
     """Later proposals of k-stage delayed-rejection HMC, on the chains whose earlier proposals diverged.
 
     Modi, Barnett & Carpenter (2023), "Delayed rejection Hamiltonian Monte Carlo for sampling multiscale
@@ -777,6 +782,18 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
     nothing and one with r costs ceil(r / batch) batches per stage. On a GPU the wall time follows the sequential
     leapfrog steps, not the gradient count: a step with any retry takes about (a + 1) trajectories longer at
     stage 2 (a GEV regression, 1,024 chains, a = 4, retries on 10% of steps: gradients +0.06%, sampling time +30%).
+    Retry rules (``retry``; the paper's eq. (30) with p_(j+1) a function of the state and its proposals, so the ghosts
+    evaluate the same p):
+
+    * ``"divergent"`` (the default): p_(j+1) = 1{proposal j diverged}, dH_j > ``divergence_threshold``; as above;
+    * ``("energy_above", c)``: p_(j+1) = 1{dH_j > c}, the same indicator at a lower threshold: rejections with a large
+      energy error are retried too;
+    * ``"probabilistic"``: p_(j+1) = 1 - alpha_j, the rejection probability of proposal j (the paper's s.3.2, eq. 31):
+      a proposal rejected by chance at a high acceptance probability is rarely retried, one rejected strongly almost
+      always. The retry is decided by its own uniform (`DR_RETRY_STREAM`).
+
+    Every rule retries only rejected proposals. Under an indicator rule the retry needs no random number.
+
     Returns (state, retry fields of `SampledInfo`): retried (stage 2 made), retry_accepted (some later stage
     accepted), retry_divergent (the last stage made diverged and nothing was accepted), retry_integration_steps.
     """
@@ -785,6 +802,15 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
     integrate = bj_trajectory.static_integration(bj_integrators.velocity_verlet(ld, metric.kinetic_energy))
     energy = bj_trajectory.hmc_energy(metric.kinetic_energy)
     n = info.num_integration_steps
+    if retry == "divergent":
+        log_p = lambda dh, log_a: jnp.where(dh > divergence_threshold, 0.0, -jnp.inf)        # noqa: E731
+    elif retry == "probabilistic":
+        log_p = lambda dh, log_a: _log1m_exp(log_a)                                            # noqa: E731
+    elif isinstance(retry, tuple) and len(retry) == 2 and retry[0] == "energy_above":
+        threshold = float(retry[1])
+        log_p = lambda dh, log_a: jnp.where(dh > threshold, 0.0, -jnp.inf)                    # noqa: E731
+    else:
+        raise ValueError(f"retry must be 'divergent', 'probabilistic' or ('energy_above', c), got {retry!r}")
 
     def prop(z, j, n_c):
         """Proposal j from z."""
@@ -800,7 +826,7 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
             reach = jnp.isfinite(total)
             log_a = jnp.where(jnp.isfinite(dh) & reach, jnp.minimum(0.0, -dh + ty - jnp.where(reach, total, 0.0)),
                               -jnp.inf)
-            total = total + _log1m_exp(log_a) + jnp.where(dh > divergence_threshold, 0.0, -jnp.inf)
+            total = total + _log1m_exp(log_a) + log_p(dh, log_a)
         return total
 
     def stage(k):
@@ -811,8 +837,15 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
             log_a = jnp.minimum(0.0, -dh + ghost_terms(y, k - 1, n_c) - s_x)
             log_a = jnp.where(jnp.isfinite(dh), log_a, -jnp.inf)
             accept = jnp.log(jax.random.uniform(jax.random.fold_in(key, DR_STREAM + k))) < log_a
-            # s_x for stage k + 1 if this one is rejected; its p is 1 (the chain only gets there if it diverged)
-            return y, accept, dh > divergence_threshold, s_x + _log1m_exp(log_a)
+            div = dh > divergence_threshold
+            if retry == "divergent":
+                # s_x for stage k + 1 if this one is rejected; its p is 1 (the chain only gets there if it diverged)
+                return y, accept, div, div, s_x + _log1m_exp(log_a)
+            # proposal k + 1 is made with probability p_(k+1)(x) (an indicator rule needs no random number, but a
+            # uniform in [0, 1) decides it the same way); s_x for stage k + 1 carries log p_(k+1)(x)
+            lp = log_p(dh, log_a)
+            go = jnp.log(jax.random.uniform(jax.random.fold_in(key, DR_RETRY_STREAM + k + 1))) < lp
+            return y, accept, div, go, s_x + _log1m_exp(log_a) + lp
         return one
 
     def run_stage(k, need, s_x, state):
@@ -825,22 +858,22 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
         one = stage(k)
 
         def body(carry):
-            b, pos, lp, grad, take, div, s_next = carry
+            b, pos, lp, grad, take, div, go, s_next = carry
             sl = lax.dynamic_slice(idx, (b * batch,), (batch,))
             at = jnp.minimum(sl, num - 1)
             sel = jax.tree_util.tree_map(lambda u: u[at], inputs)
-            y, accept, d, s_new = jax.vmap(one)(*sel)
+            y, accept, d, g, s_new = jax.vmap(one)(*sel)
             put = lambda base, upd: base.at[sl].set(upd, mode="drop")
             keep = lambda u, v: jnp.where(accept.reshape(accept.shape + (1,) * (u.ndim - 1)), u, v)
             pos = jax.tree_util.tree_map(lambda base, u: put(base, keep(u, base[at])), pos, y.position)
             lp = put(lp, keep(y.logdensity, lp[at]))
             grad = jax.tree_util.tree_map(lambda base, u: put(base, keep(u, base[at])), grad, y.logdensity_grad)
-            return b + 1, pos, lp, grad, put(take, accept), put(div, d), put(s_next, s_new)
+            return b + 1, pos, lp, grad, put(take, accept), put(div, d), put(go, g), put(s_next, s_new)
 
         init = (jnp.asarray(0, jnp.int32), state.position, state.logdensity, state.logdensity_grad, zeros, zeros,
-                jnp.full_like(s_x, -jnp.inf))
-        _, pos, lp, grad, take, div, s_next = lax.while_loop(lambda c: c[0] * batch < count, body, init)
-        return state._replace(position=pos, logdensity=lp, logdensity_grad=grad), take, div, s_next
+                zeros, jnp.full_like(s_x, -jnp.inf))
+        _, pos, lp, grad, take, div, go, s_next = lax.while_loop(lambda c: c[0] * batch < count, body, init)
+        return state._replace(position=pos, logdensity=lp, logdensity_grad=grad), take, div, go, s_next
 
     def steps(k):
         """Leapfrog steps (in units of n) of stage k for one chain: its proposal and its ghosts."""
@@ -848,18 +881,29 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
             return sum(factor ** (j - 1) + ghost(j - 1) for j in range(1, m + 1))
         return factor ** (k - 1) + ghost(k - 1)
 
-    need = info.is_divergent & ~info.is_accepted
+    if retry == "divergent":
+        need = info.is_divergent & ~info.is_accepted
+        # stage 1 was rejected and diverged: s_x = log([1 - alpha_1(x)] p_2(x)) = log1p(-p1)
+        s_x = jnp.log1p(-info.acceptance_rate)
+    else:
+        # stage 1's energy error and acceptance probability, computed as the ghosts compute them (BlackJAX's
+        # proposal state; the energy does not depend on the momentum's sign)
+        x0 = bj_integrators.IntegratorState(old.position, info.momentum, old.logdensity, old.logdensity_grad)
+        dh1 = jax.vmap(lambda a, b: _delta_h(energy, a, b))(x0, info.proposal)
+        log_a1 = jnp.where(jnp.isfinite(dh1), jnp.minimum(0.0, -dh1), -jnp.inf)
+        lp2 = log_p(dh1, log_a1)
+        u2 = jax.vmap(lambda c: jnp.log(jax.random.uniform(jax.random.fold_in(c, DR_RETRY_STREAM + 2))))(keys)
+        need = ~info.is_accepted & (u2 < lp2)
+        s_x = _log1m_exp(log_a1) + lp2
     retried = need
-    # stage 1 was rejected and diverged: s_x = log([1 - alpha_1(x)] p_2(x)) = log1p(-p1)
-    s_x = jnp.log1p(-info.acceptance_rate)
     state, accepted, last_div = new, jnp.zeros_like(need), jnp.zeros_like(need)
     cost = jnp.zeros_like(n)
     for k in range(2, stages + 1):
-        state, take, div, s_x = run_stage(k, need, s_x, state)
+        state, take, div, go, s_x = run_stage(k, need, s_x, state)
         cost = cost + jnp.where(need, steps(k) * n, 0)
         accepted = accepted | take
         last_div = jnp.where(need, div & ~take, last_div)
-        need = need & ~take & div          # the next stage only where this one diverged
+        need = need & ~take & go           # the next stage where the rule retries this one
     return state, (retried, accepted, last_div, cost)
 
 

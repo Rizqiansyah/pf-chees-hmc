@@ -86,9 +86,33 @@ none left, for at most 0.2% more gradients; the first run compiled for about 100
 Scope and checks:
 
 - Only the sampling phase retries. Warmup divergences are as without the option (warmup draws are not kept).
-- A retry is made only after a divergence; a merely rejected proposal is not retried. (Modi et al. also describe a
-  probabilistic retry rule, not implemented.)
+- By default a retry is made only after a divergence; a merely rejected proposal is not retried. Other retry rules
+  are below.
 - The retry's acceptance test has its own random numbers (`compiled.DR_STREAM`), separate from the first stage's.
 - Tested for exactness with two, three and four stages in float64, two and three in float32
   (`tests/test_delayed_rejection.py`: chains started at exact draws of a target with a hard edge keep its law; dropping
   the ghost terms breaks it).
+
+### Retry rules (experimental)
+
+`{"delayed_rejection": {"factor": a, "stages": k, "retry": rule}}` chooses when a later proposal is made after a
+rejection:
+
+- `"divergent"` (the default): after a divergence (energy error above 1,000), as above;
+- `{"energy_above": c}`: after a rejected proposal whose energy error was above `c` (c > 0). The same indicator family at
+  a lower threshold: rejections with a large energy error are retried too, not only divergences;
+- `"probabilistic"`: after a rejection, with probability `1 - alpha`, alpha the rejected proposal's acceptance
+  probability (Modi, Barnett & Carpenter 2023, s.3.2, eq. 31). A proposal rejected by chance at a high acceptance
+  probability is rarely retried; one rejected strongly almost always.
+
+Every rule keeps the sampler exact: the retry probability enters the acceptance at the current state and at the ghosts
+(eq. 30). The rule is recorded in the config (`delayed_rejection.retry`) unless it is the default. The 0.1% warning
+applies to the default rule only, since the others retry ordinary rejections by design.
+
+These rules retry far more transitions than the default, and on a GPU every iteration with any retry waits for the
+retried chains' `(a + 1) n` extra steps. They pay where ordinary rejections, not divergences, are what holds the sampler
+back (Neal's funnel: the neck), and mostly on a CPU, where the cost follows the gradients. Tests
+(`tests/test_dr_retry_rules.py`): two and three stages keep the law of a hard-edge target and of Neal's funnel under both
+rules; dropping the ghost terms breaks it under both; dropping the threshold rule's factor at the ghosts breaks it on the
+funnel. Dropping the probabilistic rule's factor moved the test statistic too little to detect at 200,000 chains (the
+factor matters little on these targets), so its exactness rests on eq. (30) and the invariance tests.
