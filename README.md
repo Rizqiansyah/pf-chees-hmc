@@ -4,7 +4,7 @@
 which is what a GPU does well. Give it a PyMC model with continuous variables; get back an `arviz.InferenceData`.
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![version](https://img.shields.io/badge/version-0.3.2-informational)
+![version](https://img.shields.io/badge/version-0.4.0-informational)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 [![docs](https://github.com/Rizqiansyah/pf-chees-hmc/actions/workflows/docs.yml/badge.svg)](https://rizqiansyah.github.io/pf-chees-hmc/)
 ![backend](https://img.shields.io/badge/backend-JAX%20%7C%20BlackJAX-orange)
@@ -23,6 +23,27 @@ with pm.Model() as model:
 > `jax.jit(jax.hessian(logp))` on the GPU was wrong by up to a factor of 10^6 (JAX 0.12.0.1, CUDA 13); switching off
 > Triton GEMM fixed it. The sampler uses gradients only, and they were right on that model, but anything you build on top
 > that uses second derivatives is exposed. Details: [docs/gpu-notes.md](docs/gpu-notes.md).
+
+## What's new in 0.4
+
+Every addition is opt-in and the defaults are those of 0.3.2. The draws differ from 0.3.2's only through the JAX update in
+the lock (0.12; at rounding level in float64), and, with delayed rejection on, in retried transitions: the retries now
+draw their own random numbers.
+
+- **Diagnostics in the output.** `idata.attrs["diagnostics"]`: Pathfinder's L-BFGS iterations against its cap, and the
+  divergences by the energy at the trajectory's end (left the support, arithmetic failure, step too large), with
+  warnings for a capped L-BFGS, NaN divergences, and float32 matrix products in TF32 on Ampere and later GPUs
+  ([Troubleshooting](docs/troubleshooting.md#divergences)).
+- **Delayed rejection compiles in linear time.** A stage's proposal and its ghosts run in one loop: the 4-stage program
+  compiled in 24.5 s instead of 91.4 s on a GPU, with the same draws. Retry rules beyond divergences (experimental)
+  ([Choosing settings](docs/choosing-settings.md#retry-rules-experimental)).
+- **A Fisher-divergence metric at metric updates (experimental)**, from the chains' positions and gradients: large gains
+  when the chains are few for the dimension ([Metrics](docs/metrics.md)).
+- **Reading R-hat with many chains**: why R-hat above 1.01 is expected for slow coordinates with ~1,000 short chains, and
+  the check that tells slow mixing from chains that disagree ([R-hat](docs/rhat-many-chains.md)).
+- **Several leapfrog steps per loop pass** (`leapfrog_unroll`): about 7% less sampling time on a GPU at 4 steps per
+  pass, for a longer first compile ([Performance](docs/performance.md#several-leapfrog-steps-per-loop-pass-opt-in)).
+- `pfcheeshmc.__version__`; JAX 0.12 in the lock; `pixi run -e docs docs` builds the documentation.
 
 ## Highlights
 
