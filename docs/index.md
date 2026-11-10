@@ -29,6 +29,7 @@ quickstart
 how-it-works
 choosing-settings
 metrics
+rhat-many-chains
 performance
 case-study-gev-regression
 compile-and-cache
