@@ -103,6 +103,9 @@ def chees_warmup_with_progress(
                              #     warmup fractions in (0, 1) at which the metric is re-estimated from
                              #     the chains (`compiled.ensemble_metric`) and the step size restarted
     metric_shrinkage=None,     # weight of the old metric in each re-estimate; None = 5 / (chains + 5)
+    metric_estimator="cov",    # the re-estimate: "cov" (the chains' covariance), "fisher" or "fisher_lowrank"
+                             #     (positions and gradients, `compiled.ensemble_metric_fisher`)
+    metric_max_rank=10,        # "fisher_lowrank": directions beyond the diagonal
 ):
     """ChEES warmup, as host-driven chunks of ONE jitted program (`compiled.warmup_chunk`).
 
@@ -118,7 +121,9 @@ def chees_warmup_with_progress(
     spread Pathfinder under-reads), the frozen metric keeps that direction slow for the whole run. At each
     fraction ``f`` the warmup stops after ``round(f * num_steps)`` steps, the metric becomes the covariance
     of the current chain positions (dense or diagonal like the metric passed in), shrunk towards the old
-    metric by ``metric_shrinkage``, and the step size restarts at a fresh doubling/halving search from the
+    metric by ``metric_shrinkage`` (``metric_estimator="fisher"`` or ``"fisher_lowrank"``: the metric that minimises
+    the Fisher divergence, from the chains' positions and log-density gradients, `compiled.ensemble_metric_fisher`),
+    and the step size restarts at a fresh doubling/halving search from the
     current positions with the new metric (Stan restarts its dual averaging after each metric window for
     the same reason: the old step size belongs to the old metric). The trajectory length and its Adam state
     carry on. An estimate that is not finite and positive definite is not used. The frozen metric the
@@ -172,6 +177,15 @@ def chees_warmup_with_progress(
             if not 0.0 < float(f) < 1.0:
                 raise ValueError(f"metric_updates fractions must lie in (0, 1), got {f}")
         boundaries = sorted({int(round(float(f) * num_steps)) for f in metric_updates} - {0, num_steps})
+    if metric_estimator not in _compiled.METRIC_ESTIMATORS:
+        raise ValueError(f"metric_estimator must be one of {_compiled.METRIC_ESTIMATORS}, got {metric_estimator!r}")
+    if metric_estimator != "cov" and not metric_updates:
+        raise ValueError(f"metric_estimator={metric_estimator!r} needs metric_updates: the estimator is used only at "
+                         "a metric update")
+    if metric_estimator == "fisher_lowrank" and imm_arr.ndim != 2:
+        raise ValueError("metric_estimator='fisher_lowrank' needs a dense metric; this one is diagonal")
+    if isinstance(metric_max_rank, bool) or not isinstance(metric_max_rank, (int, np.integer)) or metric_max_rank < 1:
+        raise ValueError(f"metric_max_rank must be an integer >= 1, got {metric_max_rank!r}")
     if metric_shrinkage is None:
         metric_shrinkage = 5.0 / (_compiled._num_chains(positions) + 5.0)
     if not 0.0 <= float(metric_shrinkage) <= 1.0:
@@ -297,7 +311,12 @@ def chees_warmup_with_progress(
                 if b == num_steps:
                     break
                 states, astate = carry
-                new_imm, used = _compiled.ensemble_metric(states.position, imm_arr, float(metric_shrinkage))
+                if metric_estimator == "cov":
+                    new_imm, used = _compiled.ensemble_metric(states.position, imm_arr, float(metric_shrinkage))
+                else:
+                    new_imm, used = _compiled.ensemble_metric_fisher(
+                        states.position, states.logdensity_grad, imm_arr, float(metric_shrinkage),
+                        estimator=metric_estimator, max_rank=int(metric_max_rank))
                 used = bool(used)
                 eps_new = float("nan")
                 if used:

@@ -551,6 +551,67 @@ def ensemble_metric(positions, old, shrinkage):
     return jnp.where(good, new, old).astype(old.dtype), good
 
 
+# Estimators of the metric re-estimated at a metric update (`chees_kwargs["metric_estimator"]`).
+METRIC_ESTIMATORS = ("cov", "fisher", "fisher_lowrank")
+
+
+@partial(jax.jit, static_argnames=("estimator", "max_rank"))
+def ensemble_metric_fisher(positions, grads, old, shrinkage, *, estimator, max_rank=10):
+    """The metric re-estimated from the chains' positions AND log-density gradients, shrunk like `ensemble_metric`.
+
+    Seyboldt, Carlson & Carpenter (2026): the metric that minimises the Fisher divergence between the target and a
+    Gaussian, as BlackJAX 1.7 estimates it (`blackjax.adaptation.metric_estimators`):
+
+    * ``"fisher"``: per coordinate ``sqrt(Var[x] / Var[grad log p])`` (`fisher_score_diagonal`), the diagonal; a 2-D
+      ``old`` gets it as a diagonal matrix;
+    * ``"fisher_lowrank"``: ``diag(sigma) (I + U (Lambda - I) U^T) diag(sigma)``, a diagonal plus ``max_rank`` directions
+      (`fisher_score_low_rank`, nutpie's gamma = 1e-5 and cutoff = 2), as a dense matrix; ``old`` must be 2-D.
+
+    For a Gaussian target either is exact from any sample that spans it (the diagonal one for a diagonal covariance):
+    the gradients carry the curvature the positions alone estimate with Monte Carlo error.
+
+    ``positions`` and ``grads`` are the warmup carry's dicts of ``(chains, ...)`` arrays (``states.position``,
+    ``states.logdensity_grad``), raveled as the kernel ravels its state, so the result is in kernel order like ``old``.
+    A chain with a non-finite coordinate or gradient is left out. BlackJAX's estimators take every row they are given,
+    so the usable rows are centred on their own means and the others set to zero: the estimators' moments are then
+    ratios of sums over the usable rows, and the zero rows add nothing to their products, which gives the estimate of
+    the usable rows alone. ``old`` is returned unchanged (and the flag is False) unless the shrunk estimate is finite
+    and positive definite and at least two chains are usable.
+    """
+    x = jax.vmap(lambda p: ravel_pytree(p)[0])(positions)
+    g = jax.vmap(lambda p: ravel_pytree(p)[0])(grads)
+    ok = jnp.isfinite(x).all(axis=1) & jnp.isfinite(g).all(axis=1)
+    n = jnp.sum(ok)
+
+    def centred(a):
+        a = jnp.where(ok[:, None], a, 0.0)
+        return jnp.where(ok[:, None], a - jnp.sum(a, axis=0) / n, 0.0)
+
+    xc, gc = centred(x), centred(g)
+    old = jnp.asarray(old)
+    if estimator == "fisher":
+        est = bj.adaptation.metric_estimators.fisher_score_diagonal(xc, gc)
+        if old.ndim == 2:
+            est = jnp.diag(est)
+    elif estimator == "fisher_lowrank":
+        if old.ndim != 2:
+            raise ValueError("metric_estimator='fisher_lowrank' needs a dense metric")
+        lr = bj.adaptation.metric_estimators.fisher_score_low_rank(xc, gc, min(int(max_rank), x.shape[1]))
+        d = lr.sigma.shape[0]
+        est = (lr.sigma[:, None] * (jnp.eye(d, dtype=lr.sigma.dtype) + (lr.U * (lr.lam - 1.0)) @ lr.U.T)
+               * lr.sigma[None, :])
+        est = 0.5 * (est + est.T)
+    else:
+        raise ValueError(f"ensemble_metric_fisher: estimator must be 'fisher' or 'fisher_lowrank', got {estimator!r}")
+    new = (1.0 - shrinkage) * est.astype(old.dtype) + shrinkage * old
+    if old.ndim == 2:
+        good = jnp.isfinite(jnp.linalg.cholesky(new)).all()
+    else:
+        good = jnp.isfinite(new).all() & (new > 0.0).all()
+    good = good & (n >= 2)
+    return jnp.where(good, new, old).astype(old.dtype), good
+
+
 @jax.jit
 def restart_step_size(astate, step_size):
     """The adapter state with its step size restarted at ``step_size``: a fresh dual-averaging state there,
