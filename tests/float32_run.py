@@ -82,7 +82,7 @@ for source in option("--init-sources", "pf").split(","):
     meta["config"][source] = idata.attrs["config"]
     arrays[f"{source}/config"] = np.array(idata.attrs["config"])
     for k, v in idata.attrs.items():
-        if k != "config" and not k.startswith("frozen_inverse_mass_matrix"):   # as make_golden._collect
+        if k not in ("config", "pfcheeshmc_version") and not k.startswith("frozen_inverse_mass_matrix"):   # as make_golden._collect
             arrays[f"{source}/attrs/{k}"] = np.asarray(v)
 meta["x64_end"] = bool(jax.config.jax_enable_x64)
 np.savez(out, meta=np.array(json.dumps(meta)), **arrays)

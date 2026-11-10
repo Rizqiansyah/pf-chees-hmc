@@ -1463,6 +1463,10 @@ class PfCheesHMC:
             idata.attrs["sampling_retry_grad_evals_per_chain"] = int(retry_n.sum() // retry_n.shape[1])
         # R2-WP2: the resolved configuration, one JSON string (key list: see _config_record).
         idata.attrs["config"] = self._config_record(idata, chees_parameters, eps0)
+        # Which release made the draws (installed metadata; "unknown" for an uninstalled source tree). Not in the
+        # golden files (tests/make_golden.py:_collect), so a version bump does not change them.
+        from . import __version__ as _pkg_version
+        idata.attrs["pfcheeshmc_version"] = _pkg_version
         return idata
 
     def _config_record(self, idata, chees_parameters, eps0) -> str:
