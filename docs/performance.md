@@ -49,6 +49,27 @@ txt = jax.jit(jax.grad(logp)).lower(x).compile().as_text()
 
 A loop whose line carries `known_trip_count` has a fixed number of passes and needs no copy.
 
+## Several leapfrog steps per loop pass (opt-in)
+
+```python
+dynamic_hmc_kwargs={"leapfrog_unroll": 4}
+```
+
+runs the sampling phase's leapfrog steps four per pass of the trajectory loop (then the remainder one by one), so the loop
+condition goes to the host about a quarter as often. The steps are the same; the draws agree with the default to rounding
+(XLA may fuse an unrolled pass differently), with the same accept decisions on the CPU. Delayed rejection's retries are
+unrolled too. Measured on a GPU (an upper-bounded GEV regression, float32, 1,024 chains, 300 draws from one warmed-up
+state, three repeats, spread under 1%):
+
+| steps per pass | sampling time, two models | extra compile time, no retries | with 4-stage delayed rejection |
+|---|---|---|---|
+| 2 | -3.9% / -6.0% | +7.5 s | |
+| 4 | -7.4% / -7.3% | +15 s | -7.8%, +81 s compile |
+| 8 | -7.1% / -7.8% | +31 s | |
+
+The compiled program grows with the unrolling (once per loop it contains), and the [disk cache](compile-and-cache.md)
+keeps it, so the time is paid once per model shape. Use 4 for long runs on a GPU; on a CPU the loop test costs nothing.
+
 ## When these numbers were taken
 
 The tables were measured on 2026-10-23 and 2026-10-24, before 0.3.0. 0.3.0 leaves the draws at default settings unchanged
