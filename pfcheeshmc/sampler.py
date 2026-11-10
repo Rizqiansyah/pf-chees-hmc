@@ -55,7 +55,7 @@ _PF_LBFGS_OPTIONS = {"pf_maxiter": "maxiter", "pf_maxcor": "maxcor", "pf_maxls":
 _STEP_SIZE_OPTIONS = _COMMON_OPTIONS | frozenset({"eps0_probes"})
 _CHEES_OPTIONS = _COMMON_OPTIONS | frozenset({
     "draws", "adam_lr", "target_accept", "max_leapfrog_steps", "warmup_stop", "progressbar",
-    "metric_updates", "metric_shrinkage"})
+    "metric_updates", "metric_shrinkage", "metric_estimator", "metric_max_rank"})
 _DYNAMIC_HMC_OPTIONS = _COMMON_OPTIONS | frozenset({"draws", "progressbar", "delayed_rejection"})
 # Delayed rejection (opt-in): a retry rate above this share of transitions is a warning (see `_run_dynamic_hmc`).
 DR_RETRY_WARN = 1e-3
@@ -1058,7 +1058,10 @@ class PfCheesHMC:
         ``draws`` steps), ``metric_updates`` (warmup fractions at which the metric is re-estimated from
         the chains and the step size restarted, e.g. ``(0.25, 0.5, 0.75)``; absent by default, so the
         Pathfinder metric is kept), ``metric_shrinkage`` (weight of the old metric in each re-estimate,
-        default ``5 / (chains + 5)``), ``progressbar``, ``seed`` and ``chains``. Any other key raises a
+        default ``5 / (chains + 5)``), ``metric_estimator`` (the re-estimate at an update: ``"cov"``, the default,
+        the chains' covariance; ``"fisher"`` or ``"fisher_lowrank"``, the metric that minimises the Fisher divergence,
+        from the chains' positions and gradients), ``metric_max_rank`` (``"fisher_lowrank"``: directions beyond the
+        diagonal, default 10), ``progressbar``, ``seed`` and ``chains``. Any other key raises a
         TypeError that names it. See `chees_warmup_with_progress` for what an update does.
         """
         _check_options("chees_kwargs", kwargs, _CHEES_OPTIONS)
@@ -1084,6 +1087,12 @@ class PfCheesHMC:
             "metric_updates": (None if kwargs.get("metric_updates") is None
                                else [float(f) for f in kwargs["metric_updates"]]),
         }
+        # Recorded only when not the default, so a default run's config is unchanged (the golden files hold it).
+        estimator = kwargs.get("metric_estimator", "cov")
+        if estimator != "cov":
+            self._resolved["warmup"]["metric_estimator"] = estimator
+            if estimator == "fisher_lowrank":
+                self._resolved["warmup"]["metric_max_rank"] = int(kwargs.get("metric_max_rank", 10))
         # Stage-scoped key. This site used to be `_, key_warm = jax.random.split(jax.random.key(seed))`,
         # which produced exactly the key the sampling stage derived, so sampling replayed the warmup
         # key stream's child. Stage numbers are part of the key now: 1 = warmup, 2 = sampling.
@@ -1104,6 +1113,8 @@ class PfCheesHMC:
             stop_rule=kwargs.get("warmup_stop", None),
             metric_updates=kwargs.get("metric_updates", None),
             metric_shrinkage=kwargs.get("metric_shrinkage", None),
+            metric_estimator=kwargs.get("metric_estimator", "cov"),
+            metric_max_rank=kwargs.get("metric_max_rank", 10),
         )
         self._resolved["warmup"]["metric_update_log"] = chees_parameters.get("metric_updates", [])
         if hasattr(chees_info, "info"):
@@ -1592,6 +1603,7 @@ class PfCheesHMC:
             "warmup_stop": wu["warmup_stop"],
             "metric_updates": wu["metric_updates"],
             "metric_update_log": wu["metric_update_log"],
+            **{k: wu[k] for k in ("metric_estimator", "metric_max_rank") if k in wu},
             "chains": sm["chains"],
             "num_draws": sm["num_draws"],
             "frozen_step_size": idata.attrs["frozen_step_size"],
