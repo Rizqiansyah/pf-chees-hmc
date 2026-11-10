@@ -13,6 +13,11 @@ MPLBACKEND = "Agg"
 [dependencies]
 # 3.13 to match BlackJAX 1.7.x and the author's own notebook env
 python = "3.13.*"
+# BLAS/LAPACK for PyTensor's C backend (PyMC's initialisation and the tests that compare against it): without
+# them the link fails (`cannot find -llapack`) on a machine without system BLAS.
+libblas = ">=3.11.0,<4"
+libcblas = ">=3.11.0,<4"
+liblapack = ">=3.11.0,<4"
 
 [pypi-dependencies]
 # numpy 2.5 removed np.row_stack; numba<=0.66 (pytensor's cap) overloads it at

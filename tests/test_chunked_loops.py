@@ -45,6 +45,18 @@ OBS = np.linspace(1.0, -1.0, D_THETA)
 OBS_SE = np.linspace(1.0, 0.4, D_THETA)
 
 
+
+def assert_same_run(a, b, msg):
+    """The same run: random stream, step counts, divergences and every other non-float array equal; floats equal up
+    to rounding. Programs compiled for different chunk lengths may contract or vectorise a sum differently (JAX 0.12
+    on the CPU: up to 4e-15 relative in a few percent of the draws); the stream bug this file guards against shows
+    as differences of order one."""
+    a, b = np.asarray(a), np.asarray(b)
+    if a.dtype.kind == "f":
+        np.testing.assert_allclose(a, b, rtol=1e-12, atol=0, err_msg=msg)
+    else:
+        assert np.array_equal(a, b), msg
+
 def analytic():
     """Posterior mean and variance of each coordinate: theta_j ~ N(mu_j, s_j^2), y_j ~ N(theta_j, se_j^2)."""
     precision = 1.0 / PRIOR_SD ** 2 + 1.0 / OBS_SE ** 2
@@ -145,7 +157,7 @@ def test_draws_do_not_depend_on_the_chunk_sizes(monkeypatch, path):
         set_chunks(monkeypatch, *sizes)
         got = arrays(run(**kw))
         for k in reference:
-            assert np.array_equal(reference[k], got[k]), f"{path} chunks {sizes}: {k} differs"
+            assert_same_run(reference[k], got[k], f"{path} chunks {sizes}: {k} differs")
 
 
 def test_draws_do_not_depend_on_the_stop_rule_block():
@@ -373,4 +385,4 @@ def test_the_transform_pads_the_last_chunk_and_equals_one_big_call(monkeypatch):
     assert chunked.keys() == whole.keys()
     for k in whole:
         assert whole[k].shape[:2] == (4, 13)
-        assert np.array_equal(chunked[k], whole[k]), k
+        assert_same_run(chunked[k], whole[k], k)

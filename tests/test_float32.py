@@ -180,7 +180,7 @@ def test_the_stratified_pick_never_starts_a_chain_at_a_non_finite_density():
 
 
 def test_erfcx_in_float32_matches_scipy_over_its_domain():
-    """JAX's own erfcx is 0 (or NaN) for float32 in [9.19455, 9.41928]; the guard repairs it, and the band that
+    """JAX's own erfcx before 0.12 is 0 (or NaN) for float32 in [9.19455, 9.41928]; the guard repairs it, and the band that
     `lifted._band` gives for float32 is that one. Away from the band JAX is within 4e-6 of SciPy."""
     from pfcheeshmc import lifted
 
@@ -193,6 +193,9 @@ def test_erfcx_in_float32_matches_scipy_over_its_domain():
     assert got.dtype == np.float32
     np.testing.assert_allclose(got, want, rtol=4e-6, atol=0)
     wrong = ~np.isclose(stock, want, rtol=1e-5)
+    if tuple(int(v) for v in jax.__version__.split(".")[:2]) >= (0, 12):
+        assert not wrong.any()      # JAX 0.12.0.1 fixed it (0.11.2 had the band); the guard stays for older JAX
+        return
     assert wrong.any() and 9.18 < x[wrong].min() and x[wrong].max() < 9.43, "premise: stock JAX is wrong in the band"
     lo, hi = lifted._band(np.dtype("float32"))
     assert lo < x[wrong].min() and x[wrong].max() < hi

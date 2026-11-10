@@ -574,6 +574,10 @@ def test_structurally_identical_models_share_one_function_object():
 
 # ---------------------------------------------------------------- erfcx
 
+# JAX's own erfcx is right in the band from 0.12 on (0.12.0.1 checked; 0.11.2 is wrong). The guard stays while
+# pyproject allows older JAX; on a fixed JAX it changes nothing (the series and JAX agree there).
+JAX_FIXED_ERFCX = tuple(int(v) for v in jax.__version__.split(".")[:2]) >= (0, 12)
+
 def _band_grid():
     return np.unique(np.concatenate([
         np.linspace(-20, 40, 60001),
@@ -589,10 +593,14 @@ def test_erfcx_matches_scipy_everywhere_including_the_guard_band():
     want = sps.erfcx(x)
     assert np.all(np.isfinite(want))
     np.testing.assert_allclose(got, want, rtol=1e-12, atol=0)
-    # the premise: stock JAX is wrong (exactly 0) in the band, which is what the guard repairs
+    # the premise: stock JAX before 0.12 is wrong (exactly 0) in the band, which is what the guard repairs;
+    # JAX 0.12.0.1 is right there (value and gradient), 0.11.2 is not
     stock = np.asarray(jax.jit(jax.scipy.special.erfcx)(jnp.asarray(x)))
     wrong = np.abs(stock - want) > 1e-10 * want
-    assert wrong.any() and x[wrong].min() > 26.54 and x[wrong].max() < 26.65 and np.all(stock[wrong] == 0)
+    if JAX_FIXED_ERFCX:
+        assert not wrong.any()
+    else:
+        assert wrong.any() and x[wrong].min() > 26.54 and x[wrong].max() < 26.65 and np.all(stock[wrong] == 0)
 
 
 def test_erfcx_float32_guard_band():

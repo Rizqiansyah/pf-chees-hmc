@@ -156,8 +156,9 @@ gradient is wrong there too.
 `_erfcx_guarded` replaces the band with the asymptotic series (`_erfcx_series`, nine terms; three leave a relative error of
 5e-9). `_band(dtype)` derives the edges from the dtype and widens each by 0.1%; float16 and bfloat16 share the float32 band
 because JAX upcasts them. The `jnp.where` pattern is safe: JAX's `erfcx` is fed 0 inside the band and the series is fed the
-band's centre outside it, so neither branch can produce a NaN value or gradient for the other. Remove the guard and register
-JAX's function directly once JAX is fixed (`tests/test_lifted.py` fails without the guard).
+band's centre outside it, so neither branch can produce a NaN value or gradient for the other. JAX 0.12.0.1 is right in the band (value and gradient; 0.11.2 is not), so the guard only matters for the older JAX
+versions `pyproject.toml` still allows; on a fixed JAX the series and JAX's function agree there. Remove the guard and
+register JAX's function directly once the floor is `jax>=0.12` (`tests/test_lifted.py` fails without the guard on older JAX).
 
 ## 7. float32
 
