@@ -183,13 +183,20 @@ def pathfinder_fit(approximate, fn, names, values, key, initial_position, lbfgs=
     static argument, so a replaced function is its own cache entry). ``lbfgs`` is a sorted tuple of
     ``(name, value)`` pairs among ``num_samples``, ``maxiter``, ``maxcor``, ``maxls``, ``gtol`` and ``ftol``
     (static: they are Python constants of the trace, so another value is another program); the ones not
-    given keep BlackJAX's defaults. Only the fitted `PathfinderState` is returned; the traversed path
-    (``maxiter + 1`` states) is not kept.
+    given keep BlackJAX's defaults. Returns the fitted `PathfinderState` and the number of L-BFGS iterations that
+    ran; the traversed path (``maxiter + 1`` states) is not kept.
+
+    BlackJAX drops L-BFGS's own iteration count. Once L-BFGS stops, its scan repeats the last row of the path (the
+    no-op branch of ``_minimize_lbfgs``), so the iterations that ran are the rows that differ from the row before
+    (NaN equal to NaN). A count equal to ``maxiter`` means L-BFGS used every iteration it was given.
     """
-    state, _ = approximate(
+    state, info = approximate(
         rng_key=key, initial_position=initial_position, logdensity_fn=_logdensity(fn, names, values),
         **dict(lbfgs))
-    return state
+    flat = jax.vmap(lambda p: ravel_pytree(p)[0])(info.path.position)
+    a, b = flat[1:], flat[:-1]
+    same = (a == b) | (jnp.isnan(a) & jnp.isnan(b))
+    return state, jnp.sum(~jnp.all(same, axis=1))
 
 
 @partial(jax.jit, static_argnames=("sample", "num_samples"))

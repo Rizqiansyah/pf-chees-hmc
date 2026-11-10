@@ -73,7 +73,7 @@ def _fit(model_name):
         pos, imm = s._run_pathfinder(chains=8, draws=32, seed=1, imm_source="pf_closed", pm_tune=50)
     finally:
         compiled.pathfinder_fit = real
-    st = box["state"]
+    st, _ = box["state"]          # (the fitted state, the L-BFGS iterations that ran)
     draws, _ = bj.vi.pathfinder.sample(jax.random.key(0), st, 4)
     return s, st, np.asarray(imm), np.asarray(s._kernel_permutation(draws))
 

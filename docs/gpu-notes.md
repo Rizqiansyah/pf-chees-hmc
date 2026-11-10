@@ -68,6 +68,9 @@ JAX_DEFAULT_MATMUL_PRECISION=highest
 before JAX starts (or `jax.config.update("jax_default_matmul_precision", "highest")`) for full float32 products. On that
 model it cost 3% per gradient. float64 runs are not affected. See also [float32](float32.md).
 
+`sample_pf_chees_hmc` warns (`RuntimeWarning`) when it starts a float32 run on a GPU of compute capability 8.0 or above
+with the precision unset.
+
 ## Shared GPUs
 
 JAX pre-allocates most of the GPU memory at import. On a shared card set `XLA_PYTHON_CLIENT_PREALLOCATE=false` (the pixi

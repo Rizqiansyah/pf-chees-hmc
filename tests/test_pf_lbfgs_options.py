@@ -47,7 +47,7 @@ def test_settings_reach_approximate_and_change_the_fit(monkeypatch):
     s = PfCheesHMC(build_model("gev"), seed=1)
     s._run_pathfinder(chains=8, draws=32, seed=1, pm_tune=50)
     s._run_pathfinder(chains=8, draws=32, seed=1, pm_tune=50, pf_maxiter=2, pf_ftol=1e-3, pf_elbo_samples=20)
-    (k0, st0), (k1, st1) = calls
+    (k0, (st0, _)), (k1, (st1, _)) = calls
     assert k1 == {"lbfgs": (("ftol", 1e-3), ("maxiter", 2), ("num_samples", 20))}
     assert not np.allclose(np.concatenate([np.ravel(x) for x in st0.position]),
                            np.concatenate([np.ravel(x) for x in st1.position]))
