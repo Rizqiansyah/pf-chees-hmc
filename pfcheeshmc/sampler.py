@@ -56,7 +56,7 @@ _STEP_SIZE_OPTIONS = _COMMON_OPTIONS | frozenset({"eps0_probes"})
 _CHEES_OPTIONS = _COMMON_OPTIONS | frozenset({
     "draws", "adam_lr", "target_accept", "max_leapfrog_steps", "warmup_stop", "progressbar",
     "metric_updates", "metric_shrinkage", "metric_estimator", "metric_max_rank"})
-_DYNAMIC_HMC_OPTIONS = _COMMON_OPTIONS | frozenset({"draws", "progressbar", "delayed_rejection"})
+_DYNAMIC_HMC_OPTIONS = _COMMON_OPTIONS | frozenset({"draws", "progressbar", "delayed_rejection", "leapfrog_unroll"})
 # Delayed rejection (opt-in): a retry rate above this share of transitions is a warning (see `_run_dynamic_hmc`).
 DR_RETRY_WARN = 1e-3
 _SAMPLE_OPTIONS = frozenset({"chains", "draws"})
@@ -1183,8 +1183,15 @@ class PfCheesHMC:
         dr_retry = "divergent"
         if dr is not None and "retry" in dr:
             dr_retry = dr["retry"] if dr["retry"] == "probabilistic" else ("energy_above", dr["retry"]["energy_above"])
+        # Leapfrog steps per loop pass (opt-in; `compiled.unrolled_integration`): the same draws, fewer loop tests.
+        unroll = kwargs.get("leapfrog_unroll", 1)
+        if isinstance(unroll, bool) or not isinstance(unroll, (int, np.integer)) or unroll < 1:
+            raise ValueError(f"leapfrog_unroll must be an integer >= 1, got {unroll!r}")
+        unroll = int(unroll)
         self._resolved["sampling"] = {"seed": int(kwargs["seed"]), "chains": int(num_chains),
                                       "num_draws": int(num_draws), "delayed_rejection": dr}
+        if unroll != 1:       # recorded only when set, so a default run's config is unchanged
+            self._resolved["sampling"]["leapfrog_unroll"] = unroll
 
         ld = self._logdensity()
         imm = jnp.asarray(inverse_mass_matrix)
@@ -1226,7 +1233,7 @@ class PfCheesHMC:
                 ld.fn, ld.names, ld.values, state, imm, step_size, traj_len_adj, key_sample,
                 np.int32(start), np.int32(n), chunk=compiled.SAMPLE_CHUNK, jitter_amount=jitter_amount,
                 dr_factor=None if dr is None else dr["factor"], dr_stages=2 if dr is None else dr["stages"],
-                dr_retry=dr_retry)
+                dr_retry=dr_retry, unroll=unroll)
 
         dhmc_state = compiled.run_chunks(call, chees_states, num_draws, compiled.SAMPLE_CHUNK, consume)
         if hmc_bar is not None:
@@ -1634,6 +1641,8 @@ class PfCheesHMC:
         }
         if sm["delayed_rejection"] is not None:   # recorded only when on, so a default run's record is unchanged
             cfg["delayed_rejection"] = sm["delayed_rejection"]
+        if "leapfrog_unroll" in sm:
+            cfg["leapfrog_unroll"] = sm["leapfrog_unroll"]
         return json.dumps(cfg, sort_keys=True, default=_json_default)
     
 

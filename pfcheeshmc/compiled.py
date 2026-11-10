@@ -41,6 +41,7 @@ import blackjax.adaptation.chees_adaptation as chees_adaptation
 import blackjax.mcmc.dynamic_hmc as dynamic_hmc
 import blackjax.mcmc.hmc as bj_hmc
 import blackjax.mcmc.integrators as bj_integrators
+import blackjax.mcmc.proposal as bj_proposal
 import blackjax.mcmc.metrics as bj_metrics
 import blackjax.mcmc.trajectory as bj_trajectory
 import blackjax.optimizers.dual_averaging as dual_averaging
@@ -702,9 +703,60 @@ DR_RETRY_STREAM = DR_STREAM + 0x8000
 DR_RETRY_RULES = ("divergent", "energy_above", "probabilistic")
 
 
-@partial(jax.jit, static_argnames=_STATIC + ("chunk", "jitter_amount", "dr_factor", "dr_batch", "dr_stages", "dr_retry"))
+def unrolled_integration(integrator, unroll):
+    """``integrate(state, step_size, n)``: ``n`` steps of ``integrator``, ``unroll`` steps per loop pass: ``n // unroll``
+    passes of ``unroll`` steps, then ``n % unroll`` single steps, so no step is added. ``unroll = 1`` is BlackJAX's
+    `static_integration`.
+
+    Under ``vmap`` over chains with different ``n`` a loop runs to the largest count and tests its condition on every
+    pass; on a GPU that test is a device-to-host copy (log 11.26: about 5% of a leapfrog step's time). ``unroll`` steps
+    per pass make about ``n / unroll + unroll`` tests instead of ``n``."""
+    if unroll == 1:
+        return bj_trajectory.static_integration(integrator)
+
+    def integrate(z, step_size, n):
+        def block(_, s):
+            for _ in range(unroll):
+                s = integrator(s, step_size)
+            return s
+        z = lax.fori_loop(0, n // unroll, block, z)
+        return lax.fori_loop(0, n % unroll, lambda _, s: integrator(s, step_size), z)
+
+    return integrate
+
+
+def unrolled_hmc_proposal(unroll):
+    """BlackJAX's `hmc.hmc_proposal` (the same code) with the trajectory from `unrolled_integration`; for
+    ``dynamic_hmc.build_kernel(build_proposal=...)``. ``unroll = 1`` is BlackJAX's own function."""
+    if unroll == 1:
+        return bj_hmc.hmc_proposal
+
+    def build(integrator, kinetic_energy, step_size, num_integration_steps=1, divergence_threshold=1000):
+        build_trajectory = unrolled_integration(integrator, unroll)
+        hmc_energy_fn = bj_trajectory.hmc_energy(kinetic_energy)
+
+        def generate(rng_key, state):
+            end_state = build_trajectory(state, step_size, num_integration_steps)
+            end_state = bj_hmc.flip_momentum(end_state)
+            proposal_energy = hmc_energy_fn(state)
+            new_energy = hmc_energy_fn(end_state)
+            delta_energy = bj_proposal.safe_energy_diff(proposal_energy, new_energy)
+            is_diverging = -delta_energy > divergence_threshold
+            sampled_state, info = bj_proposal.static_binomial_sampling(rng_key, delta_energy, state, end_state)
+            do_accept, p_accept, other_proposal_info = info
+            info = bj_hmc.HMCInfo(state.momentum, p_accept, do_accept, is_diverging, new_energy, end_state,
+                                  num_integration_steps)
+            return sampled_state, info, other_proposal_info
+
+        return generate
+
+    return build
+
+
+@partial(jax.jit, static_argnames=_STATIC + ("chunk", "jitter_amount", "dr_factor", "dr_batch", "dr_stages", "dr_retry",
+                                             "unroll"))
 def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, traj_len_adj, key, start, n, *,
-                   chunk, jitter_amount, dr_factor=None, dr_batch=None, dr_stages=2, dr_retry="divergent"):
+                   chunk, jitter_amount, dr_factor=None, dr_batch=None, dr_stages=2, dr_retry="divergent", unroll=1):
     """``chunk`` dynamic-HMC draws (the first ``n`` real) from ``state`` (a batch of `DynamicHMCState`).
 
     The frozen step size, metric and trajectory-length adjustment are arguments of the kernel call, as
@@ -712,12 +764,14 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
     ``(state, (SampledState, SampledInfo))``, the second the per-draw stack (rows ``>= n`` are zeros).
 
     ``dr_factor`` (opt-in, an integer a >= 2): delayed rejection on divergence (`delayed_rejection_step`).
-    None runs BlackJAX's kernel alone, the same program as before the option existed.
+    None runs BlackJAX's kernel alone, the same program as before the option existed. ``unroll`` (opt-in, default 1):
+    leapfrog steps per loop pass (`unrolled_integration`), in the trajectory and in the retries; 1 is BlackJAX's kernel.
     """
     ld = _logdensity(fn, names, values)
     kernel = dynamic_hmc.build_kernel(
         next_random_arg_fn=_next_random_arg,
-        integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount))
+        integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount),
+        **({} if unroll == 1 else {"build_proposal": unrolled_hmc_proposal(unroll)}))
     imm = jnp.asarray(inverse_mass_matrix)
     num_chains = _num_chains(state.position)
 
@@ -729,7 +783,8 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
         retry = ()
         if dr_factor is not None:
             new_state, retry = delayed_rejection_step(ld, imm, step_size, dr_factor, keys, s, new_state, info,
-                                                      batch=dr_batch, stages=dr_stages, retry=dr_retry)
+                                                      batch=dr_batch, stages=dr_stages, retry=dr_retry,
+                                                      unroll=unroll)
         # Projection: keep only what _to_inference_data reads (position + logdensity for the
         # posterior/lp, and the five sample_stats fields). momentum, proposal.position,
         # proposal.momentum and proposal.logdensity_grad duplicate state leaves and are the
@@ -760,7 +815,7 @@ def _log1m_exp(log_a):
 
 
 def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old, new, info,
-                           divergence_threshold=1000.0, batch=None, stages=2, retry="divergent"):
+                           divergence_threshold=1000.0, batch=None, stages=2, retry="divergent", unroll=1):
     """Later proposals of k-stage delayed-rejection HMC, on the chains whose earlier proposals diverged.
 
     Modi, Barnett & Carpenter (2023), "Delayed rejection Hamiltonian Monte Carlo for sampling multiscale
@@ -799,7 +854,7 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
     """
     batch = DR_BATCH if batch is None else batch
     metric = bj_metrics.default_metric(inverse_mass_matrix)
-    integrate = bj_trajectory.static_integration(bj_integrators.velocity_verlet(ld, metric.kinetic_energy))
+    integrate = unrolled_integration(bj_integrators.velocity_verlet(ld, metric.kinetic_energy), unroll)
     energy = bj_trajectory.hmc_energy(metric.kinetic_energy)
     n = info.num_integration_steps
     if retry == "divergent":
