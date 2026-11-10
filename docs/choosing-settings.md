@@ -79,7 +79,9 @@ accepted against 36).
 Later stages cost more per chain that reaches them: the proposal at stage `k` and the ghosts its acceptance needs take
 `a + 1`, `a^2 + a + 2` and `a^3 + a^2 + 2a + 4` trajectories at stages 2, 3 and 4 (9, 74 and 596 at `a = 8`). They run
 only where the stage before diverged, so in practice they are rare. Each stage enlarges the compiled sampling program
-once; it is then kept in the [disk cache](compile-and-cache.md). Measured on an upper-bounded GEV regression in float32
+once; it is then kept in the [disk cache](compile-and-cache.md). The compile time about doubles per stage, as the
+proposals and ghosts do (`2^k` integrations at stage `k`): on a CPU, cold, a 3-parameter GEV model compiled its sampling
+program in 0.6 s without retries and 1.5, 3.0 and 6.2 s with 2, 3 and 4 stages (a = 8). Measured on an upper-bounded GEV regression in float32
 on a GPU (1,024 chains x 1,000 draws): `{"factor": 8, "stages": 4}` took 25 to 123 first-stage divergences per run to
 none left, for at most 0.2% more gradients; the first run compiled for about 100 s in all.
 
