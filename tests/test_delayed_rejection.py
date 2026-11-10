@@ -71,7 +71,7 @@ def test_batch_size_does_not_change_the_draws():
 
 def test_invariance_test_has_power(monkeypatch):
     src = textwrap.dedent(inspect.getsource(compiled.delayed_rejection_step))
-    bad = src.replace("log_a = jnp.minimum(0.0, -dh + ghost_terms(y, k - 1, n_c) - s_x)", "log_a = jnp.minimum(0.0, -dh)")
+    bad = src.replace("log_a = jnp.minimum(0.0, -dh + ghost_terms_from(proposal_tree(k)[1], dhs, energy(y).dtype) - s_x)", "log_a = jnp.minimum(0.0, -dh)")
     assert bad != src
     ns = dict(vars(compiled))
     exec(bad, ns)
@@ -120,8 +120,8 @@ def test_three_stages_invariance():
 def test_three_stages_power(monkeypatch):
     """Dropping the ghost factors at the third stage only must break the law."""
     src = textwrap.dedent(inspect.getsource(compiled.delayed_rejection_step))
-    bad = src.replace("log_a = jnp.minimum(0.0, -dh + ghost_terms(y, k - 1, n_c) - s_x)",
-                      "log_a = jnp.minimum(0.0, -dh + jnp.where(k == 3, s_x, ghost_terms(y, k - 1, n_c)) - s_x)")
+    bad = src.replace("log_a = jnp.minimum(0.0, -dh + ghost_terms_from(proposal_tree(k)[1], dhs, energy(y).dtype) - s_x)",
+                      "log_a = jnp.minimum(0.0, -dh + jnp.where(k == 3, s_x, ghost_terms_from(proposal_tree(k)[1], dhs, energy(y).dtype)) - s_x)")
     assert bad != src
     ns = dict(vars(compiled))
     exec(bad, ns)
@@ -162,8 +162,8 @@ def test_four_stages_invariance():
 
 def test_four_stages_power(monkeypatch):
     """Dropping the ghost factors at the fourth stage only must break the law."""
-    wrong = _wrong_chunk(monkeypatch, "log_a = jnp.minimum(0.0, -dh + ghost_terms(y, k - 1, n_c) - s_x)",
-                         "log_a = jnp.minimum(0.0, -dh + jnp.where(k == 4, s_x, ghost_terms(y, k - 1, n_c)) - s_x)",
+    wrong = _wrong_chunk(monkeypatch, "log_a = jnp.minimum(0.0, -dh + ghost_terms_from(proposal_tree(k)[1], dhs, energy(y).dtype) - s_x)",
+                         "log_a = jnp.minimum(0.0, -dh + jnp.where(k == 4, s_x, ghost_terms_from(proposal_tree(k)[1], dhs, energy(y).dtype)) - s_x)",
                          "wrong4_chunk")
     x, _ = _final_draws(wrong, 2, stages=4, eps=EPS3)
     assert abs(_tail_z(x)) > 10
