@@ -23,7 +23,9 @@ The model can also be passed as the first argument: `sample_pf_chees_hmc(model, 
 `idata` is a normal `arviz.InferenceData`.
 
 - `posterior` is in problem space, including `pm.Deterministic` variables.
-- `sample_stats` has exactly `lp`, `diverging`, `acceptance_rate`, `is_accepted`, `energy` and `num_integration_steps`.
+- `sample_stats` has exactly `lp`, `diverging`, `acceptance_rate`, `is_accepted`, `energy` and `num_integration_steps`;
+  with [delayed rejection](choosing-settings.md#divergences-in-a-rare-region-delayed-rejection-opt-in) on, also `retried`, `retry_accepted`, `diverging_after_retry` and
+  `retry_integration_steps`.
   `lp` is the log-density of the sampled state, as PyMC's JAX samplers emit it (`tests/test_inference_data.py` pins this).
 - `idata.attrs` holds:
   - `config`: a JSON string of what every stage resolved (not only what was asked);

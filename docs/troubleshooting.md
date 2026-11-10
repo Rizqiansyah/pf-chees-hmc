@@ -19,6 +19,17 @@ Read `diverging` in `sample_stats`. The frozen step size and metric are in `idat
 replayed with the sampler's own settings. On the GPU, make the run bit-identical first
 ([GPU notes](gpu-notes.md#runs-at-the-same-seed-can-differ-on-the-gpu)).
 
+Then read `energy` at the divergent draws:
+
+- **`+inf`**: the proposal left the support (the log density is `-inf` there). If these are rare and sit at a hard edge
+  the posterior reaches only now and then, [delayed rejection](choosing-settings.md#divergences-in-a-rare-region-delayed-rejection-opt-in)
+  retries them with a smaller step and keeps the sampler exact.
+- **`NaN`**: the log density or its gradient failed to evaluate. Often that is the model's arithmetic (an overflow, a
+  function evaluated where it loses all digits, float32 rounding), which no step size fixes; find the term first.
+- **finite but large**: the step is too large for the curvature there.
+
+Divergences spread over the bulk mean the geometry or the model needs fixing, whichever kind they are.
+
 ## A `TypeError` naming an option
 
 A stage was given a key it does not read (or one that was removed). The message lists the valid keys.

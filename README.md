@@ -38,6 +38,9 @@ with pm.Model() as model:
   are kept on disk for the next process ([Compile once](docs/compile-and-cache.md)).
 - **Tunable for stiff posteriors.** Pathfinder's L-BFGS settings, four metric sources, and opt-in metric re-estimation
   during warmup ([Metrics](docs/metrics.md)).
+- **Exact retries at a rare hard edge.** Opt-in delayed rejection retries a divergent transition with smaller steps, up to
+  several stages, and stays exact (Modi, Barnett & Carpenter 2023); only the chains that diverged pay for it
+  ([Choosing settings](docs/choosing-settings.md#divergences-in-a-rare-region-delayed-rejection-opt-in)).
 - **Reproducible.** On the CPU, runs at the same seed are identical. On the GPU they can differ in the last bits but agree
   within Monte Carlo error; writing an index lookup as a one-hot product made them identical on the model measured
   ([GPU notes](docs/gpu-notes.md)).

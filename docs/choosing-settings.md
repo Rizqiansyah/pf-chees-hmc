@@ -75,3 +75,20 @@ gradient count: a step with any retry takes about `a + 1` trajectories longer, w
 retried. Example (1,024 chains, `a = 4`, retries on 10% of steps): gradients +0.06%, sampling time +30%, and the
 retry branch adds about 20 s of compilation. `a = 2` is cheaper but recovered fewer divergences there (6 of 101
 accepted against 36).
+
+Later stages cost more per chain that reaches them: the proposal at stage `k` and the ghosts its acceptance needs take
+`a + 1`, `a^2 + a + 2` and `a^3 + a^2 + 2a + 4` trajectories at stages 2, 3 and 4 (9, 74 and 596 at `a = 8`). They run
+only where the stage before diverged, so in practice they are rare. Each stage enlarges the compiled sampling program
+once; it is then kept in the [disk cache](compile-and-cache.md). Measured on an upper-bounded GEV regression in float32
+on a GPU (1,024 chains x 1,000 draws): `{"factor": 8, "stages": 4}` took 25 to 123 first-stage divergences per run to
+none left, for at most 0.2% more gradients; the first run compiled for about 100 s in all.
+
+Scope and checks:
+
+- Only the sampling phase retries. Warmup divergences are as without the option (warmup draws are not kept).
+- A retry is made only after a divergence; a merely rejected proposal is not retried. (Modi et al. also describe a
+  probabilistic retry rule, not implemented.)
+- The retry's acceptance test has its own random numbers (`compiled.DR_STREAM`), separate from the first stage's.
+- Tested for exactness with two, three and four stages in float64, two and three in float32
+  (`tests/test_delayed_rejection.py`: chains started at exact draws of a target with a hard edge keep its law; dropping
+  the ghost terms breaks it).
