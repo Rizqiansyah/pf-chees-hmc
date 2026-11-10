@@ -754,9 +754,10 @@ def unrolled_hmc_proposal(unroll):
 
 
 @partial(jax.jit, static_argnames=_STATIC + ("chunk", "jitter_amount", "dr_factor", "dr_batch", "dr_stages", "dr_retry",
-                                             "unroll"))
+                                             "unroll", "dr_ghost_loop"))
 def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, traj_len_adj, key, start, n, *,
-                   chunk, jitter_amount, dr_factor=None, dr_batch=None, dr_stages=2, dr_retry="divergent", unroll=1):
+                   chunk, jitter_amount, dr_factor=None, dr_batch=None, dr_stages=2, dr_retry="divergent", unroll=1,
+                   dr_ghost_loop=True):
     """``chunk`` dynamic-HMC draws (the first ``n`` real) from ``state`` (a batch of `DynamicHMCState`).
 
     The frozen step size, metric and trajectory-length adjustment are arguments of the kernel call, as
@@ -784,7 +785,7 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
         if dr_factor is not None:
             new_state, retry = delayed_rejection_step(ld, imm, step_size, dr_factor, keys, s, new_state, info,
                                                       batch=dr_batch, stages=dr_stages, retry=dr_retry,
-                                                      unroll=unroll)
+                                                      unroll=unroll, ghost_loop=dr_ghost_loop)
         # Projection: keep only what _to_inference_data reads (position + logdensity for the
         # posterior/lp, and the five sample_stats fields). momentum, proposal.position,
         # proposal.momentum and proposal.logdensity_grad duplicate state leaves and are the
@@ -815,7 +816,8 @@ def _log1m_exp(log_a):
 
 
 def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old, new, info,
-                           divergence_threshold=1000.0, batch=None, stages=2, retry="divergent", unroll=1):
+                           divergence_threshold=1000.0, batch=None, stages=2, retry="divergent", unroll=1,
+                           ghost_loop=True):
     """Later proposals of k-stage delayed-rejection HMC, on the chains whose earlier proposals diverged.
 
     Modi, Barnett & Carpenter (2023), "Delayed rejection Hamiltonian Monte Carlo for sampling multiscale
@@ -848,6 +850,12 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
       always. The retry is decided by its own uniform (`DR_RETRY_STREAM`).
 
     Every rule retries only rejected proposals. Under an indicator rule the retry needs no random number.
+
+    ``ghost_loop`` (default True): stage k's proposal and its ghosts, 2^(k - 1) integrations, run in one loop over a static
+    list of nodes (`proposal_tree`, `tree_states`), so the integrator is traced once per stage instead of once per
+    integration: the program's size, and its compile time, grow about linearly with the stages instead of doubling. The
+    acceptance arithmetic is the recursion's, in the same order (`ghost_terms_from`). False builds the ghosts by the
+    Python recursion (`ghost_terms`), kept as the reference the loop is tested against (the same draws, bit for bit).
 
     Returns (state, retry fields of `SampledInfo`): retried (stage 2 made), retry_accepted (some later stage
     accepted), retry_divergent (the last stage made diverged and nothing was accepted), retry_integration_steps.
@@ -884,12 +892,68 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
             total = total + _log1m_exp(log_a) + log_p(dh, log_a)
         return total
 
+    def proposal_tree(k):
+        """The integrations stage k's acceptance needs, as a static list of nodes ``(parent, j)``: node 0 is the
+        proposal ``F_k(x)`` (parent -1 = x), the others the ghosts below it, in the order `ghost_terms` makes them;
+        and the tree, ``[(node, subtree), ...]`` per level, for the acceptance arithmetic."""
+        nodes = [(-1, k)]
+
+        def build(parent, m):
+            out = []
+            for j in range(1, m + 1):
+                nodes.append((parent, j))
+                idx = len(nodes) - 1
+                out.append((idx, build(idx, j - 1)))
+            return out
+
+        return nodes, build(0, k - 1)
+
+    def tree_states(x, k, n_c):
+        """Every integration of stage k (`proposal_tree`) in ONE loop over the nodes, so the integrator is traced
+        once, not 2^(k - 1) times: step / a^(j - 1) and a^(j - 1) n are data. Returns the stacked states (slot 0 = x,
+        slot i + 1 = node i) and each node's energy error from its parent."""
+        nodes, _ = proposal_tree(k)
+        parent = jnp.asarray([p + 1 for p, _ in nodes], dtype=jnp.int32)
+        js = [j for _, j in nodes]
+        step_div = jnp.asarray([factor ** (j - 1) for j in js], dtype=jnp.result_type(step_size))
+        n_mul = jnp.asarray([factor ** (j - 1) for j in js], dtype=jnp.result_type(n_c))
+        buf = jax.tree_util.tree_map(lambda a: jnp.zeros((len(nodes) + 1,) + jnp.shape(a), jnp.result_type(a)).at[0]
+                                     .set(a), x)
+        dhs = jnp.zeros((len(nodes),), dtype=energy(x).dtype)
+
+        def body(i, carry):
+            buf, dhs = carry
+            z = jax.tree_util.tree_map(lambda a: a[parent[i]], buf)
+            y = bj_hmc.flip_momentum(integrate(z, step_size / step_div[i], n_mul[i] * n_c))
+            buf = jax.tree_util.tree_map(lambda a, v: a.at[i + 1].set(v), buf, y)
+            return buf, dhs.at[i].set(_delta_h(energy, z, y))
+
+        return lax.fori_loop(0, len(nodes), body, (buf, dhs))
+
+    def ghost_terms_from(tree, dhs, dtype):
+        """`ghost_terms` from the energy errors `tree_states` computed: the same arithmetic in the same order."""
+        total = jnp.zeros((), dtype=dtype)
+        for idx, sub in tree:
+            dh = dhs[idx]
+            ty = ghost_terms_from(sub, dhs, dtype) if sub else 0.0
+            reach = jnp.isfinite(total)
+            log_a = jnp.where(jnp.isfinite(dh) & reach, jnp.minimum(0.0, -dh + ty - jnp.where(reach, total, 0.0)),
+                              -jnp.inf)
+            total = total + _log1m_exp(log_a) + log_p(dh, log_a)
+        return total
+
     def stage(k):
         def one(key, pos, lp, grad, momentum, s_x, n_c):
             x = bj_integrators.IntegratorState(pos, momentum, lp, grad)
-            y = prop(x, k, n_c)
-            dh = _delta_h(energy, x, y)
-            log_a = jnp.minimum(0.0, -dh + ghost_terms(y, k - 1, n_c) - s_x)
+            if ghost_loop:
+                buf, dhs = tree_states(x, k, n_c)
+                y = jax.tree_util.tree_map(lambda a: a[1], buf)
+                dh = dhs[0]
+                log_a = jnp.minimum(0.0, -dh + ghost_terms_from(proposal_tree(k)[1], dhs, energy(y).dtype) - s_x)
+            else:
+                y = prop(x, k, n_c)
+                dh = _delta_h(energy, x, y)
+                log_a = jnp.minimum(0.0, -dh + ghost_terms(y, k - 1, n_c) - s_x)
             log_a = jnp.where(jnp.isfinite(dh), log_a, -jnp.inf)
             accept = jnp.log(jax.random.uniform(jax.random.fold_in(key, DR_STREAM + k))) < log_a
             div = dh > divergence_threshold

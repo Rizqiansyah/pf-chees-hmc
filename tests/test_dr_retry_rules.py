@@ -121,7 +121,7 @@ def test_power_without_the_ghosts(monkeypatch, retry):
     saved = N, K
     N, K = 50_000, 100
     try:
-        wrong = _wrong(monkeypatch, "log_a = jnp.minimum(0.0, -dh + ghost_terms(y, k - 1, n_c) - s_x)",
+        wrong = _wrong(monkeypatch, "log_a = jnp.minimum(0.0, -dh + ghost_terms_from(proposal_tree(k)[1], dhs, energy(y).dtype) - s_x)",
                        "log_a = jnp.minimum(0.0, -dh)", f"no_ghosts_{retry[0]}")
         pos, _ = _run(wrong, "edge", retry)
     finally:
