@@ -66,7 +66,7 @@ chees_kwargs={"metric_updates": (0.25, 0.5, 0.75), "metric_estimator": "fisher_l
 - `"cov"` (the default): the covariance of the chains' positions, as above;
 - `"fisher"`: per coordinate `sqrt(Var[x] / Var[grad log p])`, from the chains' positions and their log-density
   gradients (the warmup state carries them, so no gradient is added). This is the diagonal metric that minimises the Fisher
-  divergence between the target and a Gaussian (Seyboldt, Carlson & Carpenter 2026). A dense Pathfinder metric gets it
+  divergence between the target and a Gaussian (Seyboldt, Carlson & Carpenter 2026, arXiv:2603.18845). A dense Pathfinder metric gets it
   as a diagonal matrix, so correlations are dropped;
 - `"fisher_lowrank"`: that diagonal plus up to `metric_max_rank` directions (default 10) where the positions and the
   gradients disagree with it, as BlackJAX's `fisher_score_low_rank` estimates them (nutpie's settings: directions whose

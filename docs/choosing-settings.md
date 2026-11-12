@@ -115,7 +115,7 @@ from the same point, with the step divided by `a` and `a` times the steps (the s
 only if the previous one diverged (eq. 29 of the paper; a stage-`j` acceptance needs the reverse proposals of all
 earlier stages from its end point, the "ghosts", so stage 3 costs `a^2 + a + 2` trajectories for the chains that reach
 it). On a hard-edge test with frequent divergences, 3 stages left 294 transitions divergent where 2 left 11,234. The retry is
-accepted with the delayed-rejection probability of Modi, Barnett & Carpenter (2023, *Bayesian Analysis*, eq. 30, with
+accepted with the delayed-rejection probability of Modi, Barnett & Carpenter (2024, *Bayesian Analysis*, eq. 30, with
 the retry probability set to 1 on a divergence and 0 otherwise), so the sampler stays exact: a retry is accepted only
 if the reverse first proposal from its end point would also have diverged.
 
@@ -167,7 +167,7 @@ rejection:
 - `{"energy_above": c}`: after a rejected proposal whose energy error was above `c` (c > 0). The same indicator family at
   a lower threshold: rejections with a large energy error are retried too, not only divergences;
 - `"probabilistic"`: after a rejection, with probability `1 - alpha`, alpha the rejected proposal's acceptance
-  probability (Modi, Barnett & Carpenter 2023, s.3.2, eq. 31). A proposal rejected by chance at a high acceptance
+  probability (Modi, Barnett & Carpenter 2024, s.3.2, eq. 31). A proposal rejected by chance at a high acceptance
   probability is rarely retried; one rejected strongly almost always.
 
 Every rule keeps the sampler exact: the retry probability enters the acceptance at the current state and at the ghosts

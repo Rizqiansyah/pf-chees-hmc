@@ -885,7 +885,7 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
                            ghost_loop=True):
     """Later proposals of k-stage delayed-rejection HMC, on the chains whose earlier proposals diverged.
 
-    Modi, Barnett & Carpenter (2023), "Delayed rejection Hamiltonian Monte Carlo for sampling multiscale
+    Modi, Barnett & Carpenter (2024), "Delayed rejection Hamiltonian Monte Carlo for sampling multiscale
     distributions", Bayesian Analysis, eqs. (29)-(30), with the retry probability p_(j+1)(x) = 1{proposal j from
     x diverged}: proposal j + 1 is made only when proposal j diverged (and was rejected). Proposal j is
     F_j = flip . L^(a^(j-1) n)_(eps / a^(j-1)) (same integration time, step / a^(j-1)); F_1 is BlackJAX's. All are

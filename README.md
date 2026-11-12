@@ -66,7 +66,7 @@ draw their own random numbers.
 - **Tunable for stiff posteriors.** Pathfinder's L-BFGS settings, four metric sources, and opt-in metric re-estimation
   during warmup ([Metrics](docs/metrics.md)).
 - **Exact retries at a rare hard edge.** Opt-in delayed rejection retries a divergent transition with smaller steps, up to
-  several stages, and stays exact (Modi, Barnett & Carpenter 2023); only the chains that diverged pay for it
+  several stages, and stays exact (Modi, Barnett & Carpenter 2024); only the chains that diverged pay for it
   ([Choosing settings](docs/choosing-settings.md#divergences-in-a-rare-region-delayed-rejection-opt-in)).
 - **Reproducible.** On the CPU, runs at the same seed are identical. On the GPU they can differ in the last bits but agree
   within Monte Carlo error; writing an index lookup as a one-hot product made them identical on the model measured
@@ -127,8 +127,8 @@ Example notebooks are in [`examples/`](examples/); the benchmark harness in [`be
 JAX_PLATFORMS=cpu REFERENCE_FILES_OPTIONAL=1 pixi run python -m pytest tests -q
 ```
 
-The suite runs on the CPU in one process: 555 passed, 2 skipped in 8 min 45 s (2026-11-09, shared host; the skips need
-reference files built by `benchmarks/make_reference.py`).
+The suite runs on the CPU in one process: 676 passed, 2 skipped in 4 min 54 s (2026-11-12, 6 cores of a Ryzen 9 7900X;
+the skips need reference files built by `benchmarks/make_reference.py`).
 `tests/test_golden.py` pins the draws of the default path on the benchmark models.
 
 ## License

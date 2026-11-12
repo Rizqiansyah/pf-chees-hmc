@@ -1,6 +1,6 @@
 """Delayed rejection on divergence (opt-in, `dynamic_hmc_kwargs={"delayed_rejection": a}`).
 
-Modi, Barnett & Carpenter (2023), eq. (30) with p2 = 1{first proposal diverged}. Guards:
+Modi, Barnett & Carpenter (2024), eq. (30) with p2 = 1{first proposal diverged}. Guards:
   1. invariance: chains started at exact draws of a target with a hard edge, run with a step large enough that
      divergences are frequent, keep the exact law; the same test with the ghost terms dropped fails (power);
   2. off by default: the option absent gives the sampler's own kernel (no retry fields, no config key);
