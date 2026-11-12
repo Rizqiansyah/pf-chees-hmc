@@ -23,13 +23,18 @@ The model can also be passed as the first argument: `sample_pf_chees_hmc(model, 
 `idata` is a normal `arviz.InferenceData`.
 
 - `posterior` is in problem space, including `pm.Deterministic` variables.
-- `sample_stats` has exactly `lp`, `diverging`, `acceptance_rate`, `is_accepted`, `energy` and `num_integration_steps`.
+- `sample_stats` has exactly `lp`, `diverging`, `acceptance_rate`, `is_accepted`, `energy` and `num_integration_steps`;
+  with [delayed rejection](choosing-settings.md#divergences-in-a-rare-region-delayed-rejection-opt-in) on, also `retried`, `retry_accepted`, `diverging_after_retry` and
+  `retry_integration_steps`.
   `lp` is the log-density of the sampled state, as PyMC's JAX samplers emit it (`tests/test_inference_data.py` pins this).
 - `idata.attrs` holds:
   - `config`: a JSON string of what every stage resolved (not only what was asked);
   - `frozen_step_size`, `frozen_L_nominal`: the step size and nominal trajectory length the draws used;
   - `frozen_inverse_mass_matrix` (flattened, in the kernel's coordinate order) and `frozen_inverse_mass_matrix_shape`;
-  - `warmup_steps_used`, `warmup_grad_evals_per_chain`, `sampling_grad_evals_per_chain`.
+  - `warmup_steps_used`, `warmup_grad_evals_per_chain`, `sampling_grad_evals_per_chain`;
+  - `diagnostics`: a JSON string of what the run found: the L-BFGS iterations Pathfinder ran against its cap, and the
+    sampling phase's divergences by the energy at the trajectory's end ([Troubleshooting](troubleshooting.md#divergences));
+  - `pfcheeshmc_version`: the release that made the draws.
 
 ## Examples
 

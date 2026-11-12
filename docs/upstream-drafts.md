@@ -1,6 +1,6 @@
 # Upstream bug reports: drafts
 
-**Both drafts are NOT FILED.** They are pending actions for the maintainer, not history. Each reproducer below was run
+**Both drafts are NOT FILED** (draft (b) is no longer needed: JAX 0.12 fixed the bug). They are pending actions for the maintainer, not history. Each reproducer below was run
 on 2026-10-28 on this repository's pixi environment (CPU, `JAX_PLATFORMS=cpu`); the output shown is what it printed.
 
 Package-side handling, so that nothing here blocks the sampler:
@@ -59,6 +59,9 @@ The interval transform and the density compute `upper - lower` while both are `i
 ---
 
 ## (b) JAX: `jax.scipy.special.erfcx` returns 0 on a band, in float64 and in float32
+
+**Fixed upstream: no longer needed.** JAX 0.12.0.1 is right in the band, value and gradient (float64 relative error
+3e-16, float32 8e-8; checked 2026-11-10). The draft is kept as the record of the bug in 0.11.2 and earlier.
 
 **Draft title:** `erfcx` returns exactly 0 (and a wrong gradient) just below the point where it switches to its asymptotic branch
 

@@ -119,8 +119,9 @@ def _collect(idata, prefix, out):
             out[f"{prefix}{tag}/{k}"] = v.values
     for k, v in idata.attrs.items():
         # the frozen metric is left out: the draws pin it, test_frozen_metric_saved checks it, and the dense ones would
-        # take the files past their size guard
-        if k != "config" and not k.startswith("frozen_inverse_mass_matrix"):
+        # take the files past their size guard; so is "diagnostics" (counts read off the path and the draws,
+        # checked in test_diagnostics), so a new count does not change the files
+        if k not in ("config", "pfcheeshmc_version", "diagnostics") and not k.startswith("frozen_inverse_mass_matrix"):
             out[f"{prefix}attrs/{k}"] = v
     out[f"{prefix}config"] = idata.attrs["config"]
 

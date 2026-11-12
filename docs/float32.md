@@ -15,6 +15,11 @@ The `blas__ldflags` part is for a checkout whose path contains a space; the benc
 JAX backend then turns `jax_enable_x64` off.
 
 :::{important}
+On an Ampere or newer NVIDIA GPU also set `JAX_DEFAULT_MATMUL_PRECISION=highest`: otherwise float32 matrix products run in
+TF32, about three decimal digits ([GPU notes](gpu-notes.md#float32-matrix-products-run-in-tf32-by-default)).
+:::
+
+:::{important}
 Do not enable `jax_enable_x64` yourself. The log-density becomes float64 at a float32 position, L-BFGS can fail with "cond
 branches must have equal output types", and the sampler warns ("floatX is float32 but jax_enable_x64 is on", a
 `RuntimeWarning`). A notebook that starts with `jax.config.update("jax_enable_x64", True)` must drop that line.

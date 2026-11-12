@@ -54,3 +54,44 @@ draws, one seed): the `mc` metric alone gave worst R-hat 2.7 and min bulk ESS 1,
 R-hat 1.015 and ESS 69,085, and every coordinate was decorrelated by lag 5. Divergences rose from 2 to 13, and the frozen
 step size fell from 0.11 to 0.037, because the step size then answers to a stiff region of that model rather than to the
 metric. The bias gate does not cover this option.
+
+### The estimator at an update: covariance or Fisher (opt-in, experimental)
+
+```python
+chees_kwargs={"metric_updates": (0.25, 0.5, 0.75), "metric_estimator": "fisher_lowrank"}
+```
+
+`metric_estimator` chooses what an update estimates:
+
+- `"cov"` (the default): the covariance of the chains' positions, as above;
+- `"fisher"`: per coordinate `sqrt(Var[x] / Var[grad log p])`, from the chains' positions and their log-density
+  gradients (the warmup state carries them, so no gradient is added). This is the diagonal metric that minimises the Fisher
+  divergence between the target and a Gaussian (Seyboldt, Carlson & Carpenter 2026, arXiv:2603.18845). A dense Pathfinder metric gets it
+  as a diagonal matrix, so correlations are dropped;
+- `"fisher_lowrank"`: that diagonal plus up to `metric_max_rank` directions (default 10) where the positions and the
+  gradients disagree with it, as BlackJAX's `fisher_score_low_rank` estimates them (nutpie's settings: directions whose
+  eigenvalue lies in [1/2, 2] are dropped). It needs a dense metric, and is handed to the kernel as a dense matrix.
+
+For a Gaussian target the Fisher estimates are exact from any set of chain positions that spans it (the diagonal one
+for a diagonal covariance, the low-rank one when every correlated direction is outside [1/2, 2]); the covariance
+estimate has the Monte Carlo error of the number of chains. Chains with a non-finite position or gradient are left out.
+Shrinkage, the guard and the step-size restart are those of `"cov"`; a non-default estimator is recorded in the config
+(`metric_estimator`, `metric_max_rank`).
+
+Which to use depends on how many chains there are for the dimension. Measured with updates at 0.25/0.5/0.75 of the
+warmup, ESS per gradient of the slowest coordinate against `"cov"`:
+
+| model | dimension | chains | `"fisher"` | `"fisher_lowrank"` |
+|---|---|---|---|---|
+| radon, non-centred | 175 | 128 | 5.7-6.5x | 6.1-6.2x |
+| 8 Schools | 10 | 128 | 1.2-1.5x | 1.4-1.6x |
+| GEV (3 parameters) | 3 | 128 | 0.9-1.0x | 0.8-1.1x |
+| logistic regression 1000 x 25 | 25 | 128 | 0.16-0.18x | 0.8x |
+| upper-bounded GEV regression, configuration A | 15 | 1,024 | 0.01-0.1x | 0.3-0.8x |
+| upper-bounded GEV regression, configuration B | 15 | 1,024 | 0.07-0.22x | 1.2-1.7x |
+
+(CPU, 300 draws, warmup 400, seeds 1 and 2 for the first four; GPU, float32, 1,000 draws, warmup 200, seeds 1-3 for the
+last two.) With fewer chains than coordinates the chains' covariance is rank-deficient and only the shrinkage keeps it
+positive definite; the gradients carry what the positions lack, and the Fisher estimates win by a wide margin. With many
+chains for the dimension the covariance is well estimated, and the diagonal Fisher estimate loses the correlations a
+dense metric keeps. Try `"fisher_lowrank"` when the chains are few for the dimension; keep `"cov"` otherwise.

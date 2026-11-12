@@ -39,6 +39,11 @@ from jax.flatten_util import ravel_pytree
 
 import blackjax.adaptation.chees_adaptation as chees_adaptation
 import blackjax.mcmc.dynamic_hmc as dynamic_hmc
+import blackjax.mcmc.hmc as bj_hmc
+import blackjax.mcmc.integrators as bj_integrators
+import blackjax.mcmc.proposal as bj_proposal
+import blackjax.mcmc.metrics as bj_metrics
+import blackjax.mcmc.trajectory as bj_trajectory
 import blackjax.optimizers.dual_averaging as dual_averaging
 
 __all__ = [
@@ -56,6 +61,8 @@ __all__ = [
     "batch_init",
     "chees_harmonic_acceptance",
     "chees_harmonic_acceptance_np",
+    "DR_BATCH",
+    "delayed_rejection_step",
     "feasible_mask",
     "halton_jitter",
     "initial_point",
@@ -177,13 +184,20 @@ def pathfinder_fit(approximate, fn, names, values, key, initial_position, lbfgs=
     static argument, so a replaced function is its own cache entry). ``lbfgs`` is a sorted tuple of
     ``(name, value)`` pairs among ``num_samples``, ``maxiter``, ``maxcor``, ``maxls``, ``gtol`` and ``ftol``
     (static: they are Python constants of the trace, so another value is another program); the ones not
-    given keep BlackJAX's defaults. Only the fitted `PathfinderState` is returned; the traversed path
-    (``maxiter + 1`` states) is not kept.
+    given keep BlackJAX's defaults. Returns the fitted `PathfinderState` and the number of L-BFGS iterations that
+    ran; the traversed path (``maxiter + 1`` states) is not kept.
+
+    BlackJAX drops L-BFGS's own iteration count. Once L-BFGS stops, its scan repeats the last row of the path (the
+    no-op branch of ``_minimize_lbfgs``), so the iterations that ran are the rows that differ from the row before
+    (NaN equal to NaN). A count equal to ``maxiter`` means L-BFGS used every iteration it was given.
     """
-    state, _ = approximate(
+    state, info = approximate(
         rng_key=key, initial_position=initial_position, logdensity_fn=_logdensity(fn, names, values),
         **dict(lbfgs))
-    return state
+    flat = jax.vmap(lambda p: ravel_pytree(p)[0])(info.path.position)
+    a, b = flat[1:], flat[:-1]
+    same = (a == b) | (jnp.isnan(a) & jnp.isnan(b))
+    return state, jnp.sum(~jnp.all(same, axis=1))
 
 
 @partial(jax.jit, static_argnames=("sample", "num_samples"))
@@ -374,6 +388,12 @@ class SampledInfo(NamedTuple):
     is_accepted: Any
     num_integration_steps: Any
     energy: Any
+    # Delayed rejection only (`sampling_chunk(..., dr_factor=a)`); None otherwise, so the default stack is unchanged.
+    # is_divergent stays the FIRST-stage divergence: the retry never hides the diagnostic.
+    retried: Any = None                  # first stage divergent and rejected: a second proposal was made
+    retry_accepted: Any = None           # ... and accepted
+    retry_divergent: Any = None          # ... and the second proposal itself diverged
+    retry_integration_steps: Any = None  # leapfrog steps the retry branch ran for this chain (0 if not run)
 
 
 def chees_harmonic_acceptance(acc_vals, is_divergent):
@@ -415,6 +435,8 @@ def integration_steps(random_generator_arg, trajectory_length_adjusted, jitter_a
 
 
 _ADAPTER = ("optim", "target_accept", "decay_rate", "jitter_amount", "max_leapfrog_steps")
+# The opt-in warmup settings of `_adapter` (acceptance_floor, trajectory_length) are values, not static arguments:
+# another floor or trajectory length runs the same compiled program (only None against a value is a second program).
 
 
 class ChEESTrace(NamedTuple):
@@ -429,7 +451,9 @@ class ChEESTrace(NamedTuple):
         consumes next. trajectory_length / step_size is the nominal leapfrog count L at this step.
     harmonic_acceptance
         `chees_harmonic_acceptance` of this update's chains: the quantity ChEES adapts the step size
-        against, not the arithmetic mean of per-chain acceptances.
+        against, not the arithmetic mean of per-chain acceptances. With ``acceptance_floor`` set the step
+        size is adapted on the harmonic mean of max(acceptance, floor), and this field still records the
+        harmonic mean of the acceptances themselves, so chains stuck near zero stay visible.
     """
 
     step: Any
@@ -438,11 +462,36 @@ class ChEESTrace(NamedTuple):
     harmonic_acceptance: Any
 
 
-def _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps):
+def _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, acceptance_floor=None,
+             trajectory_length=None):
     """BlackJAX's ChEES adapter ``(init, update)``, its ``update`` returning ``(state, ChEESTrace)``.
 
     ``optim`` is an Adam learning rate (a stable static argument: an optax object is a new value on every
-    call) or an optax transformation. The state is BlackJAX's, untouched; the trace is read off it.
+    call) or an optax transformation. With both options None (the default) the state is BlackJAX's,
+    untouched, and the trace is read off it.
+
+    The two settings are values (traced, not static): None or not is part of the program, the value is not.
+
+    ``acceptance_floor`` (opt-in, a float in (0, target_accept)): the step size's dual averaging targets the
+    harmonic mean over the non-divergent chains of max(acceptance, floor) instead of the harmonic mean of the
+    acceptances. Under BlackJAX's statistic a few chains at an acceptance near zero (without diverging) pull
+    the mean of ~1,000 chains from near 1 to near 0, the step size is cut about tenfold and climbs back, and
+    the frozen step size depends on where that cycle stops. With the floor, a chain at zero acceptance counts
+    as ``floor``: about ``(1/target - 1) * floor`` of the chains can sit at zero before the statistic reaches
+    the target. Built from BlackJAX's own update: the step-size fields (step size, its moving average, the
+    dual-averaging state) come from the update fed max(acceptance, floor); the trajectory-length fields
+    (its moving average, the Adam state) from the update fed the acceptances themselves, which also weight
+    ChEES's gradient; the trajectory length is then clipped as BlackJAX clips it, to [step size,
+    max_leapfrog_steps x step size] at the new step size. Two calls rather than a copy of BlackJAX's step-size
+    arithmetic: the extra work is one ChEES statistic over the chains (O(chains x dimension)) per warmup step,
+    against the step's leapfrog steps, each a gradient of every chain.
+
+    ``trajectory_length`` (opt-in, a float > 0): the trajectory length T (integration time, L x step size)
+    held at this value from the start: ChEES's update of T is computed and not used. The T the kernel runs is
+    clipped as BlackJAX clips its own, to [step size, max_leapfrog_steps x step size], at the start too; its
+    moving average, which the sampling phase freezes, is log T (`utils.chees_warmup_with_progress` caps the
+    frozen L at max_leapfrog_steps). With it, T does not depend on the initial step size, where BlackJAX starts T
+    and where BlackJAX's update leaves it (`docs/design.md`, section 9).
     """
     if not hasattr(optim, "init"):
         optim = optax.adam(optim)
@@ -450,14 +499,41 @@ def _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps
         lambda i: halton_jitter(i, jitter_amount), _next_random_arg, optim, target_accept, decay_rate,
         max_leapfrog_steps)
 
+    def _clip_length(length, step_size):
+        return jnp.clip(length, max=max_leapfrog_steps * step_size, min=step_size)
+
+    def init_fixed(random_generator_arg, step_size):
+        state = init(random_generator_arg, step_size)
+        if trajectory_length is None:
+            return state
+        t = jnp.asarray(trajectory_length, dtype=jnp.result_type(step_size))
+        return state._replace(trajectory_length=_clip_length(t, step_size).astype(t.dtype),
+                              log_trajectory_length_moving_average=jnp.log(t))
+
     def update_with_trace(state, proposed_positions, proposed_momentums, initial_positions, acceptance,
                           is_divergent, inverse_mass_matrix):
         new = update(state, proposed_positions, proposed_momentums, initial_positions, acceptance,
                      is_divergent, inverse_mass_matrix)
+        if acceptance_floor is not None:
+            floored = update(state, proposed_positions, proposed_momentums, initial_positions,
+                             jnp.maximum(acceptance, jnp.asarray(acceptance_floor, dtype=acceptance.dtype)),
+                             is_divergent, inverse_mass_matrix)
+            new = new._replace(step_size=floored.step_size,
+                               log_step_size_moving_average=floored.log_step_size_moving_average,
+                               da_state=floored.da_state)
+            if trajectory_length is None:          # with a fixed length, the clip below replaces this one
+                new = new._replace(trajectory_length=_clip_length(
+                    jnp.exp(new.log_trajectory_length_moving_average), new.step_size).astype(new.trajectory_length.dtype))
+        if trajectory_length is not None:
+            t = jnp.asarray(trajectory_length, dtype=new.trajectory_length.dtype)
+            new = new._replace(
+                trajectory_length=_clip_length(t, new.step_size).astype(new.trajectory_length.dtype),
+                log_trajectory_length_moving_average=jnp.log(t).astype(
+                    jnp.result_type(new.log_trajectory_length_moving_average)))
         return new, ChEESTrace(new.step, new.step_size, new.trajectory_length,
                                chees_harmonic_acceptance(acceptance, is_divergent))
 
-    return init, update_with_trace
+    return init_fixed, update_with_trace
 
 
 def _strong(tree):
@@ -492,13 +568,14 @@ def _chunk_scan(step, carry, start, n, chunk):
 
 @partial(jax.jit, static_argnames=_STATIC + _ADAPTER)
 def warmup_init(fn, names, values, positions, initial_step_size, *, optim, target_accept, decay_rate,
-                jitter_amount, max_leapfrog_steps):
+                jitter_amount, max_leapfrog_steps, acceptance_floor=None, trajectory_length=None):
     """The warmup's start: HMC states for a dict of ``(chains, ...)`` positions, and the adapter's state.
 
     ``initial_step_size`` is a value (dynamic).
     """
     ld = _logdensity(fn, names, values)
-    init_adapt, _ = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps)
+    init_adapt, _ = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps,
+                             acceptance_floor, trajectory_length)
     states = jax.vmap(lambda p: dynamic_hmc.init(p, ld, 0))(positions)
     return _strong(states), _strong(init_adapt(0, initial_step_size))
 
@@ -532,21 +609,89 @@ def ensemble_metric(positions, old, shrinkage):
     return jnp.where(good, new, old).astype(old.dtype), good
 
 
-@jax.jit
-def restart_step_size(astate, step_size):
+# Estimators of the metric re-estimated at a metric update (`chees_kwargs["metric_estimator"]`).
+METRIC_ESTIMATORS = ("cov", "fisher", "fisher_lowrank")
+
+
+@partial(jax.jit, static_argnames=("estimator", "max_rank"))
+def ensemble_metric_fisher(positions, grads, old, shrinkage, *, estimator, max_rank=10):
+    """The metric re-estimated from the chains' positions AND log-density gradients, shrunk like `ensemble_metric`.
+
+    Seyboldt, Carlson & Carpenter (2026): the metric that minimises the Fisher divergence between the target and a
+    Gaussian, as BlackJAX 1.7 estimates it (`blackjax.adaptation.metric_estimators`):
+
+    * ``"fisher"``: per coordinate ``sqrt(Var[x] / Var[grad log p])`` (`fisher_score_diagonal`), the diagonal; a 2-D
+      ``old`` gets it as a diagonal matrix;
+    * ``"fisher_lowrank"``: ``diag(sigma) (I + U (Lambda - I) U^T) diag(sigma)``, a diagonal plus ``max_rank`` directions
+      (`fisher_score_low_rank`, nutpie's gamma = 1e-5 and cutoff = 2), as a dense matrix; ``old`` must be 2-D.
+
+    For a Gaussian target either is exact from any sample that spans it (the diagonal one for a diagonal covariance):
+    the gradients carry the curvature the positions alone estimate with Monte Carlo error.
+
+    ``positions`` and ``grads`` are the warmup carry's dicts of ``(chains, ...)`` arrays (``states.position``,
+    ``states.logdensity_grad``), raveled as the kernel ravels its state, so the result is in kernel order like ``old``.
+    A chain with a non-finite coordinate or gradient is left out. BlackJAX's estimators take every row they are given,
+    so the usable rows are centred on their own means and the others set to zero: the estimators' moments are then
+    ratios of sums over the usable rows, and the zero rows add nothing to their products, which gives the estimate of
+    the usable rows alone. ``old`` is returned unchanged (and the flag is False) unless the shrunk estimate is finite
+    and positive definite and at least two chains are usable.
+    """
+    x = jax.vmap(lambda p: ravel_pytree(p)[0])(positions)
+    g = jax.vmap(lambda p: ravel_pytree(p)[0])(grads)
+    ok = jnp.isfinite(x).all(axis=1) & jnp.isfinite(g).all(axis=1)
+    n = jnp.sum(ok)
+
+    def centred(a):
+        a = jnp.where(ok[:, None], a, 0.0)
+        return jnp.where(ok[:, None], a - jnp.sum(a, axis=0) / n, 0.0)
+
+    xc, gc = centred(x), centred(g)
+    old = jnp.asarray(old)
+    if estimator == "fisher":
+        est = bj.adaptation.metric_estimators.fisher_score_diagonal(xc, gc)
+        if old.ndim == 2:
+            est = jnp.diag(est)
+    elif estimator == "fisher_lowrank":
+        if old.ndim != 2:
+            raise ValueError("metric_estimator='fisher_lowrank' needs a dense metric")
+        lr = bj.adaptation.metric_estimators.fisher_score_low_rank(xc, gc, min(int(max_rank), x.shape[1]))
+        d = lr.sigma.shape[0]
+        est = (lr.sigma[:, None] * (jnp.eye(d, dtype=lr.sigma.dtype) + (lr.U * (lr.lam - 1.0)) @ lr.U.T)
+               * lr.sigma[None, :])
+        est = 0.5 * (est + est.T)
+    else:
+        raise ValueError(f"ensemble_metric_fisher: estimator must be 'fisher' or 'fisher_lowrank', got {estimator!r}")
+    new = (1.0 - shrinkage) * est.astype(old.dtype) + shrinkage * old
+    if old.ndim == 2:
+        good = jnp.isfinite(jnp.linalg.cholesky(new)).all()
+    else:
+        good = jnp.isfinite(new).all() & (new > 0.0).all()
+    good = good & (n >= 2)
+    return jnp.where(good, new, old).astype(old.dtype), good
+
+
+@partial(jax.jit, static_argnames=("max_leapfrog_steps",))
+def restart_step_size(astate, step_size, trajectory_length=None, max_leapfrog_steps=1000):
     """The adapter state with its step size restarted at ``step_size``: a fresh dual-averaging state there,
     and the step size's moving average set to it. The trajectory length, its moving average, the Adam state,
-    the jitter index and the step counter carry on. Used after the metric changed under the warmup."""
+    the jitter index and the step counter carry on. Used after the metric changed under the warmup.
+
+    With a fixed ``trajectory_length`` (`_adapter`), the T the next step runs is clipped again at the new step
+    size, to [step size, max_leapfrog_steps x step size]; without it the state's T carries on as before."""
     da_init, _, _ = dual_averaging.dual_averaging()
     step_size = jnp.asarray(step_size, dtype=astate.step_size.dtype)
     new = astate._replace(step_size=step_size, log_step_size_moving_average=jnp.log(step_size),
                           da_state=da_init(step_size))
+    if trajectory_length is not None:
+        t = jnp.asarray(trajectory_length, dtype=astate.trajectory_length.dtype)
+        new = new._replace(trajectory_length=jnp.clip(t, max=max_leapfrog_steps * step_size, min=step_size))
     return _like(new, astate)
 
 
 @partial(jax.jit, static_argnames=_STATIC + _ADAPTER + ("chunk", "stack_positions"))
 def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *, chunk, stack_positions,
-                 optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps):
+                 optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, acceptance_floor=None,
+                 trajectory_length=None):
     """``chunk`` ChEES warmup steps (the first ``n`` real) from ``carry = (HMC states, adapter state)``.
 
     Step ``j`` is global step ``start + j``: its key is ``fold_in(key, start + j)`` and its Halton jitter
@@ -556,10 +701,12 @@ def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *
     reads them; stacking them is the memory wall at C=1,024).
     """
     ld = _logdensity(fn, names, values)
-    _, update_adapt = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps)
+    _, update_adapt = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps,
+                               acceptance_floor, trajectory_length)
     kernel = dynamic_hmc.build_kernel(
         next_random_arg_fn=_next_random_arg,
-        integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount))
+        integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount),
+        divergence_threshold=DIVERGENCE_THRESHOLD)
     imm = jnp.asarray(inverse_mass_matrix)
     # ChEES whitens its trajectory-length criterion by 1/sqrt(imm), so it needs the diagonal of the
     # inverse mass matrix (variances). The HMC kernel itself still gets the full dense metric.
@@ -608,19 +755,95 @@ def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *
     return _chunk_scan(step, carry, start, n, chunk)
 
 
-@partial(jax.jit, static_argnames=_STATIC + ("chunk", "jitter_amount"))
+# Delayed rejection: chains retried per batch (`delayed_rejection_step`). Retries are rare (they follow
+# divergences), so a small batch keeps the padded waste small; more retries in one step take more batches.
+DR_BATCH = 8
+# The acceptance test of retry stage k uses fold_in(key, DR_STREAM + k), key being the chain's key for the
+# iteration. BlackJAX's kernel splits that key in two (momentum, its own accept test), and with JAX's partitionable
+# keys (the default) fold_in(key, i) is split(key, n)[i]: a small i would reuse one of those two numbers.
+DR_STREAM = 0x44520000
+# The retry decision of a rule with a retry probability below 1 ("probabilistic"): proposal k is made if
+# uniform(fold_in(key, DR_RETRY_STREAM + k)) < p_k, apart from the acceptance uniforms above.
+DR_RETRY_STREAM = DR_STREAM + 0x8000
+# Retry rules of `delayed_rejection_step`: when a later proposal is made after a rejection (the sampler's option
+# check reads this list).
+DR_RETRY_RULES = ("divergent", "energy_above", "probabilistic")
+# |H(end) - H(start)| above which a transition is divergent: BlackJAX's default, passed explicitly to every kernel and
+# to `delayed_rejection_step`, whose exactness needs its retry rule and its ghosts to use the kernel's own threshold.
+DIVERGENCE_THRESHOLD = 1000.0
+
+
+def unrolled_integration(integrator, unroll):
+    """``integrate(state, step_size, n)``: ``n`` steps of ``integrator``, ``unroll`` steps per loop pass: ``n // unroll``
+    passes of ``unroll`` steps, then ``n % unroll`` single steps, so no step is added. ``unroll = 1`` is BlackJAX's
+    `static_integration`.
+
+    Under ``vmap`` over chains with different ``n`` a loop runs to the largest count and tests its condition on every
+    pass; on a GPU that test is a device-to-host copy (log 11.26: about 5% of a leapfrog step's time). ``unroll`` steps
+    per pass make about ``n / unroll + unroll`` tests instead of ``n``."""
+    if unroll == 1:
+        return bj_trajectory.static_integration(integrator)
+
+    def integrate(z, step_size, n):
+        def block(_, s):
+            for _ in range(unroll):
+                s = integrator(s, step_size)
+            return s
+        z = lax.fori_loop(0, n // unroll, block, z)
+        return lax.fori_loop(0, n % unroll, lambda _, s: integrator(s, step_size), z)
+
+    return integrate
+
+
+def unrolled_hmc_proposal(unroll):
+    """BlackJAX's `hmc.hmc_proposal` (the same code) with the trajectory from `unrolled_integration`; for
+    ``dynamic_hmc.build_kernel(build_proposal=...)``. ``unroll = 1`` is BlackJAX's own function."""
+    if unroll == 1:
+        return bj_hmc.hmc_proposal
+
+    def build(integrator, kinetic_energy, step_size, num_integration_steps=1, divergence_threshold=DIVERGENCE_THRESHOLD):
+        build_trajectory = unrolled_integration(integrator, unroll)
+        hmc_energy_fn = bj_trajectory.hmc_energy(kinetic_energy)
+
+        def generate(rng_key, state):
+            end_state = build_trajectory(state, step_size, num_integration_steps)
+            end_state = bj_hmc.flip_momentum(end_state)
+            proposal_energy = hmc_energy_fn(state)
+            new_energy = hmc_energy_fn(end_state)
+            delta_energy = bj_proposal.safe_energy_diff(proposal_energy, new_energy)
+            is_diverging = -delta_energy > divergence_threshold
+            sampled_state, info = bj_proposal.static_binomial_sampling(rng_key, delta_energy, state, end_state)
+            do_accept, p_accept, other_proposal_info = info
+            info = bj_hmc.HMCInfo(state.momentum, p_accept, do_accept, is_diverging, new_energy, end_state,
+                                  num_integration_steps)
+            return sampled_state, info, other_proposal_info
+
+        return generate
+
+    return build
+
+
+@partial(jax.jit, static_argnames=_STATIC + ("chunk", "jitter_amount", "dr_factor", "dr_batch", "dr_stages", "dr_retry",
+                                             "unroll", "dr_ghost_loop"))
 def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, traj_len_adj, key, start, n, *,
-                   chunk, jitter_amount):
+                   chunk, jitter_amount, dr_factor=None, dr_batch=None, dr_stages=2, dr_retry="divergent", unroll=1,
+                   dr_ghost_loop=True):
     """``chunk`` dynamic-HMC draws (the first ``n`` real) from ``state`` (a batch of `DynamicHMCState`).
 
     The frozen step size, metric and trajectory-length adjustment are arguments of the kernel call, as
     BlackJAX's dynamic kernel takes them (`blackjax/mcmc/dynamic_hmc.py:101-111`). Returns
     ``(state, (SampledState, SampledInfo))``, the second the per-draw stack (rows ``>= n`` are zeros).
+
+    ``dr_factor`` (opt-in, an integer a >= 2): delayed rejection on divergence (`delayed_rejection_step`).
+    None runs BlackJAX's kernel alone, the same program as before the option existed. ``unroll`` (opt-in, default 1):
+    leapfrog steps per loop pass (`unrolled_integration`), in the trajectory and in the retries; 1 is BlackJAX's kernel.
     """
     ld = _logdensity(fn, names, values)
     kernel = dynamic_hmc.build_kernel(
         next_random_arg_fn=_next_random_arg,
-        integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount))
+        integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount),
+        divergence_threshold=DIVERGENCE_THRESHOLD,
+        **({} if unroll == 1 else {"build_proposal": unrolled_hmc_proposal(unroll)}))
     imm = jnp.asarray(inverse_mass_matrix)
     num_chains = _num_chains(state.position)
 
@@ -629,6 +852,12 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
         _step = partial(kernel, logdensity_fn=ld, step_size=step_size, inverse_mass_matrix=imm,
                         integration_steps_params=(traj_len_adj,))
         new_state, info = jax.vmap(_step)(keys, s)
+        retry = ()
+        if dr_factor is not None:
+            new_state, retry = delayed_rejection_step(ld, imm, step_size, dr_factor, keys, s, new_state, info,
+                                                      divergence_threshold=DIVERGENCE_THRESHOLD,
+                                                      batch=dr_batch, stages=dr_stages, retry=dr_retry,
+                                                      unroll=unroll, ghost_loop=dr_ghost_loop)
         # Projection: keep only what _to_inference_data reads (position + logdensity for the
         # posterior/lp, and the five sample_stats fields). momentum, proposal.position,
         # proposal.momentum and proposal.logdensity_grad duplicate state leaves and are the
@@ -636,9 +865,235 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
         return _like(new_state, s), (
             SampledState(new_state.position, new_state.logdensity),
             SampledInfo(info.is_divergent, info.acceptance_rate, info.is_accepted,
-                        info.num_integration_steps, info.energy))
+                        info.num_integration_steps, info.energy, *retry))
 
     return _chunk_scan(step, state, start, n, chunk)
+
+
+def _delta_h(energy, z0, z1):
+    """H(z1) - H(z0), with NaN as +inf (BlackJAX's `safe_energy_diff` convention, sign reversed)."""
+    d = energy(z1) - energy(z0)
+    return jnp.where(jnp.isnan(d), jnp.inf, d)
+
+
+def _log1m_exp(log_a):
+    """log(1 - exp(log_a)) for log_a <= 0 (-inf at log_a = 0, 0 at log_a = -inf)."""
+    safe = jnp.where(log_a < 0, log_a, -1.0)
+    return jnp.where(log_a < 0, jnp.log(-jnp.expm1(safe)), -jnp.inf)
+
+
+def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old, new, info,
+                           divergence_threshold=DIVERGENCE_THRESHOLD, batch=None, stages=2, retry="divergent", unroll=1,
+                           ghost_loop=True):
+    """Later proposals of k-stage delayed-rejection HMC, on the chains whose earlier proposals diverged.
+
+    Modi, Barnett & Carpenter (2024), "Delayed rejection Hamiltonian Monte Carlo for sampling multiscale
+    distributions", Bayesian Analysis, eqs. (29)-(30), with the retry probability p_(j+1)(x) = 1{proposal j from
+    x diverged}: proposal j + 1 is made only when proposal j diverged (and was rejected). Proposal j is
+    F_j = flip . L^(a^(j-1) n)_(eps / a^(j-1)) (same integration time, step / a^(j-1)); F_1 is BlackJAX's. All are
+    volume-preserving involutions, and n is the iteration's step count (a function of the iteration only), so F_j
+    at any state is the same map. Proposal k, y = F_k(x), is accepted with probability
+
+        min{1, pi(y) prod_(j<k) [1 - alpha_j(y)] p_(j+1)(y) / (pi(x) prod_(j<k) [1 - alpha_j(x)] p_(j+1)(x))},
+
+    where the factors at y belong to the ghosts: the proposals a chain at y would have made (`ghost_terms`,
+    recursively). With the indicator p, a stage-k proposal is accepted only if the reverse stage-j proposals from y
+    also diverge, j < k; this keeps the kernel exact when retries are restricted to divergences. stages = 2 is the
+    two-stage scheme (one retry at step / a).
+
+    Cost: stage k costs a^(k-1) n leapfrog steps for the proposal plus its ghosts (stage 2: n; stage 3: 6 n at
+    a = 4), per chain that reaches it, run `batch` chains at a time (`DR_BATCH`), so a step without retries costs
+    nothing and one with r costs ceil(r / batch) batches per stage. On a GPU the wall time follows the sequential
+    leapfrog steps, not the gradient count: a step with any retry takes about (a + 1) trajectories longer at
+    stage 2 (a GEV regression, 1,024 chains, a = 4, retries on 10% of steps: gradients +0.06%, sampling time +30%).
+    Retry rules (``retry``; the paper's eq. (30) with p_(j+1) a function of the state and its proposals, so the ghosts
+    evaluate the same p):
+
+    * ``"divergent"`` (the default): p_(j+1) = 1{proposal j diverged}, dH_j > ``divergence_threshold``; as above;
+    * ``("energy_above", c)``: p_(j+1) = 1{dH_j > c}, the same indicator at a lower threshold: rejections with a large
+      energy error are retried too;
+    * ``"probabilistic"``: p_(j+1) = 1 - alpha_j, the rejection probability of proposal j (the paper's s.3.2, eq. 31):
+      a proposal rejected by chance at a high acceptance probability is rarely retried, one rejected strongly almost
+      always. The retry is decided by its own uniform (`DR_RETRY_STREAM`).
+
+    Every rule retries only rejected proposals. Under an indicator rule the retry needs no random number.
+
+    ``ghost_loop`` (default True): stage k's proposal and its ghosts, 2^(k - 1) integrations, run in one loop over a static
+    list of nodes (`proposal_tree`, `tree_states`), so the integrator is traced once per stage instead of once per
+    integration: the program's size, and its compile time, grow about linearly with the stages instead of doubling. The
+    acceptance arithmetic is the recursion's, in the same order (`ghost_terms_from`). False builds the ghosts by the
+    Python recursion (`ghost_terms`), kept as the reference the loop is tested against (the same draws, bit for bit).
+
+    Returns (state, retry fields of `SampledInfo`): retried (stage 2 made), retry_accepted (some later stage
+    accepted), retry_divergent (the last stage made diverged and nothing was accepted), retry_integration_steps.
+    """
+    batch = DR_BATCH if batch is None else batch
+    metric = bj_metrics.default_metric(inverse_mass_matrix)
+    integrate = unrolled_integration(bj_integrators.velocity_verlet(ld, metric.kinetic_energy), unroll)
+    energy = bj_trajectory.hmc_energy(metric.kinetic_energy)
+    n = info.num_integration_steps
+    if retry == "divergent":
+        log_p = lambda dh, log_a: jnp.where(dh > divergence_threshold, 0.0, -jnp.inf)        # noqa: E731
+    elif retry == "probabilistic":
+        log_p = lambda dh, log_a: _log1m_exp(log_a)                                            # noqa: E731
+    elif isinstance(retry, tuple) and len(retry) == 2 and retry[0] == "energy_above":
+        threshold = float(retry[1])
+        log_p = lambda dh, log_a: jnp.where(dh > threshold, 0.0, -jnp.inf)                    # noqa: E731
+    else:
+        raise ValueError(f"retry must be 'divergent', 'probabilistic' or ('energy_above', c), got {retry!r}")
+
+    def prop(z, j, n_c):
+        """Proposal j from z."""
+        return bj_hmc.flip_momentum(integrate(z, step_size / factor ** (j - 1), factor ** (j - 1) * n_c))
+
+    def ghost_terms(z, m, n_c):
+        """sum_(j<=m) log([1 - alpha_j(z)] p_(j+1)(z)) for a chain at z: -inf once some p is 0."""
+        total = jnp.zeros((), dtype=energy(z).dtype)
+        for j in range(1, m + 1):
+            y = prop(z, j, n_c)
+            dh = _delta_h(energy, z, y)
+            ty = ghost_terms(y, j - 1, n_c) if j > 1 else 0.0
+            reach = jnp.isfinite(total)
+            log_a = jnp.where(jnp.isfinite(dh) & reach, jnp.minimum(0.0, -dh + ty - jnp.where(reach, total, 0.0)),
+                              -jnp.inf)
+            total = total + _log1m_exp(log_a) + log_p(dh, log_a)
+        return total
+
+    def proposal_tree(k):
+        """The integrations stage k's acceptance needs, as a static list of nodes ``(parent, j)``: node 0 is the
+        proposal ``F_k(x)`` (parent -1 = x), the others the ghosts below it, in the order `ghost_terms` makes them;
+        and the tree, ``[(node, subtree), ...]`` per level, for the acceptance arithmetic."""
+        nodes = [(-1, k)]
+
+        def build(parent, m):
+            out = []
+            for j in range(1, m + 1):
+                nodes.append((parent, j))
+                idx = len(nodes) - 1
+                out.append((idx, build(idx, j - 1)))
+            return out
+
+        return nodes, build(0, k - 1)
+
+    def tree_states(x, k, n_c):
+        """Every integration of stage k (`proposal_tree`) in ONE loop over the nodes, so the integrator is traced
+        once, not 2^(k - 1) times: step / a^(j - 1) and a^(j - 1) n are data. Returns the stacked states (slot 0 = x,
+        slot i + 1 = node i) and each node's energy error from its parent."""
+        nodes, _ = proposal_tree(k)
+        parent = jnp.asarray([p + 1 for p, _ in nodes], dtype=jnp.int32)
+        js = [j for _, j in nodes]
+        step_div = jnp.asarray([factor ** (j - 1) for j in js], dtype=jnp.result_type(step_size))
+        n_mul = jnp.asarray([factor ** (j - 1) for j in js], dtype=jnp.result_type(n_c))
+        buf = jax.tree_util.tree_map(lambda a: jnp.zeros((len(nodes) + 1,) + jnp.shape(a), jnp.result_type(a)).at[0]
+                                     .set(a), x)
+        dhs = jnp.zeros((len(nodes),), dtype=energy(x).dtype)
+
+        def body(i, carry):
+            buf, dhs = carry
+            z = jax.tree_util.tree_map(lambda a: a[parent[i]], buf)
+            y = bj_hmc.flip_momentum(integrate(z, step_size / step_div[i], n_mul[i] * n_c))
+            buf = jax.tree_util.tree_map(lambda a, v: a.at[i + 1].set(v), buf, y)
+            return buf, dhs.at[i].set(_delta_h(energy, z, y))
+
+        return lax.fori_loop(0, len(nodes), body, (buf, dhs))
+
+    def ghost_terms_from(tree, dhs, dtype):
+        """`ghost_terms` from the energy errors `tree_states` computed: the same arithmetic in the same order."""
+        total = jnp.zeros((), dtype=dtype)
+        for idx, sub in tree:
+            dh = dhs[idx]
+            ty = ghost_terms_from(sub, dhs, dtype) if sub else 0.0
+            reach = jnp.isfinite(total)
+            log_a = jnp.where(jnp.isfinite(dh) & reach, jnp.minimum(0.0, -dh + ty - jnp.where(reach, total, 0.0)),
+                              -jnp.inf)
+            total = total + _log1m_exp(log_a) + log_p(dh, log_a)
+        return total
+
+    def stage(k):
+        def one(key, pos, lp, grad, momentum, s_x, n_c):
+            x = bj_integrators.IntegratorState(pos, momentum, lp, grad)
+            if ghost_loop:
+                buf, dhs = tree_states(x, k, n_c)
+                y = jax.tree_util.tree_map(lambda a: a[1], buf)
+                dh = dhs[0]
+                log_a = jnp.minimum(0.0, -dh + ghost_terms_from(proposal_tree(k)[1], dhs, energy(y).dtype) - s_x)
+            else:
+                y = prop(x, k, n_c)
+                dh = _delta_h(energy, x, y)
+                log_a = jnp.minimum(0.0, -dh + ghost_terms(y, k - 1, n_c) - s_x)
+            log_a = jnp.where(jnp.isfinite(dh), log_a, -jnp.inf)
+            accept = jnp.log(jax.random.uniform(jax.random.fold_in(key, DR_STREAM + k))) < log_a
+            div = dh > divergence_threshold
+            if retry == "divergent":
+                # s_x for stage k + 1 if this one is rejected; its p is 1 (the chain only gets there if it diverged)
+                return y, accept, div, div, s_x + _log1m_exp(log_a)
+            # proposal k + 1 is made with probability p_(k+1)(x) (an indicator rule needs no random number, but a
+            # uniform in [0, 1) decides it the same way); s_x for stage k + 1 carries log p_(k+1)(x)
+            lp = log_p(dh, log_a)
+            go = jnp.log(jax.random.uniform(jax.random.fold_in(key, DR_RETRY_STREAM + k + 1))) < lp
+            return y, accept, div, go, s_x + _log1m_exp(log_a) + lp
+        return one
+
+    def run_stage(k, need, s_x, state):
+        """Stage k for the chains in `need` (packed, `batch` at a time, gathered and scattered back). The packed
+        index is padded to a whole number of batches with the out-of-range index `num`: a slot holding it reads
+        the last chain and its writes are dropped, so the last batch is never shifted back onto chains already
+        done, and fewer chains than `batch` work."""
+        num = need.shape[0]
+        idx = jnp.nonzero(need, size=-(-num // batch) * batch, fill_value=num)[0]
+        count = jnp.sum(need)
+        inputs = (keys, old.position, old.logdensity, old.logdensity_grad, info.momentum, s_x, n)
+        zeros = jnp.zeros_like(need)
+        one = stage(k)
+
+        def body(carry):
+            b, pos, lp, grad, take, div, go, s_next = carry
+            sl = lax.dynamic_slice(idx, (b * batch,), (batch,))
+            at = jnp.minimum(sl, num - 1)
+            sel = jax.tree_util.tree_map(lambda u: u[at], inputs)
+            y, accept, d, g, s_new = jax.vmap(one)(*sel)
+            put = lambda base, upd: base.at[sl].set(upd, mode="drop")
+            keep = lambda u, v: jnp.where(accept.reshape(accept.shape + (1,) * (u.ndim - 1)), u, v)
+            pos = jax.tree_util.tree_map(lambda base, u: put(base, keep(u, base[at])), pos, y.position)
+            lp = put(lp, keep(y.logdensity, lp[at]))
+            grad = jax.tree_util.tree_map(lambda base, u: put(base, keep(u, base[at])), grad, y.logdensity_grad)
+            return b + 1, pos, lp, grad, put(take, accept), put(div, d), put(go, g), put(s_next, s_new)
+
+        init = (jnp.asarray(0, jnp.int32), state.position, state.logdensity, state.logdensity_grad, zeros, zeros,
+                zeros, jnp.full_like(s_x, -jnp.inf))
+        _, pos, lp, grad, take, div, go, s_next = lax.while_loop(lambda c: c[0] * batch < count, body, init)
+        return state._replace(position=pos, logdensity=lp, logdensity_grad=grad), take, div, go, s_next
+
+    def steps(k):
+        """Leapfrog steps (in units of n) of stage k for one chain: its proposal and its ghosts."""
+        def ghost(m):
+            return sum(factor ** (j - 1) + ghost(j - 1) for j in range(1, m + 1))
+        return factor ** (k - 1) + ghost(k - 1)
+
+    if retry == "divergent":
+        need = info.is_divergent & ~info.is_accepted
+        # stage 1 was rejected and diverged: s_x = log([1 - alpha_1(x)] p_2(x)) = log1p(-p1)
+        s_x = jnp.log1p(-info.acceptance_rate)
+    else:
+        # stage 1's energy error and acceptance probability, computed as the ghosts compute them (BlackJAX's
+        # proposal state; the energy does not depend on the momentum's sign)
+        x0 = bj_integrators.IntegratorState(old.position, info.momentum, old.logdensity, old.logdensity_grad)
+        dh1 = jax.vmap(lambda a, b: _delta_h(energy, a, b))(x0, info.proposal)
+        log_a1 = jnp.where(jnp.isfinite(dh1), jnp.minimum(0.0, -dh1), -jnp.inf)
+        lp2 = log_p(dh1, log_a1)
+        u2 = jax.vmap(lambda c: jnp.log(jax.random.uniform(jax.random.fold_in(c, DR_RETRY_STREAM + 2))))(keys)
+        need = ~info.is_accepted & (u2 < lp2)
+        s_x = _log1m_exp(log_a1) + lp2
+    retried = need
+    state, accepted, last_div = new, jnp.zeros_like(need), jnp.zeros_like(need)
+    cost = jnp.zeros_like(n)
+    for k in range(2, stages + 1):
+        state, take, div, go, s_x = run_stage(k, need, s_x, state)
+        cost = cost + jnp.where(need, steps(k) * n, 0)
+        accepted = accepted | take
+        last_div = jnp.where(need, div & ~take, last_div)
+        need = need & ~take & go           # the next stage where the rule retries this one
+    return state, (retried, accepted, last_div, cost)
 
 
 @functools.lru_cache(maxsize=64)

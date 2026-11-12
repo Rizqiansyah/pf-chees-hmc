@@ -43,10 +43,33 @@ within Monte Carlo error.
   `--xla_gpu_exclude_nondeterministic_ops` changes the gradient.
 - **For bit-identical runs** (to replay one divergence, say), write the lookup as a product with a fixed one-hot matrix,
   `pt.dot(np.eye(n_groups)[group_idx], mu)`: the same model, and no scatter-add left.
+- **Another cause is the compile.** XLA chooses kernels when it compiles a program, and two compiles of the same program
+  can round differently (a gradient differed by a few units in the last place, median 1.8e-6 relative, on one model). With
+  the [disk cache](compile-and-cache.md) warm, every process loads the same compiled program, and runs at the same seed
+  then repeated exactly on that model (same steps, divergences and wall time). Clear the cache, or change anything that
+  recompiles, and they differ again within Monte Carlo error.
 - On the CPU, runs at the same seed are identical (`tests/test_golden.py`, which runs on the CPU only).
 
 The metric the draws were made with is in `idata.attrs["frozen_inverse_mass_matrix"]` (flattened; shape in
 `frozen_inverse_mass_matrix_shape`), so a divergence can be replayed with the sampler's own metric.
+
+## float32 matrix products run in TF32 by default
+
+On NVIDIA GPUs from the Ampere generation on, JAX computes float32 matrix products in TF32 unless told otherwise: the inputs
+are rounded to a 10-bit mantissa. A product that should be exact can then be off in the fourth digit. On one model a
+lookup written as a one-hot product (`pt.dot(onehot, v)`, the bit-identical form above) returned values near 1,000 with a
+relative error of 2.5e-4 (RTX A2000 and CMP 170HX; 0 on the CPU); at 1,024 points near the start the log density moved by
+a median 11.6 nats, more near a hard edge of the support. Set
+
+```bash
+JAX_DEFAULT_MATMUL_PRECISION=highest
+```
+
+before JAX starts (or `jax.config.update("jax_default_matmul_precision", "highest")`) for full float32 products. On that
+model it cost 3% per gradient. float64 runs are not affected. See also [float32](float32.md).
+
+`sample_pf_chees_hmc` warns (`RuntimeWarning`) when it starts a float32 run on a GPU of compute capability 8.0 or above
+with the precision unset.
 
 ## Shared GPUs
 

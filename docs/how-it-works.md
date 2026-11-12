@@ -17,7 +17,9 @@ trajectory length, harmonic-mean acceptance) beside its state for the progress b
 2. **Pathfinder** (with jitter): better starts and a mass matrix (the metric).
 3. **Step size.** A short search for the initial step size.
 4. **ChEES warmup** (default 2,000 steps): step size, trajectory length and starts. Optionally the metric is re-estimated
-   from the chains at given fractions of the warmup ([metric updates](metrics.md#metric-updates-during-the-warmup-opt-in)).
+   from the chains at given fractions of the warmup ([metric updates](metrics.md#metric-updates-during-the-warmup-opt-in)),
+   the step size's statistic gets a floor, and the trajectory length is fixed instead of adapted
+   ([run-to-run spread](choosing-settings.md#run-to-run-spread-a-step-size-floor-and-a-fixed-trajectory-length-opt-in-experimental)).
 5. **Draws.** HMC with the frozen step size, the trajectory length and the metric (Pathfinder's, or the last update's).
 6. **Transform** back to problem space, including deterministics.
 

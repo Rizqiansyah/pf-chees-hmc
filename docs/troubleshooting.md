@@ -6,7 +6,9 @@
    reference.
 2. **If the chains stay near their starts** (R-hat far above the 1.5 to 1.9 of 10-draw chains, `lp` in `sample_stats` well
    below the log-density near the mode), check Pathfinder first. The starts and the metric both come from its one L-BFGS
-   path, and BlackJAX's defaults can stop it far from the mode on a stiff posterior: raise
+   path, and BlackJAX's defaults can stop it far from the mode on a stiff posterior. The sampler warns when L-BFGS used
+   every iteration it was given; `idata.attrs["diagnostics"]` has the count (`pathfinder.lbfgs_iterations` against
+   `pathfinder.lbfgs_maxiter`). Raise
    `pathfinder_kwargs={"pf_maxiter": 1000, "pf_ftol": 1e-12}` ([Metrics](metrics.md#pathfinders-l-bfgs-settings)). A longer
    warmup cannot fix this, because the metric is frozen after Pathfinder (unless `metric_updates` is set, and even then the
    starts still come from Pathfinder).
@@ -19,9 +21,31 @@ Read `diverging` in `sample_stats`. The frozen step size and metric are in `idat
 replayed with the sampler's own settings. On the GPU, make the run bit-identical first
 ([GPU notes](gpu-notes.md#runs-at-the-same-seed-can-differ-on-the-gpu)).
 
-## A `TypeError` naming an option
+Then read `energy` at the divergent draws. `idata.attrs["diagnostics"]` has the counts (`divergence_energy`: `inf`,
+`nan`, `-inf`, `finite`), and the sampler warns when any divergence ended at a NaN or `-inf` energy:
 
-A stage was given a key it does not read (or one that was removed). The message lists the valid keys.
+- **`+inf`**: the proposal left the support (the log density is `-inf` there). If these are rare and sit at a hard edge
+  the posterior reaches only now and then, [delayed rejection](choosing-settings.md#divergences-in-a-rare-region-delayed-rejection-opt-in)
+  retries them with a smaller step and keeps the sampler exact.
+- **`NaN`** (or `-inf`, a log density of `+inf`): the log density or its gradient failed to evaluate. Often that is the
+  model's arithmetic (an overflow, a function evaluated where it loses all digits, float32 rounding), which no step size
+  fixes; find the term first.
+- **finite but large**: the step is too large for the curvature there.
+
+Divergences spread over the bulk mean the geometry or the model needs fixing, whichever kind they are.
+
+## ESS per gradient differs a lot between runs
+
+Up to about threefold between runs of one model is normal with the defaults: the frozen step size and trajectory length
+differ between runs, and they set the ESS per gradient. Two opt-in warmup settings narrow it
+([Choosing settings](choosing-settings.md#run-to-run-spread-a-step-size-floor-and-a-fixed-trajectory-length-opt-in-experimental)).
+On the GPU, runs at the same seed differ too ([GPU notes](gpu-notes.md#runs-at-the-same-seed-can-differ-on-the-gpu)).
+
+## A `TypeError` or `ValueError` naming an option
+
+A `TypeError`: a stage was given a key it does not read (or one that was removed); the message lists the valid keys. A
+`ValueError`: a value the stage would refuse; the message names the option and the values it takes. Both are raised
+before the first stage runs ([Options](options.md)).
 
 ## The GPU runs out of memory, or other users do
 
