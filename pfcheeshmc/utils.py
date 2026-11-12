@@ -106,6 +106,9 @@ def chees_warmup_with_progress(
     metric_estimator="cov",    # the re-estimate: "cov" (the chains' covariance), "fisher" or "fisher_lowrank"
                              #     (positions and gradients, `compiled.ensemble_metric_fisher`)
     metric_max_rank=10,        # "fisher_lowrank": directions beyond the diagonal
+    acceptance_floor=None,     # None = BlackJAX's step-size statistic. Else a floor in (0, target) on each
+                             #     chain's acceptance in that statistic (`compiled._adapter`)
+    trajectory_length=None,    # None = ChEES adapts the trajectory length. Else T, held fixed (`compiled._adapter`)
 ):
     """ChEES warmup, as host-driven chunks of ONE jitted program (`compiled.warmup_chunk`).
 
@@ -129,6 +132,10 @@ def chees_warmup_with_progress(
     carry on. An estimate that is not finite and positive definite is not used. The frozen metric the
     sampling stage reads is ``parameters["inverse_mass_matrix"]``; ``parameters["metric_updates"]`` records
     each update (step, used, restarted step size).
+
+    Step-size statistic (``acceptance_floor``, off by default) and fixed trajectory length
+    (``trajectory_length``, off by default): see `compiled._adapter`. Both are static settings of the chunk
+    program; None leaves the program exactly as without them.
     """
     # --- metric shape guard -------------------------------------------------
     # The metric is a flat kernel-order quantity: its dimension must equal the
@@ -161,7 +168,16 @@ def chees_warmup_with_progress(
     settings = dict(
         optim=optim if hasattr(optim, "init") else float(optim),
         target_accept=float(target_acceptance_rate), decay_rate=float(decay_rate),
-        jitter_amount=float(jitter_amount), max_leapfrog_steps=int(max_leapfrog_steps))
+        jitter_amount=float(jitter_amount), max_leapfrog_steps=int(max_leapfrog_steps),
+        acceptance_floor=None if acceptance_floor is None else float(acceptance_floor),
+        trajectory_length=None if trajectory_length is None else float(trajectory_length))
+    floor, length = settings["acceptance_floor"], settings["trajectory_length"]
+    if floor is not None and not 0.0 < floor < settings["target_accept"]:
+        # At or above the target the statistic never falls below it, and the step size grows without bound.
+        raise ValueError(f"acceptance_floor must lie in (0, target acceptance {settings['target_accept']}), "
+                         f"got {floor}")
+    if length is not None and not (np.isfinite(length) and length > 0.0):
+        raise ValueError(f"trajectory_length must be finite and positive, got {length}")
 
     # Start: HMC states for every chain, and the adapter's state. The step size is a value.
     eps0 = jnp.asarray(initial_step_size, dtype=jnp.result_type(initial_step_size))

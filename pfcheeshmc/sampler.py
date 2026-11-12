@@ -55,7 +55,8 @@ _PF_LBFGS_OPTIONS = {"pf_maxiter": "maxiter", "pf_maxcor": "maxcor", "pf_maxls":
 _STEP_SIZE_OPTIONS = _COMMON_OPTIONS | frozenset({"eps0_probes"})
 _CHEES_OPTIONS = _COMMON_OPTIONS | frozenset({
     "draws", "adam_lr", "target_accept", "max_leapfrog_steps", "warmup_stop", "progressbar",
-    "metric_updates", "metric_shrinkage", "metric_estimator", "metric_max_rank"})
+    "metric_updates", "metric_shrinkage", "metric_estimator", "metric_max_rank", "acceptance_floor",
+    "trajectory_length"})
 _DYNAMIC_HMC_OPTIONS = _COMMON_OPTIONS | frozenset({"draws", "progressbar", "delayed_rejection", "leapfrog_unroll"})
 # Delayed rejection (opt-in): a retry rate above this share of transitions is a warning (see `_run_dynamic_hmc`).
 DR_RETRY_WARN = 1e-3
@@ -70,6 +71,22 @@ def _check_options(where, given, allowed):
         raise TypeError(
             f"{where} got an unknown option {names} (an option that was removed raises as well). "
             f"The options are: {', '.join(sorted(allowed))}")
+
+
+def _check_warmup_values(chees_kwargs):
+    """Raise a ValueError, before any stage runs, for an opt-in warmup setting the warmup would refuse."""
+    target = float(chees_kwargs.get("target_accept", bj.adaptation.chees_adaptation.OPTIMAL_TARGET_ACCEPTANCE_RATE))
+
+    def number(v):
+        return not isinstance(v, bool) and isinstance(v, (int, float, np.integer, np.floating))
+
+    floor = chees_kwargs.get("acceptance_floor")
+    if floor is not None and not (number(floor) and 0.0 < float(floor) < target):
+        raise ValueError(f"chees_kwargs['acceptance_floor'] must be a number in (0, target_accept = {target}), "
+                         f"got {floor!r}")
+    length = chees_kwargs.get("trajectory_length")
+    if length is not None and not (number(length) and np.isfinite(float(length)) and float(length) > 0.0):
+        raise ValueError(f"chees_kwargs['trajectory_length'] must be a finite positive number, got {length!r}")
 
 
 def _warn_if_x64_contradicts_floatx():
@@ -1061,8 +1078,12 @@ class PfCheesHMC:
         default ``5 / (chains + 5)``), ``metric_estimator`` (the re-estimate at an update: ``"cov"``, the default,
         the chains' covariance; ``"fisher"`` or ``"fisher_lowrank"``, the metric that minimises the Fisher divergence,
         from the chains' positions and gradients), ``metric_max_rank`` (``"fisher_lowrank"``: directions beyond the
-        diagonal, default 10), ``progressbar``, ``seed`` and ``chains``. Any other key raises a
-        TypeError that names it. See `chees_warmup_with_progress` for what an update does.
+        diagonal, default 10), ``acceptance_floor`` (a floor in (0, ``target_accept``) on each chain's acceptance
+        in the statistic the step size is adapted on, e.g. 0.01; absent by default, so BlackJAX's harmonic mean of
+        the acceptances), ``trajectory_length`` (the trajectory length T, integration time, held fixed instead of
+        adapted by ChEES; absent by default), ``progressbar``, ``seed`` and ``chains``. Any other key raises a
+        TypeError that names it. See `chees_warmup_with_progress` for what an update does, and
+        `compiled._adapter` for the two opt-in settings.
         """
         _check_options("chees_kwargs", kwargs, _CHEES_OPTIONS)
         #Default values
@@ -1093,6 +1114,9 @@ class PfCheesHMC:
             self._resolved["warmup"]["metric_estimator"] = estimator
             if estimator == "fisher_lowrank":
                 self._resolved["warmup"]["metric_max_rank"] = int(kwargs.get("metric_max_rank", 10))
+        for key in ("acceptance_floor", "trajectory_length"):
+            if kwargs.get(key) is not None:
+                self._resolved["warmup"][key] = float(kwargs[key])
         # Stage-scoped key. This site used to be `_, key_warm = jax.random.split(jax.random.key(seed))`,
         # which produced exactly the key the sampling stage derived, so sampling replayed the warmup
         # key stream's child. Stage numbers are part of the key now: 1 = warmup, 2 = sampling.
@@ -1115,6 +1139,8 @@ class PfCheesHMC:
             metric_shrinkage=kwargs.get("metric_shrinkage", None),
             metric_estimator=kwargs.get("metric_estimator", "cov"),
             metric_max_rank=kwargs.get("metric_max_rank", 10),
+            acceptance_floor=kwargs.get("acceptance_floor", None),
+            trajectory_length=kwargs.get("trajectory_length", None),
         )
         self._resolved["warmup"]["metric_update_log"] = chees_parameters.get("metric_updates", [])
         if hasattr(chees_info, "info"):
@@ -1497,6 +1523,7 @@ class PfCheesHMC:
                 ("chees_kwargs", chees_kwargs, _CHEES_OPTIONS),
                 ("dynamic_hmc_kwargs", dynamic_hmc_kwargs, _DYNAMIC_HMC_OPTIONS)):
             _check_options(where, given, allowed)
+        _check_warmup_values(chees_kwargs)
         #Override chains in all kwargs
         kwargs.setdefault("chains", 32)
         if "chains" in kwargs:
@@ -1594,9 +1621,12 @@ class PfCheesHMC:
         Warmup (``_run_chees``)
             ``num_warmup`` (configured warmup length) and ``warmup_steps_used`` (ran; differs only
             with a stop rule), ``adam_lr``, ``target_accept``, ``max_leapfrog_steps``,
-            ``warmup_stop`` (null = no stop rule).
+            ``warmup_stop`` (null = no stop rule), ``metric_updates`` (null = none) and
+            ``metric_update_log`` (each update: step, used, restarted step size); only when set: ``metric_estimator`` (not
+            ``"cov"``), ``metric_max_rank`` (with ``"fisher_lowrank"``), ``acceptance_floor``,
+            ``trajectory_length``.
         Sampling (``_run_dynamic_hmc``)
-            ``chains``, ``num_draws``; ``delayed_rejection`` (only when on).
+            ``chains``, ``num_draws``; ``delayed_rejection`` and ``leapfrog_unroll`` (only when on).
         Frozen at the end of warmup
             ``frozen_step_size`` (eps) and ``frozen_L_nominal`` (L = T/eps).
         Seeds
@@ -1629,7 +1659,8 @@ class PfCheesHMC:
             "warmup_stop": wu["warmup_stop"],
             "metric_updates": wu["metric_updates"],
             "metric_update_log": wu["metric_update_log"],
-            **{k: wu[k] for k in ("metric_estimator", "metric_max_rank") if k in wu},
+            **{k: wu[k] for k in ("metric_estimator", "metric_max_rank", "acceptance_floor", "trajectory_length")
+               if k in wu},
             "chains": sm["chains"],
             "num_draws": sm["num_draws"],
             "frozen_step_size": idata.attrs["frozen_step_size"],
