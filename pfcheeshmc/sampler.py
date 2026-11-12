@@ -13,6 +13,7 @@ import arviz as az
 
 from tqdm.auto import tqdm
 from .utils import *
+from .utils import check_warmup_settings
 from . import compiled
 from .compiled import LogDensity
 from .compilation_cache import ensure_default_compilation_cache
@@ -74,19 +75,14 @@ def _check_options(where, given, allowed):
 
 
 def _check_warmup_values(chees_kwargs):
-    """Raise a ValueError, before any stage runs, for an opt-in warmup setting the warmup would refuse."""
-    target = float(chees_kwargs.get("target_accept", bj.adaptation.chees_adaptation.OPTIMAL_TARGET_ACCEPTANCE_RATE))
-
-    def number(v):
-        return not isinstance(v, bool) and isinstance(v, (int, float, np.integer, np.floating))
-
-    floor = chees_kwargs.get("acceptance_floor")
-    if floor is not None and not (number(floor) and 0.0 < float(floor) < target):
-        raise ValueError(f"chees_kwargs['acceptance_floor'] must be a number in (0, target_accept = {target}), "
-                         f"got {floor!r}")
-    length = chees_kwargs.get("trajectory_length")
-    if length is not None and not (number(length) and np.isfinite(float(length)) and float(length) > 0.0):
-        raise ValueError(f"chees_kwargs['trajectory_length'] must be a finite positive number, got {length!r}")
+    """Raise a ValueError, before any stage runs, for an opt-in warmup setting the warmup would refuse (the same
+    check as the warmup's, `utils.check_warmup_settings`)."""
+    try:
+        check_warmup_settings(chees_kwargs.get("acceptance_floor"), chees_kwargs.get("trajectory_length"),
+                              chees_kwargs.get("target_accept",
+                                               bj.adaptation.chees_adaptation.OPTIMAL_TARGET_ACCEPTANCE_RATE))
+    except ValueError as e:
+        raise ValueError(f"chees_kwargs: {e}") from None
 
 
 def _warn_if_x64_contradicts_floatx():

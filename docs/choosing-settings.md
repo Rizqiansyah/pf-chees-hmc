@@ -69,11 +69,13 @@ Two settings, both off by default:
 - `chees_kwargs={"acceptance_floor": f}` (f in (0, `target_accept`)): the step size targets the harmonic mean of
   max(acceptance, f). A chain at zero acceptance then counts as f, so a share of about (1/target - 1) x f of the chains
   (0.5% at f = 0.01 and the default target) can sit near zero before the statistic falls to the target. Tested: 0.01.
-- `chees_kwargs={"trajectory_length": T}` (T > 0): T is held fixed instead of adapted by ChEES; each warmup step clips it
-  to [step size, `max_leapfrog_steps` x step size], as ChEES's own value is. The step size is still adapted. T is a
-  property of the model and its metric, in the metric's units. There is no general default.
+- `chees_kwargs={"trajectory_length": T}` (T > 0): T is held fixed instead of adapted by ChEES. The warmup clips the T
+  it runs to [step size, `max_leapfrog_steps` x step size], as it clips ChEES's own; if T is more than
+  `max_leapfrog_steps` steps of the frozen step size, the draws run `max_leapfrog_steps` steps and a warning says so.
+  The step size is still adapted. T is a property of the model and its metric, in the metric's units. There is no
+  general default.
 
-Choosing T: run short pilot runs of your model at a few values of T (for example 4-8 values a factor sqrt(2) apart,
+Choosing T (another value of T, or of the floor, compiles nothing): run short pilot runs of your model at a few values of T (for example 4-8 values a factor sqrt(2) apart,
 around the T of a default run, `frozen_step_size x frozen_L_nominal` in `idata.attrs`) and take the one with the largest
 minimum bulk ESS per sampling gradient. On the GEV regression ESS per gradient was flat near its maximum: one T for three
 configurations reached 0.94-1.00 of each one's best.

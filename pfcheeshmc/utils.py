@@ -1,5 +1,6 @@
 import jax, jax.numpy as jnp
 import time
+import warnings
 from typing import Any, Callable, Dict, NamedTuple, Optional
 
 import numpy as np
@@ -75,6 +76,32 @@ def block_max_rhat(pos_window):
             raise ValueError(f"warmup window shape mismatch: {a.shape[:2]} vs {ref}")
     stacked = arrs[0] if len(arrs) == 1 else jnp.concatenate(arrs, axis=-1)
     return float(jnp.max(bj.diagnostics.rhat(stacked, chain_axis=0, sample_axis=1)))
+
+
+def check_warmup_settings(acceptance_floor, trajectory_length, target_accept):
+    """The two opt-in warmup settings as floats (or None), or a ValueError naming the setting.
+
+    ``acceptance_floor`` must be a number in (0, ``target_accept``): at or above the target the floored statistic
+    never falls below it, and the step size would grow without bound. ``trajectory_length`` must be a finite
+    positive number. A bool, a string or an array of more than one value is refused. Used by
+    `chees_warmup_with_progress` and, before any stage runs, by `sample_pf_chees_hmc`.
+    """
+    def number(v):
+        a = np.asarray(v)
+        return not isinstance(v, (bool, np.bool_)) and a.ndim == 0 and np.issubdtype(a.dtype, np.number) \
+            and not np.issubdtype(a.dtype, np.complexfloating)
+
+    target = float(target_accept)
+    if acceptance_floor is not None:
+        if not (number(acceptance_floor) and 0.0 < float(acceptance_floor) < target):
+            raise ValueError(f"acceptance_floor must be a number in (0, target_accept = {target}), "
+                             f"got {acceptance_floor!r}")
+        acceptance_floor = float(acceptance_floor)
+    if trajectory_length is not None:
+        if not (number(trajectory_length) and np.isfinite(float(trajectory_length)) and float(trajectory_length) > 0):
+            raise ValueError(f"trajectory_length must be a finite positive number, got {trajectory_length!r}")
+        trajectory_length = float(trajectory_length)
+    return acceptance_floor, trajectory_length
 
 
 def chees_warmup_with_progress(
@@ -162,22 +189,17 @@ def chees_warmup_with_progress(
     num_steps = int(num_steps)
     ld = ld_fn if isinstance(ld_fn, _compiled.LogDensity) else _compiled.plain_log_density(ld_fn, tuple(positions))
 
-    # Settings the chunk programs branch on (static for jit); everything else is an argument.
+    # Settings the chunk programs branch on (static for jit), and the two opt-in settings, which are values
+    # (`compiled._adapter`); everything else is an argument.
     if optim is None:
         optim = 0.05                       # the Adam learning rate when none is given
+    acceptance_floor, trajectory_length = check_warmup_settings(acceptance_floor, trajectory_length,
+                                                                target_acceptance_rate)
     settings = dict(
         optim=optim if hasattr(optim, "init") else float(optim),
         target_accept=float(target_acceptance_rate), decay_rate=float(decay_rate),
         jitter_amount=float(jitter_amount), max_leapfrog_steps=int(max_leapfrog_steps),
-        acceptance_floor=None if acceptance_floor is None else float(acceptance_floor),
-        trajectory_length=None if trajectory_length is None else float(trajectory_length))
-    floor, length = settings["acceptance_floor"], settings["trajectory_length"]
-    if floor is not None and not 0.0 < floor < settings["target_accept"]:
-        # At or above the target the statistic never falls below it, and the step size grows without bound.
-        raise ValueError(f"acceptance_floor must lie in (0, target acceptance {settings['target_accept']}), "
-                         f"got {floor}")
-    if length is not None and not (np.isfinite(length) and length > 0.0):
-        raise ValueError(f"trajectory_length must be finite and positive, got {length}")
+        acceptance_floor=acceptance_floor, trajectory_length=trajectory_length)
 
     # Start: HMC states for every chain, and the adapter's state. The step size is a value.
     eps0 = jnp.asarray(initial_step_size, dtype=jnp.result_type(initial_step_size))
@@ -345,7 +367,8 @@ def chees_warmup_with_progress(
                         take=min(32, _compiled._num_chains(states.position)))
                     eps_new = float(eps_new)
                     if np.isfinite(eps_new) and eps_new > 0.0:
-                        carry = (states, _compiled.restart_step_size(astate, eps_new))
+                        carry = (states, _compiled.restart_step_size(
+                            astate, eps_new, trajectory_length, max_leapfrog_steps=int(max_leapfrog_steps)))
                 metric_log.append({"step": int(b), "used": used, "step_size": eps_new})
         warm_info, trace_hist = rest.result()
         stopped_at = None
@@ -363,6 +386,15 @@ def chees_warmup_with_progress(
         last_adapt_state.log_trajectory_length_moving_average
         - last_adapt_state.log_step_size_moving_average
     )
+    if trajectory_length is not None and float(traj_len_adj) > int(max_leapfrog_steps):
+        # ChEES's own moving average follows the clipped T, so it stays near the cap; a fixed T does not.
+        eps_frozen = float(jnp.exp(last_adapt_state.log_step_size_moving_average))
+        warnings.warn(
+            f"trajectory_length {trajectory_length} is {float(traj_len_adj):.0f} steps of the frozen step size "
+            f"{eps_frozen:.3g}, above max_leapfrog_steps {int(max_leapfrog_steps)}: the draws run "
+            f"{int(max_leapfrog_steps)} steps (T = {int(max_leapfrog_steps) * eps_frozen:.3g}).",
+            RuntimeWarning, stacklevel=2)
+        traj_len_adj = jnp.asarray(int(max_leapfrog_steps), dtype=traj_len_adj.dtype)
     parameters = {
         "step_size": jnp.exp(last_adapt_state.log_step_size_moving_average),
         "frozen_step_size": jnp.exp(last_adapt_state.log_step_size_moving_average),

@@ -253,6 +253,10 @@ the effective draws per transition of a lag-1 autoregression.
   `trajectory_length` setting.
 
 The two settings reproduce the prototypes these measurements used: one configuration, run both ways with XLA's
-autotuning off, gave the same frozen step size and trajectory length, the same step-size and trajectory-length traces,
-gradient counts and posterior summaries, bit for bit. The warmup trace's harmonic acceptance differs by design: with
-`acceptance_floor` it records the floored statistic, which is what the step size is adapted on.
+autotuning off, gave the same frozen step size and trajectory length, the same warmup traces (step size, trajectory
+length, harmonic acceptance), per-chain acceptance, gradient counts and posterior summaries, bit for bit. The trace's
+harmonic acceptance is that of the acceptances themselves, also with the floor on, so stuck chains stay visible in the
+progress bar. Both settings are traced values, not static arguments: pilot runs at several T share one program. A fixed
+T is clipped at the start, each step and after a metric update's restart, and the draws' L is capped at
+`max_leapfrog_steps` with a warning (ChEES's own moving average follows its clipped T and stays near the cap; a fixed
+T would not).

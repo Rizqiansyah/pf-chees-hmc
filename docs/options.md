@@ -51,7 +51,7 @@ set, so a default run's record is unchanged).
 | `draws` | 2,000 | default | warmup steps |
 | `target_accept` | 0.651 | default | the step size's target for the harmonic mean of the chains' acceptance |
 | `adam_lr` | 0.05 | default | Adam's learning rate for ChEES's trajectory length |
-| `max_leapfrog_steps` | 1,000 | default | cap on the trajectory length during the warmup, in steps of the current step size (the draws run T / frozen step size) |
+| `max_leapfrog_steps` | 1,000 | default | cap on the trajectory length during the warmup, in steps of the current step size; with a fixed `trajectory_length`, also on the draws' steps |
 | `metric_updates` | `None` | opt-in | warmup fractions at which the metric is re-estimated from the chains, e.g. `(0.25, 0.5, 0.75)` ([Metrics](metrics.md#metric-updates-during-the-warmup-opt-in)) |
 | `metric_shrinkage` | `5 / (chains + 5)` | with `metric_updates` | weight of the old metric in each re-estimate |
 | `metric_estimator` | `"cov"` | with `metric_updates`; `"fisher"`, `"fisher_lowrank"` experimental | the re-estimate: the chains' covariance, or the Fisher-divergence metric from positions and gradients |
