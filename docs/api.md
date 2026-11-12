@@ -8,5 +8,6 @@
 .. autofunction:: pfcheeshmc.default_compilation_cache_dir
 ```
 
-The stage options of `sample_pf_chees_hmc` are listed in [Choosing chains, draws and warmup](choosing-settings.md#warmup-options)
-and [Metrics](metrics.md).
+Every stage option of `sample_pf_chees_hmc`, with its default and whether it is a default behaviour or opt-in:
+[Options](options.md). How to choose them: [Choosing chains, draws and warmup](choosing-settings.md) and
+[Metrics](metrics.md).

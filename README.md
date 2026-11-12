@@ -41,6 +41,12 @@ draw their own random numbers.
   when the chains are few for the dimension ([Metrics](docs/metrics.md)).
 - **Reading R-hat with many chains**: why R-hat above 1.01 is expected for slow coordinates with ~1,000 short chains, and
   the check that tells slow mixing from chains that disagree ([R-hat](docs/rhat-many-chains.md)).
+- **Two warmup settings against run-to-run spread (experimental).** `chees_kwargs["acceptance_floor"]` (a floor on each
+  chain's acceptance in the step size's statistic) and `chees_kwargs["trajectory_length"]` (a fixed trajectory length,
+  which you choose for your model). Together, on an upper-bounded GEV regression: 1.7-6.9x the ESS per gradient and a
+  run-to-run spread of 0.02-0.15 against 0.09-0.43 (sd of log), with more first-stage divergences, which delayed
+  rejection resolved ([Choosing settings](docs/choosing-settings.md#run-to-run-spread-a-step-size-floor-and-a-fixed-trajectory-length-opt-in-experimental)).
+- **An options reference**: every key of every stage, its default, and whether it is opt-in ([Options](docs/options.md)).
 - **Several leapfrog steps per loop pass** (`leapfrog_unroll`): about 7% less sampling time on a GPU at 4 steps per
   pass, for a longer first compile ([Performance](docs/performance.md#several-leapfrog-steps-per-loop-pass-opt-in)).
 - `pfcheeshmc.__version__`; JAX 0.12 in the lock; `pixi run -e docs docs` builds the documentation.
@@ -100,15 +106,17 @@ sphinx-build -b html docs docs/_build/html
 | page | what is in it |
 |---|---|
 | [Quick start](docs/quickstart.md) | arguments, seeds, what comes back, the example notebooks |
-| [Choosing chains, draws and warmup](docs/choosing-settings.md) | the bias gate, warmup lengths that pass it, warmup options |
+| [Choosing chains, draws and warmup](docs/choosing-settings.md) | the bias gate, warmup lengths that pass it, warmup options, run-to-run spread, delayed rejection |
 | [Metrics](docs/metrics.md) | metric sources, Pathfinder's L-BFGS settings, metric updates |
-| [Performance](docs/performance.md) | against PyMC NUTS, with the commands |
+| [Reading R-hat with many chains](docs/rhat-many-chains.md) | why R-hat above 1.01 is expected for slow coordinates, and the check that tells why |
+| [Performance](docs/performance.md) | against PyMC NUTS, with the commands; several leapfrog steps per loop pass |
 | [Case study](docs/case-study-gev-regression.md) | a stiff extreme-value regression: one GPU against NUTS on 56 cores |
 | [Compile once, and the disk cache](docs/compile-and-cache.md) | what compiles when; the on-disk cache |
 | [float32](docs/float32.md) | opt-in; where it helps and where it silently fails |
 | [GPU notes](docs/gpu-notes.md) | the Hessian warning, reproducibility, shared GPUs |
 | [Troubleshooting](docs/troubleshooting.md) | not converging, divergences, slow first calls |
 | [API](docs/api.md) | `sample_pf_chees_hmc`, the cache functions |
+| [Options](docs/options.md) | every option of every stage, its default, and whether it is opt-in |
 | [Design notes](docs/design.md) | for maintainers |
 
 Example notebooks are in [`examples/`](examples/); the benchmark harness in [`benchmarks/`](benchmarks/README.md).
