@@ -34,9 +34,18 @@ Then read `energy` at the divergent draws. `idata.attrs["diagnostics"]` has the 
 
 Divergences spread over the bulk mean the geometry or the model needs fixing, whichever kind they are.
 
-## A `TypeError` naming an option
+## ESS per gradient differs a lot between runs
 
-A stage was given a key it does not read (or one that was removed). The message lists the valid keys.
+Up to about threefold between runs of one model is normal with the defaults: the frozen step size and trajectory length
+differ between runs, and they set the ESS per gradient. Two opt-in warmup settings narrow it
+([Choosing settings](choosing-settings.md#run-to-run-spread-a-step-size-floor-and-a-fixed-trajectory-length-opt-in-experimental)).
+On the GPU, runs at the same seed differ too ([GPU notes](gpu-notes.md#runs-at-the-same-seed-can-differ-on-the-gpu)).
+
+## A `TypeError` or `ValueError` naming an option
+
+A `TypeError`: a stage was given a key it does not read (or one that was removed); the message lists the valid keys. A
+`ValueError`: a value the stage would refuse; the message names the option and the values it takes. Both are raised
+before the first stage runs ([Options](options.md)).
 
 ## The GPU runs out of memory, or other users do
 

@@ -171,9 +171,12 @@ float64" warning while x64 is off, since its advice would undo the float32 run.
 
 - **SNAPER in place of ChEES** (Sountsov & Hoffman 2021): the trajectory-length gradient of the ESJD of the squared
   projection on the leading principal component (of the chains, whitened by the dense metric), per unit length, in
-  BlackJAX's adapter. On an upper-bounded GEV regression (1,024 chains, seeds 1-5) the tuned length varied as much
-  between seeds as under ChEES (4.2x in both on one case), and the ESS per gradient changed by +7% to +13% on the GEV
-  cases and -8% to -12% on two benchmark models, inside the seed-to-seed range (about 3x). Not added.
+  BlackJAX's adapter. On an upper-bounded GEV regression (1,024 chains, seeds 1-5) the tuned step count L varied as
+  much between seeds as under ChEES (4.2x in both on one case), and the ESS per gradient changed by +7% to +13% on the
+  GEV cases and -8% to -12% on two benchmark models, inside the seed-to-seed range (about 3x). Not added. (Corrected
+  after 0.4's first draft, which said this range is not explained by the tuned length: that compared step counts, not
+  the trajectory length T = L x step size. The step size and T do explain it, and SNAPER does not change why T varies;
+  section 9.)
 - **An R-hat implied by the ESS.** sqrt((n - 1)/n + m/ESS) matches the observed R-hat whether chains mix slowly or
   disagree, because ArviZ's ESS uses the between-chain variance as R-hat does; it carries no information beyond R-hat. A
   within-chain-only autocorrelation estimate is biased low on short chains (centring each chain on its own mean).
@@ -186,3 +189,74 @@ float64" warning while x64 is off, since its advice would undo the float32 run.
   HMC's ESS per gradient on one GEV case and 0.75-0.87x on another, with twice the divergences; friction 2 gave
   0.4-0.7x. Not added; it also cannot be combined with delayed rejection as built (a deterministic proposal is assumed).
   Tuning the length for MALT itself (adaptive MALT) was not tried. Both prototypes: branch `p7-prototypes`.
+
+## 9. The ChEES warmup: where run-to-run spread comes from
+
+Measured for 0.4 on an upper-bounded GEV regression: 1,024 chains, warmup 200 with metric updates at 0.25, 0.5 and 0.75,
+target acceptance 0.8, delayed rejection 8 x 4, float32, one GPU. Every run was its own process, with the disk cache off
+and XLA's autotuning on, so each run is a fresh draw of the run-to-run variation a new user sees
+([GPU notes](gpu-notes.md#runs-at-the-same-seed-can-differ-on-the-gpu)). The user-facing summary and the measured effect
+of the two settings are in [Choosing settings](choosing-settings.md#run-to-run-spread-a-step-size-floor-and-a-fixed-trajectory-length-opt-in-experimental).
+
+**What carries the spread.** On a common grid of step size and T, sampled from each run's warmed-up state, the two
+settings explained 87-100% of the variance of log ESS per gradient between runs; the warmed-up state changed it by at
+most 1.05-1.12x, and sampling noise by about 1%.
+
+**Step size.** `chees_adaptation.base` (BlackJAX 1.7.1) feeds dual averaging the harmonic mean, over the non-divergent
+chains, of the acceptance probabilities. A chain whose proposal is rejected with probability near 1 without crossing the
+divergence threshold (acceptances of 1e-12 to 1e-44 were seen) puts that mean near 0. Dual averaging then cuts the step
+size about tenfold and climbs back: a sawtooth, and the frozen step size is its phase when the warmup ends (2.3x between
+runs). `acceptance_floor` replaces the statistic by the harmonic mean of max(p, f). `compiled._adapter` builds it from
+two calls of BlackJAX's update, so BlackJAX's code is not copied: the step-size fields come from the call fed max(p, f),
+the trajectory fields from the call fed p (p also weights ChEES's gradient), and T is clipped at the new step size as
+BlackJAX clips it. `tests/test_warmup_options.py` pins this against BlackJAX bit for bit. Floors tried: 0.005, 0.01 and
+0.03. 0.01 was the smallest that halved the step size's spread where the sawtooth occurred and kept the stuck chains
+within noise; 0.03 left 8 chains stuck where the defaults left none.
+
+**Trajectory length.** BlackJAX starts T at the initial step size e0, as Algorithm 1 of the ChEES paper does. e0 is the
+geometric median of 32 doubling/halving searches (Hoffman & Gelman 2014, Algorithm 4), so it moves between runs by
+factors of 2. Dual averaging's first step sets the step size to 10 e0 exp(-(target - h1) / (0.05 x 11)), h1 the first
+step's statistic (2.3-2.5 e0 when h1 is near 0, at target 0.8), and T is clipped up to it. BlackJAX's update then applies
+Adam's step to the moving average of log T (weight step^-0.5), which is also the T the kernel runs, so each step moves
+log T by step^-0.5 times Adam's update and T stays near its start. With e0 forced to 0.16, 0.64 and 2.56 the slope of log
+frozen T on log e0 was 0.44-0.52, and runs at the same e0 gave nearly the same T. The ChEES paper's Adam settings
+(0.025, beta1 0, beta2 0.95) did not change this. Algorithm 1's update (Adam on log T itself) kept the dependence on one
+configuration and on another drove T to 8-19 and halved ESS per gradient. `trajectory_length` holds T and its moving
+average at the given value instead.
+
+**ChEES's criterion.** Sampled from warmed-up states at 8 values of T (about a quarter to four times the best), the ESS
+per gradient at each criterion's maximiser, relative to the best T, over three configurations:
+
+| criterion | ESS per gradient at its maximiser / best |
+|---|---|
+| ChEES (BlackJAX's) | 0.26-0.36 (its maximiser above the largest T tried) |
+| ChEES per gradient | 0.35-0.49 |
+| ChEES / sqrt(L) (Wang et al. 2013) | 0.66-0.99 |
+| SNAPER (Sountsov & Hoffman) | 0.35-0.70 |
+| slowest coordinate: (1 - rho)/(1 + rho) / L | 0.94-0.98 |
+| the same over the chains' principal directions | 0.93-0.98 |
+
+rho is the cross-chain correlation of a whitened coordinate before and after one transition, so (1 - rho)/(1 + rho) is
+the effective draws per transition of a lag-1 autoregression.
+
+**Adapting T by the slowest-coordinate criterion: tried, not adopted.**
+
+- A probe after the warmup (5 values of T around the warmup's, 8 draws each, a quadratic fit in log T): its T varied
+  between runs by a standard deviation of log 0.11-0.24, at 4-15% more gradients. From a start far below the best it
+  cannot reach it.
+- A finite-difference search inside the warmup (three chain groups at T e^-d, T and T e^d; Kiefer-Wolfowitz steps on the
+  log of the criterion summed over blocks of 16 steps): it froze T low in single runs (0.72 in one run, 2.2-2.8 in three,
+  against 4.1-4.2 in the rest). A first version took the log of each step's criterion and drove T up whatever T was: the
+  chains of a step share the Halton jitter, and at a small jitter every group runs a short trajectory, where the criterion
+  rises with T.
+- One fixed T for all three configurations (the geometric mean of their ESS-per-gradient optima) beat both, and is the
+  `trajectory_length` setting.
+
+The two settings reproduce the prototypes these measurements used: one configuration, run both ways with XLA's
+autotuning off, gave the same frozen step size and trajectory length, the same warmup traces (step size, trajectory
+length, harmonic acceptance), per-chain acceptance, gradient counts and posterior summaries, bit for bit. The trace's
+harmonic acceptance is that of the acceptances themselves, also with the floor on, so stuck chains stay visible in the
+progress bar. Both settings are traced values, not static arguments: pilot runs at several T share one program. A fixed
+T is clipped at the start, each step and after a metric update's restart, and the draws' L is capped at
+`max_leapfrog_steps` with a warning (ChEES's own moving average follows its clipped T and stays near the cap; a fixed
+T would not).

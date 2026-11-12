@@ -435,6 +435,8 @@ def integration_steps(random_generator_arg, trajectory_length_adjusted, jitter_a
 
 
 _ADAPTER = ("optim", "target_accept", "decay_rate", "jitter_amount", "max_leapfrog_steps")
+# The opt-in warmup settings of `_adapter` (acceptance_floor, trajectory_length) are values, not static arguments:
+# another floor or trajectory length runs the same compiled program (only None against a value is a second program).
 
 
 class ChEESTrace(NamedTuple):
@@ -449,7 +451,9 @@ class ChEESTrace(NamedTuple):
         consumes next. trajectory_length / step_size is the nominal leapfrog count L at this step.
     harmonic_acceptance
         `chees_harmonic_acceptance` of this update's chains: the quantity ChEES adapts the step size
-        against, not the arithmetic mean of per-chain acceptances.
+        against, not the arithmetic mean of per-chain acceptances. With ``acceptance_floor`` set the step
+        size is adapted on the harmonic mean of max(acceptance, floor), and this field still records the
+        harmonic mean of the acceptances themselves, so chains stuck near zero stay visible.
     """
 
     step: Any
@@ -458,11 +462,36 @@ class ChEESTrace(NamedTuple):
     harmonic_acceptance: Any
 
 
-def _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps):
+def _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, acceptance_floor=None,
+             trajectory_length=None):
     """BlackJAX's ChEES adapter ``(init, update)``, its ``update`` returning ``(state, ChEESTrace)``.
 
     ``optim`` is an Adam learning rate (a stable static argument: an optax object is a new value on every
-    call) or an optax transformation. The state is BlackJAX's, untouched; the trace is read off it.
+    call) or an optax transformation. With both options None (the default) the state is BlackJAX's,
+    untouched, and the trace is read off it.
+
+    The two settings are values (traced, not static): None or not is part of the program, the value is not.
+
+    ``acceptance_floor`` (opt-in, a float in (0, target_accept)): the step size's dual averaging targets the
+    harmonic mean over the non-divergent chains of max(acceptance, floor) instead of the harmonic mean of the
+    acceptances. Under BlackJAX's statistic a few chains at an acceptance near zero (without diverging) pull
+    the mean of ~1,000 chains from near 1 to near 0, the step size is cut about tenfold and climbs back, and
+    the frozen step size depends on where that cycle stops. With the floor, a chain at zero acceptance counts
+    as ``floor``: about ``(1/target - 1) * floor`` of the chains can sit at zero before the statistic reaches
+    the target. Built from BlackJAX's own update: the step-size fields (step size, its moving average, the
+    dual-averaging state) come from the update fed max(acceptance, floor); the trajectory-length fields
+    (its moving average, the Adam state) from the update fed the acceptances themselves, which also weight
+    ChEES's gradient; the trajectory length is then clipped as BlackJAX clips it, to [step size,
+    max_leapfrog_steps x step size] at the new step size. Two calls rather than a copy of BlackJAX's step-size
+    arithmetic: the extra work is one ChEES statistic over the chains (O(chains x dimension)) per warmup step,
+    against the step's leapfrog steps, each a gradient of every chain.
+
+    ``trajectory_length`` (opt-in, a float > 0): the trajectory length T (integration time, L x step size)
+    held at this value from the start: ChEES's update of T is computed and not used. The T the kernel runs is
+    clipped as BlackJAX clips its own, to [step size, max_leapfrog_steps x step size], at the start too; its
+    moving average, which the sampling phase freezes, is log T (`utils.chees_warmup_with_progress` caps the
+    frozen L at max_leapfrog_steps). With it, T does not depend on the initial step size, where BlackJAX starts T
+    and where BlackJAX's update leaves it (`docs/design.md`, section 9).
     """
     if not hasattr(optim, "init"):
         optim = optax.adam(optim)
@@ -470,14 +499,41 @@ def _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps
         lambda i: halton_jitter(i, jitter_amount), _next_random_arg, optim, target_accept, decay_rate,
         max_leapfrog_steps)
 
+    def _clip_length(length, step_size):
+        return jnp.clip(length, max=max_leapfrog_steps * step_size, min=step_size)
+
+    def init_fixed(random_generator_arg, step_size):
+        state = init(random_generator_arg, step_size)
+        if trajectory_length is None:
+            return state
+        t = jnp.asarray(trajectory_length, dtype=jnp.result_type(step_size))
+        return state._replace(trajectory_length=_clip_length(t, step_size).astype(t.dtype),
+                              log_trajectory_length_moving_average=jnp.log(t))
+
     def update_with_trace(state, proposed_positions, proposed_momentums, initial_positions, acceptance,
                           is_divergent, inverse_mass_matrix):
         new = update(state, proposed_positions, proposed_momentums, initial_positions, acceptance,
                      is_divergent, inverse_mass_matrix)
+        if acceptance_floor is not None:
+            floored = update(state, proposed_positions, proposed_momentums, initial_positions,
+                             jnp.maximum(acceptance, jnp.asarray(acceptance_floor, dtype=acceptance.dtype)),
+                             is_divergent, inverse_mass_matrix)
+            new = new._replace(step_size=floored.step_size,
+                               log_step_size_moving_average=floored.log_step_size_moving_average,
+                               da_state=floored.da_state)
+            if trajectory_length is None:          # with a fixed length, the clip below replaces this one
+                new = new._replace(trajectory_length=_clip_length(
+                    jnp.exp(new.log_trajectory_length_moving_average), new.step_size).astype(new.trajectory_length.dtype))
+        if trajectory_length is not None:
+            t = jnp.asarray(trajectory_length, dtype=new.trajectory_length.dtype)
+            new = new._replace(
+                trajectory_length=_clip_length(t, new.step_size).astype(new.trajectory_length.dtype),
+                log_trajectory_length_moving_average=jnp.log(t).astype(
+                    jnp.result_type(new.log_trajectory_length_moving_average)))
         return new, ChEESTrace(new.step, new.step_size, new.trajectory_length,
                                chees_harmonic_acceptance(acceptance, is_divergent))
 
-    return init, update_with_trace
+    return init_fixed, update_with_trace
 
 
 def _strong(tree):
@@ -512,13 +568,14 @@ def _chunk_scan(step, carry, start, n, chunk):
 
 @partial(jax.jit, static_argnames=_STATIC + _ADAPTER)
 def warmup_init(fn, names, values, positions, initial_step_size, *, optim, target_accept, decay_rate,
-                jitter_amount, max_leapfrog_steps):
+                jitter_amount, max_leapfrog_steps, acceptance_floor=None, trajectory_length=None):
     """The warmup's start: HMC states for a dict of ``(chains, ...)`` positions, and the adapter's state.
 
     ``initial_step_size`` is a value (dynamic).
     """
     ld = _logdensity(fn, names, values)
-    init_adapt, _ = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps)
+    init_adapt, _ = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps,
+                             acceptance_floor, trajectory_length)
     states = jax.vmap(lambda p: dynamic_hmc.init(p, ld, 0))(positions)
     return _strong(states), _strong(init_adapt(0, initial_step_size))
 
@@ -613,21 +670,28 @@ def ensemble_metric_fisher(positions, grads, old, shrinkage, *, estimator, max_r
     return jnp.where(good, new, old).astype(old.dtype), good
 
 
-@jax.jit
-def restart_step_size(astate, step_size):
+@partial(jax.jit, static_argnames=("max_leapfrog_steps",))
+def restart_step_size(astate, step_size, trajectory_length=None, max_leapfrog_steps=1000):
     """The adapter state with its step size restarted at ``step_size``: a fresh dual-averaging state there,
     and the step size's moving average set to it. The trajectory length, its moving average, the Adam state,
-    the jitter index and the step counter carry on. Used after the metric changed under the warmup."""
+    the jitter index and the step counter carry on. Used after the metric changed under the warmup.
+
+    With a fixed ``trajectory_length`` (`_adapter`), the T the next step runs is clipped again at the new step
+    size, to [step size, max_leapfrog_steps x step size]; without it the state's T carries on as before."""
     da_init, _, _ = dual_averaging.dual_averaging()
     step_size = jnp.asarray(step_size, dtype=astate.step_size.dtype)
     new = astate._replace(step_size=step_size, log_step_size_moving_average=jnp.log(step_size),
                           da_state=da_init(step_size))
+    if trajectory_length is not None:
+        t = jnp.asarray(trajectory_length, dtype=astate.trajectory_length.dtype)
+        new = new._replace(trajectory_length=jnp.clip(t, max=max_leapfrog_steps * step_size, min=step_size))
     return _like(new, astate)
 
 
 @partial(jax.jit, static_argnames=_STATIC + _ADAPTER + ("chunk", "stack_positions"))
 def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *, chunk, stack_positions,
-                 optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps):
+                 optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps, acceptance_floor=None,
+                 trajectory_length=None):
     """``chunk`` ChEES warmup steps (the first ``n`` real) from ``carry = (HMC states, adapter state)``.
 
     Step ``j`` is global step ``start + j``: its key is ``fold_in(key, start + j)`` and its Halton jitter
@@ -637,10 +701,12 @@ def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *
     reads them; stacking them is the memory wall at C=1,024).
     """
     ld = _logdensity(fn, names, values)
-    _, update_adapt = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps)
+    _, update_adapt = _adapter(optim, target_accept, decay_rate, jitter_amount, max_leapfrog_steps,
+                               acceptance_floor, trajectory_length)
     kernel = dynamic_hmc.build_kernel(
         next_random_arg_fn=_next_random_arg,
-        integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount))
+        integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount),
+        divergence_threshold=DIVERGENCE_THRESHOLD)
     imm = jnp.asarray(inverse_mass_matrix)
     # ChEES whitens its trajectory-length criterion by 1/sqrt(imm), so it needs the diagonal of the
     # inverse mass matrix (variances). The HMC kernel itself still gets the full dense metric.
@@ -699,8 +765,12 @@ DR_STREAM = 0x44520000
 # The retry decision of a rule with a retry probability below 1 ("probabilistic"): proposal k is made if
 # uniform(fold_in(key, DR_RETRY_STREAM + k)) < p_k, apart from the acceptance uniforms above.
 DR_RETRY_STREAM = DR_STREAM + 0x8000
-# Retry rules of `delayed_rejection_step`: when a later proposal is made after a rejection.
+# Retry rules of `delayed_rejection_step`: when a later proposal is made after a rejection (the sampler's option
+# check reads this list).
 DR_RETRY_RULES = ("divergent", "energy_above", "probabilistic")
+# |H(end) - H(start)| above which a transition is divergent: BlackJAX's default, passed explicitly to every kernel and
+# to `delayed_rejection_step`, whose exactness needs its retry rule and its ghosts to use the kernel's own threshold.
+DIVERGENCE_THRESHOLD = 1000.0
 
 
 def unrolled_integration(integrator, unroll):
@@ -731,7 +801,7 @@ def unrolled_hmc_proposal(unroll):
     if unroll == 1:
         return bj_hmc.hmc_proposal
 
-    def build(integrator, kinetic_energy, step_size, num_integration_steps=1, divergence_threshold=1000):
+    def build(integrator, kinetic_energy, step_size, num_integration_steps=1, divergence_threshold=DIVERGENCE_THRESHOLD):
         build_trajectory = unrolled_integration(integrator, unroll)
         hmc_energy_fn = bj_trajectory.hmc_energy(kinetic_energy)
 
@@ -772,6 +842,7 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
     kernel = dynamic_hmc.build_kernel(
         next_random_arg_fn=_next_random_arg,
         integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount),
+        divergence_threshold=DIVERGENCE_THRESHOLD,
         **({} if unroll == 1 else {"build_proposal": unrolled_hmc_proposal(unroll)}))
     imm = jnp.asarray(inverse_mass_matrix)
     num_chains = _num_chains(state.position)
@@ -784,6 +855,7 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
         retry = ()
         if dr_factor is not None:
             new_state, retry = delayed_rejection_step(ld, imm, step_size, dr_factor, keys, s, new_state, info,
+                                                      divergence_threshold=DIVERGENCE_THRESHOLD,
                                                       batch=dr_batch, stages=dr_stages, retry=dr_retry,
                                                       unroll=unroll, ghost_loop=dr_ghost_loop)
         # Projection: keep only what _to_inference_data reads (position + logdensity for the
@@ -796,11 +868,6 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
                         info.num_integration_steps, info.energy, *retry))
 
     return _chunk_scan(step, state, start, n, chunk)
-
-
-def _log1m_accept(delta_h):
-    """log(1 - min(1, exp(-delta_h))), delta_h = H(end) - H(start): -inf where the move is always accepted."""
-    return jnp.where(delta_h > 0, jnp.log(-jnp.expm1(-jnp.where(delta_h > 0, delta_h, 1.0))), -jnp.inf)
 
 
 def _delta_h(energy, z0, z1):
@@ -816,11 +883,11 @@ def _log1m_exp(log_a):
 
 
 def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old, new, info,
-                           divergence_threshold=1000.0, batch=None, stages=2, retry="divergent", unroll=1,
+                           divergence_threshold=DIVERGENCE_THRESHOLD, batch=None, stages=2, retry="divergent", unroll=1,
                            ghost_loop=True):
     """Later proposals of k-stage delayed-rejection HMC, on the chains whose earlier proposals diverged.
 
-    Modi, Barnett & Carpenter (2023), "Delayed rejection Hamiltonian Monte Carlo for sampling multiscale
+    Modi, Barnett & Carpenter (2024), "Delayed rejection Hamiltonian Monte Carlo for sampling multiscale
     distributions", Bayesian Analysis, eqs. (29)-(30), with the retry probability p_(j+1)(x) = 1{proposal j from
     x diverged}: proposal j + 1 is made only when proposal j diverged (and was rejected). Proposal j is
     F_j = flip . L^(a^(j-1) n)_(eps / a^(j-1)) (same integration time, step / a^(j-1)); F_1 is BlackJAX's. All are
@@ -968,9 +1035,12 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
         return one
 
     def run_stage(k, need, s_x, state):
-        """Stage k for the chains in `need` (packed, `batch` at a time, gathered and scattered back)."""
+        """Stage k for the chains in `need` (packed, `batch` at a time, gathered and scattered back). The packed
+        index is padded to a whole number of batches with the out-of-range index `num`: a slot holding it reads
+        the last chain and its writes are dropped, so the last batch is never shifted back onto chains already
+        done, and fewer chains than `batch` work."""
         num = need.shape[0]
-        idx = jnp.nonzero(need, size=num, fill_value=num)[0]
+        idx = jnp.nonzero(need, size=-(-num // batch) * batch, fill_value=num)[0]
         count = jnp.sum(need)
         inputs = (keys, old.position, old.logdensity, old.logdensity_grad, info.momentum, s_x, n)
         zeros = jnp.zeros_like(need)

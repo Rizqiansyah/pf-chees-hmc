@@ -13,6 +13,7 @@ import arviz as az
 
 from tqdm.auto import tqdm
 from .utils import *
+from .utils import check_metric_settings, check_warmup_settings
 from . import compiled
 from .compiled import LogDensity
 from .compilation_cache import ensure_default_compilation_cache
@@ -55,7 +56,8 @@ _PF_LBFGS_OPTIONS = {"pf_maxiter": "maxiter", "pf_maxcor": "maxcor", "pf_maxls":
 _STEP_SIZE_OPTIONS = _COMMON_OPTIONS | frozenset({"eps0_probes"})
 _CHEES_OPTIONS = _COMMON_OPTIONS | frozenset({
     "draws", "adam_lr", "target_accept", "max_leapfrog_steps", "warmup_stop", "progressbar",
-    "metric_updates", "metric_shrinkage", "metric_estimator", "metric_max_rank"})
+    "metric_updates", "metric_shrinkage", "metric_estimator", "metric_max_rank", "acceptance_floor",
+    "trajectory_length"})
 _DYNAMIC_HMC_OPTIONS = _COMMON_OPTIONS | frozenset({"draws", "progressbar", "delayed_rejection", "leapfrog_unroll"})
 # Delayed rejection (opt-in): a retry rate above this share of transitions is a warning (see `_run_dynamic_hmc`).
 DR_RETRY_WARN = 1e-3
@@ -70,6 +72,63 @@ def _check_options(where, given, allowed):
         raise TypeError(
             f"{where} got an unknown option {names} (an option that was removed raises as well). "
             f"The options are: {', '.join(sorted(allowed))}")
+
+
+def _resolve_delayed_rejection(dr):
+    """``dynamic_hmc_kwargs["delayed_rejection"]`` as the resolved dict ``{"factor", "stages"[, "retry"]}``, or None;
+    a ValueError for anything else. An integer a is {"factor": a, "stages": 2}; "retry" (default "divergent", not
+    recorded) is one of `compiled.DR_RETRY_RULES`: "probabilistic" or {"energy_above": c}."""
+    if dr is None:
+        return None
+    spec = dr if isinstance(dr, dict) else {"factor": dr}
+    if set(spec) - {"factor", "stages", "retry"}:
+        raise ValueError(f"delayed_rejection must be None, an integer >= 2 or a dict with 'factor', "
+                         f"'stages' and 'retry', got {dr!r}")
+    factor, stages = spec.get("factor"), spec.get("stages", 2)
+    for name, v in (("factor", factor), ("stages", stages)):
+        if isinstance(v, bool) or not isinstance(v, (int, np.integer)) or int(v) < 2:
+            raise ValueError(f"delayed_rejection {name} must be an integer >= 2, got {dr!r}")
+    dr_cfg = {"factor": int(factor), "stages": int(stages)}
+    rule = spec.get("retry", "divergent")
+    if isinstance(rule, dict) and set(rule) == {"energy_above"}:
+        c = rule["energy_above"]
+        if isinstance(c, bool) or not isinstance(c, (int, float, np.integer, np.floating)) or not c > 0:
+            raise ValueError(f"delayed_rejection retry energy_above must be a number > 0, got {rule!r}")
+        dr_cfg["retry"] = {"energy_above": float(c)}
+    elif rule == "probabilistic":
+        dr_cfg["retry"] = "probabilistic"
+    elif rule != "divergent":
+        raise ValueError(f"delayed_rejection retry must be one of {compiled.DR_RETRY_RULES} "
+                         f"('divergent', 'probabilistic' or {{'energy_above': c}}), got {rule!r}")
+    return dr_cfg
+
+
+def _resolve_leapfrog_unroll(unroll):
+    """``dynamic_hmc_kwargs["leapfrog_unroll"]`` as an int >= 1, or a ValueError."""
+    if isinstance(unroll, bool) or not isinstance(unroll, (int, np.integer)) or unroll < 1:
+        raise ValueError(f"leapfrog_unroll must be an integer >= 1, got {unroll!r}")
+    return int(unroll)
+
+
+def _check_option_values(chees_kwargs, dynamic_hmc_kwargs):
+    """Raise a ValueError, before any stage runs, for an option value its stage would refuse: the same checks as
+    the stages' (`utils.check_warmup_settings`, `utils.check_metric_settings`, `_resolve_delayed_rejection`,
+    `_resolve_leapfrog_unroll`), so a bad value is not found after Pathfinder and the warmup have run. The one
+    check left to its stage needs the metric: "fisher_lowrank" requires a dense one."""
+    try:
+        check_warmup_settings(chees_kwargs.get("acceptance_floor"), chees_kwargs.get("trajectory_length"),
+                              chees_kwargs.get("target_accept",
+                                               bj.adaptation.chees_adaptation.OPTIMAL_TARGET_ACCEPTANCE_RATE))
+        check_metric_settings(chees_kwargs.get("metric_updates"), chees_kwargs.get("metric_estimator", "cov"),
+                              chees_kwargs.get("metric_max_rank", 10), chees_kwargs.get("metric_shrinkage"),
+                              chees_kwargs.get("warmup_stop"))
+    except ValueError as e:
+        raise ValueError(f"chees_kwargs: {e}") from None
+    try:
+        _resolve_delayed_rejection(dynamic_hmc_kwargs.get("delayed_rejection"))
+        _resolve_leapfrog_unroll(dynamic_hmc_kwargs.get("leapfrog_unroll", 1))
+    except ValueError as e:
+        raise ValueError(f"dynamic_hmc_kwargs: {e}") from None
 
 
 def _warn_if_x64_contradicts_floatx():
@@ -233,7 +292,7 @@ def _finite_gradient_rows(draws, grads, max_rank):
         return draws, grads, record
     warnings.warn(
         f"imm_source='fisher_lowrank': {ok.shape[0] - int(ok.sum())} of {ok.shape[0]} Pathfinder draws have a "
-        "non-finite gradient (outside the support) and are left out of the metric", RuntimeWarning, stacklevel=3)
+        "non-finite gradient (outside the support) and are left out of the metric", RuntimeWarning, stacklevel=5)
     if ok.sum() < 2 * max_rank + 2:
         raise ValueError(
             f"imm_source='fisher_lowrank': only {int(ok.sum())} of {ok.shape[0]} Pathfinder draws have a finite "
@@ -821,7 +880,7 @@ class PfCheesHMC:
                 f"Pathfinder's L-BFGS used all {pf_maxiter} of its iterations (pathfinder_kwargs['pf_maxiter']): it "
                 "may have stopped before its tolerances were met, far from the mode, and the starts and the metric "
                 "come from where it stopped. Raise pf_maxiter (Troubleshooting, \"The sampler is not converging\").",
-                RuntimeWarning, stacklevel=3)
+                RuntimeWarning, stacklevel=4)
 
         # 4) Draw the start pool, bounded by `pf_pool_cap` rows (see default_pool_cap for why the
         # default is dimension-aware rather than a multiple of `chains`). pf_pool_cap=0 is the
@@ -1061,8 +1120,12 @@ class PfCheesHMC:
         default ``5 / (chains + 5)``), ``metric_estimator`` (the re-estimate at an update: ``"cov"``, the default,
         the chains' covariance; ``"fisher"`` or ``"fisher_lowrank"``, the metric that minimises the Fisher divergence,
         from the chains' positions and gradients), ``metric_max_rank`` (``"fisher_lowrank"``: directions beyond the
-        diagonal, default 10), ``progressbar``, ``seed`` and ``chains``. Any other key raises a
-        TypeError that names it. See `chees_warmup_with_progress` for what an update does.
+        diagonal, default 10), ``acceptance_floor`` (a floor in (0, ``target_accept``) on each chain's acceptance
+        in the statistic the step size is adapted on, e.g. 0.01; absent by default, so BlackJAX's harmonic mean of
+        the acceptances), ``trajectory_length`` (the trajectory length T, integration time, held fixed instead of
+        adapted by ChEES; absent by default), ``progressbar``, ``seed`` and ``chains``. Any other key raises a
+        TypeError that names it. See `chees_warmup_with_progress` for what an update does, and
+        `compiled._adapter` for the two opt-in settings.
         """
         _check_options("chees_kwargs", kwargs, _CHEES_OPTIONS)
         #Default values
@@ -1093,6 +1156,9 @@ class PfCheesHMC:
             self._resolved["warmup"]["metric_estimator"] = estimator
             if estimator == "fisher_lowrank":
                 self._resolved["warmup"]["metric_max_rank"] = int(kwargs.get("metric_max_rank", 10))
+        for key in ("acceptance_floor", "trajectory_length"):
+            if kwargs.get(key) is not None:
+                self._resolved["warmup"][key] = float(kwargs[key])
         # Stage-scoped key. This site used to be `_, key_warm = jax.random.split(jax.random.key(seed))`,
         # which produced exactly the key the sampling stage derived, so sampling replayed the warmup
         # key stream's child. Stage numbers are part of the key now: 1 = warmup, 2 = sampling.
@@ -1115,6 +1181,8 @@ class PfCheesHMC:
             metric_shrinkage=kwargs.get("metric_shrinkage", None),
             metric_estimator=kwargs.get("metric_estimator", "cov"),
             metric_max_rank=kwargs.get("metric_max_rank", 10),
+            acceptance_floor=kwargs.get("acceptance_floor", None),
+            trajectory_length=kwargs.get("trajectory_length", None),
         )
         self._resolved["warmup"]["metric_update_log"] = chees_parameters.get("metric_updates", [])
         if hasattr(chees_info, "info"):
@@ -1154,40 +1222,14 @@ class PfCheesHMC:
         # for, after the divergences have been diagnosed; not a substitute for a reparameterisation.
         # An integer a is {"factor": a, "stages": 2}; "stages" k >= 2 adds proposals at step / a^2, ... / a^(k-1).
         # "retry" (default "divergent"): when a later proposal is made, `compiled.delayed_rejection_step`.
-        dr = kwargs.get("delayed_rejection")
-        dr_cfg = None
-        if dr is not None:
-            spec = dr if isinstance(dr, dict) else {"factor": dr}
-            if not isinstance(spec, dict) or set(spec) - {"factor", "stages", "retry"}:
-                raise ValueError(f"delayed_rejection must be None, an integer >= 2 or a dict with 'factor', "
-                                 f"'stages' and 'retry', got {dr!r}")
-            factor, stages = spec.get("factor"), spec.get("stages", 2)
-            for name, v in (("factor", factor), ("stages", stages)):
-                if isinstance(v, bool) or not isinstance(v, (int, np.integer)) or int(v) < 2:
-                    raise ValueError(f"delayed_rejection {name} must be an integer >= 2, got {dr!r}")
-            dr_cfg = {"factor": int(factor), "stages": int(stages)}
-            rule = spec.get("retry", "divergent")
-            if isinstance(rule, dict) and set(rule) == {"energy_above"}:
-                c = rule["energy_above"]
-                if isinstance(c, bool) or not isinstance(c, (int, float, np.integer, np.floating)) or not c > 0:
-                    raise ValueError(f"delayed_rejection retry energy_above must be a number > 0, got {rule!r}")
-                dr_cfg["retry"] = {"energy_above": float(c)}
-            elif rule == "probabilistic":
-                dr_cfg["retry"] = "probabilistic"
-            elif rule != "divergent":
-                raise ValueError(f"delayed_rejection retry must be 'divergent', 'probabilistic' or "
-                                 f"{{'energy_above': c}}, got {rule!r}")
-        dr = dr_cfg
+        dr = _resolve_delayed_rejection(kwargs.get("delayed_rejection"))
         # the static form of the rule for the chunk program; "divergent" is not recorded (the config of a run with
         # the default rule is unchanged)
         dr_retry = "divergent"
         if dr is not None and "retry" in dr:
             dr_retry = dr["retry"] if dr["retry"] == "probabilistic" else ("energy_above", dr["retry"]["energy_above"])
         # Leapfrog steps per loop pass (opt-in; `compiled.unrolled_integration`): the same draws, fewer loop tests.
-        unroll = kwargs.get("leapfrog_unroll", 1)
-        if isinstance(unroll, bool) or not isinstance(unroll, (int, np.integer)) or unroll < 1:
-            raise ValueError(f"leapfrog_unroll must be an integer >= 1, got {unroll!r}")
-        unroll = int(unroll)
+        unroll = _resolve_leapfrog_unroll(kwargs.get("leapfrog_unroll", 1))
         self._resolved["sampling"] = {"seed": int(kwargs["seed"]), "chains": int(num_chains),
                                       "num_draws": int(num_draws), "delayed_rejection": dr}
         if unroll != 1:       # recorded only when set, so a default run's config is unchanged
@@ -1248,7 +1290,7 @@ class PfCheesHMC:
                 f"{failed} of {n_div} divergent transitions ended at a NaN (or -inf) energy: the log density or its "
                 "gradient failed to evaluate there (an overflow, a function outside the range where it keeps its "
                 "digits, float32 rounding): often the model's arithmetic rather than the step size. Counts by energy are in "
-                "idata.attrs[\"diagnostics\"] (Troubleshooting, \"Divergences\").", RuntimeWarning, stacklevel=3)
+                "idata.attrs[\"diagnostics\"] (Troubleshooting, \"Divergences\").", RuntimeWarning, stacklevel=4)
         if dr is not None and dr_retry == "divergent":
             # (the other rules retry ordinary rejections by design)
             rate = float(np.mean(infos_hist.retried))
@@ -1256,7 +1298,7 @@ class PfCheesHMC:
                 warnings.warn(
                     f"delayed rejection retried {rate:.2%} of transitions (warning above {DR_RETRY_WARN:.2%}): the "
                     "first-stage step diverges in the bulk, not in a rare region. Diagnose the divergences "
-                    "(reparameterise or fix the model) rather than rely on retries.", RuntimeWarning, stacklevel=3)
+                    "(reparameterise or fix the model) rather than rely on retries.", RuntimeWarning, stacklevel=4)
         return dhmc_state, states_hist, infos_hist
 
 
@@ -1497,6 +1539,7 @@ class PfCheesHMC:
                 ("chees_kwargs", chees_kwargs, _CHEES_OPTIONS),
                 ("dynamic_hmc_kwargs", dynamic_hmc_kwargs, _DYNAMIC_HMC_OPTIONS)):
             _check_options(where, given, allowed)
+        _check_option_values(chees_kwargs, dynamic_hmc_kwargs)
         #Override chains in all kwargs
         kwargs.setdefault("chains", 32)
         if "chains" in kwargs:
@@ -1594,9 +1637,12 @@ class PfCheesHMC:
         Warmup (``_run_chees``)
             ``num_warmup`` (configured warmup length) and ``warmup_steps_used`` (ran; differs only
             with a stop rule), ``adam_lr``, ``target_accept``, ``max_leapfrog_steps``,
-            ``warmup_stop`` (null = no stop rule).
+            ``warmup_stop`` (null = no stop rule), ``metric_updates`` (null = none) and
+            ``metric_update_log`` (each update: step, used, restarted step size); only when set: ``metric_estimator`` (not
+            ``"cov"``), ``metric_max_rank`` (with ``"fisher_lowrank"``), ``acceptance_floor``,
+            ``trajectory_length``.
         Sampling (``_run_dynamic_hmc``)
-            ``chains``, ``num_draws``; ``delayed_rejection`` (only when on).
+            ``chains``, ``num_draws``; ``delayed_rejection`` and ``leapfrog_unroll`` (only when on).
         Frozen at the end of warmup
             ``frozen_step_size`` (eps) and ``frozen_L_nominal`` (L = T/eps).
         Seeds
@@ -1629,7 +1675,8 @@ class PfCheesHMC:
             "warmup_stop": wu["warmup_stop"],
             "metric_updates": wu["metric_updates"],
             "metric_update_log": wu["metric_update_log"],
-            **{k: wu[k] for k in ("metric_estimator", "metric_max_rank") if k in wu},
+            **{k: wu[k] for k in ("metric_estimator", "metric_max_rank", "acceptance_floor", "trajectory_length")
+               if k in wu},
             "chains": sm["chains"],
             "num_draws": sm["num_draws"],
             "frozen_step_size": idata.attrs["frozen_step_size"],

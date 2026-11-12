@@ -43,6 +43,7 @@ troubleshooting
 :caption: Reference
 
 api
+options
 ```
 
 ```{toctree}

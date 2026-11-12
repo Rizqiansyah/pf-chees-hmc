@@ -38,14 +38,74 @@ Check `diverging` in `sample_stats`, and the R-hat and ESS of every parameter, a
 ## Warmup options
 
 `chees_kwargs` keys (defaults in brackets): `draws` (2,000), `adam_lr` (0.05), `target_accept` (0.651, BlackJAX's ChEES
-optimum), `max_leapfrog_steps` (1,000), `metric_updates` and `metric_shrinkage` ([Metrics](metrics.md)), `warmup_stop`,
-`progressbar`, `seed`, `chains`.
+optimum), `max_leapfrog_steps` (1,000), `metric_updates`, `metric_shrinkage`, `metric_estimator` and `metric_max_rank`
+([Metrics](metrics.md)), `acceptance_floor` and `trajectory_length` (off;
+[below](#run-to-run-spread-a-step-size-floor-and-a-fixed-trajectory-length-opt-in-experimental)), `warmup_stop`,
+`progressbar`, `seed`, `chains`. Every key of every stage: [Options](options.md).
 
 `warmup_stop` (for example `{"block": 250, "window": 100, "rhat": 1.01}`) ends the warmup early when a stop rule is met.
 It is off by default. On all four benchmark models it cost more time at the block boundaries than it saved, so it is kept
 for instrumentation only, and it cannot be combined with `metric_updates`.
 
 `step_size_tune_kwargs` takes `eps0_probes` (32): how many starts the initial step-size search uses.
+
+## Run-to-run spread: a step-size floor and a fixed trajectory length (opt-in, experimental)
+
+With the defaults, the ESS per gradient of one model can differ about threefold between runs. Two tuned values carry
+almost all of it: the frozen step size and the frozen trajectory length T (integration time, steps x step size). On an
+upper-bounded GEV regression (1,024 chains, three configurations, 3-5 seeds each) they explained 87-100% of the
+variance of log ESS per gradient between runs; the chains' warmed-up positions and sampling noise explained little.
+
+- **Step size.** The warmup's dual averaging targets the harmonic mean of the chains' acceptance probabilities, as the
+  ChEES paper does (one stuck chain cuts the step size for all). With about 1,000 chains, a few chains at an acceptance
+  near zero, without diverging, pull that mean from near 1 to near 0 between neighbouring step sizes. The step size is
+  then cut about tenfold and climbs back, and the frozen step size depends on where that cycle stops.
+- **Trajectory length.** BlackJAX's adapter starts T at the initial step size, which the search before the warmup finds
+  to within a factor of 2, and its update leaves T near that start. Separately, ChEES's criterion keeps rising past the
+  T that maximises ESS per gradient on these models. Details: [Design notes](design.md#9-the-chees-warmup-where-run-to-run-spread-comes-from).
+
+Two settings, both off by default:
+
+- `chees_kwargs={"acceptance_floor": f}` (f in (0, `target_accept`)): the step size targets the harmonic mean of
+  max(acceptance, f). A chain at zero acceptance then counts as f, so a share of about (1/target - 1) x f of the chains
+  (0.5% at f = 0.01 and the default target) can sit near zero before the statistic falls to the target. Tested: 0.01.
+- `chees_kwargs={"trajectory_length": T}` (T > 0): T is held fixed instead of adapted by ChEES. The warmup clips the T
+  it runs to [step size, `max_leapfrog_steps` x step size], as it clips ChEES's own; if T is more than
+  `max_leapfrog_steps` steps of the frozen step size, the draws run `max_leapfrog_steps` steps and a warning says so.
+  The step size is still adapted. T is a property of the model and its metric, in the metric's units. There is no
+  general default.
+
+Choosing T (another value of T, or of the floor, compiles nothing): run short pilot runs of your model at a few values of T (for example 4-8 values a factor sqrt(2) apart,
+around the T of a default run, `frozen_step_size x frozen_L_nominal` in `idata.attrs`) and take the one with the largest
+minimum bulk ESS per sampling gradient. On the GEV regression ESS per gradient was flat near its maximum: one T for three
+configurations reached 0.94-1.00 of each one's best.
+
+Measured on the GEV regression, floor 0.01 and a fixed T together against the defaults (six configurations: three to
+choose T, three held out with nothing retuned; 8 runs each; 1,024 chains; float32; GPU):
+
+| | defaults | floor 0.01 + fixed T |
+|---|---|---|
+| ESS per gradient, geometric mean | 1 | 1.7-6.9x |
+| sd of log ESS per gradient across runs | 0.09-0.43 | 0.02-0.15 |
+
+Per posterior scalar, the mean and the 1/5/50/95/99% quantiles agreed with the defaults' (z in Monte Carlo standard
+errors, 8 runs pooled) on five configurations. On the sixth one quantile was 4.06 standard errors off (0.005 posterior
+sd), and 8 further runs did not repeat it (largest |z| 3.10). With the floor alone, the step size's spread halved where the cycle
+above occurred, but the spread of ESS per gradient did not narrow: T's spread then dominated.
+
+Costs:
+
+- **More first-stage divergences.** The step size is larger: on the GEV regression, 287 to 20,728 per 8 runs where the
+  defaults had 0 to 1,457. [Delayed rejection](#divergences-in-a-rare-region-delayed-rejection-opt-in)
+  resolved all of them in these runs. Use the two settings with it.
+- **A stuck chain can stay stuck.** The floor stops a few chains from cutting the step size for all. With the floor
+  alone, 3 of 24,576 chains (24 runs) had an acceptance near 0 for the whole sampling phase; none had with the defaults.
+  Check the per-chain acceptance (`sample_stats["acceptance_rate"]` by chain) as for any run.
+- **A wrong T costs ESS per gradient.** On the GEV regression, ChEES's own T reached 0.22-0.64 of the best ESS per
+  gradient.
+
+Adapting T by other rules (a probe after the warmup, a finite-difference search inside it, SNAPER's criterion) did not
+beat a fixed T in these tests ([Design notes](design.md#9-the-chees-warmup-where-run-to-run-spread-comes-from)).
 
 ## Divergences in a rare region: delayed rejection (opt-in)
 
@@ -55,7 +115,7 @@ from the same point, with the step divided by `a` and `a` times the steps (the s
 only if the previous one diverged (eq. 29 of the paper; a stage-`j` acceptance needs the reverse proposals of all
 earlier stages from its end point, the "ghosts", so stage 3 costs `a^2 + a + 2` trajectories for the chains that reach
 it). On a hard-edge test with frequent divergences, 3 stages left 294 transitions divergent where 2 left 11,234. The retry is
-accepted with the delayed-rejection probability of Modi, Barnett & Carpenter (2023, *Bayesian Analysis*, eq. 30, with
+accepted with the delayed-rejection probability of Modi, Barnett & Carpenter (2024, *Bayesian Analysis*, eq. 30, with
 the retry probability set to 1 on a divergence and 0 otherwise), so the sampler stays exact: a retry is accepted only
 if the reverse first proposal from its end point would also have diverged.
 
@@ -107,7 +167,7 @@ rejection:
 - `{"energy_above": c}`: after a rejected proposal whose energy error was above `c` (c > 0). The same indicator family at
   a lower threshold: rejections with a large energy error are retried too, not only divergences;
 - `"probabilistic"`: after a rejection, with probability `1 - alpha`, alpha the rejected proposal's acceptance
-  probability (Modi, Barnett & Carpenter 2023, s.3.2, eq. 31). A proposal rejected by chance at a high acceptance
+  probability (Modi, Barnett & Carpenter 2024, s.3.2, eq. 31). A proposal rejected by chance at a high acceptance
   probability is rarely retried; one rejected strongly almost always.
 
 Every rule keeps the sampler exact: the retry probability enters the acceptance at the current state and at the ghosts

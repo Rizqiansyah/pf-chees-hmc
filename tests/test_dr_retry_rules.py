@@ -1,6 +1,6 @@
 """Retry rules of delayed rejection (``delayed_rejection={"factor": a, "stages": k, "retry": ...}``).
 
-Modi, Barnett & Carpenter (2023), eq. (30): any retry probability p_(j+1) that is a function of the state and its
+Modi, Barnett & Carpenter (2024), eq. (30): any retry probability p_(j+1) that is a function of the state and its
 proposals keeps the kernel exact if the ghosts evaluate the same p. Rules: "divergent" (the default, the indicator of a
 divergence; test_delayed_rejection.py), {"energy_above": c} (the indicator dH > c) and "probabilistic"
 (p = 1 - alpha_j, the paper's eq. 31, with its own retry uniform). Guards:

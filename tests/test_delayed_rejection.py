@@ -1,6 +1,6 @@
 """Delayed rejection on divergence (opt-in, `dynamic_hmc_kwargs={"delayed_rejection": a}`).
 
-Modi, Barnett & Carpenter (2023), eq. (30) with p2 = 1{first proposal diverged}. Guards:
+Modi, Barnett & Carpenter (2024), eq. (30) with p2 = 1{first proposal diverged}. Guards:
   1. invariance: chains started at exact draws of a target with a hard edge, run with a step large enough that
      divergences are frequent, keep the exact law; the same test with the ghost terms dropped fails (power);
   2. off by default: the option absent gives the sampler's own kernel (no retry fields, no config key);
@@ -195,3 +195,29 @@ def test_float32_invariance():
         assert r["retry_accepted"] > 1000, (stages, r)
         assert r["ks_p"] > 1e-3, (stages, r)
         assert abs(r["tail_z"]) < 4, (stages, r)
+
+
+def _small(n_chains, batch, stages=3):
+    ld = compiled.plain_log_density(_logp, ["x"])
+    x0 = EXACT.rvs(n_chains, random_state=np.random.default_rng(1))
+    state = compiled.batch_init(ld.fn, ld.names, ld.values, {"x": jnp.asarray(x0)}, 0)
+    s, (_, info) = compiled.sampling_chunk(ld.fn, ld.names, ld.values, state, jnp.ones(1), 4.0, L, jax.random.key(3),
+                                           np.int32(0), np.int32(30), chunk=30, jitter_amount=1.0, dr_factor=2,
+                                           dr_batch=batch, dr_stages=stages)
+    return np.asarray(s.position["x"]), info
+
+
+def test_fewer_chains_than_a_batch():
+    """4 chains, batch 8 (DR_BATCH): the retry index is padded to a whole batch (the program used to fail to build)."""
+    x, info = _small(4, None)
+    assert int(np.sum(info.retried)) > 0 and np.all(np.isfinite(x))
+
+
+def test_a_partial_last_batch_gives_the_draws_of_whole_batches():
+    """12 chains in batches of 8 (the last one partial, padded) and of 4 (whole): the same draws and retry fields."""
+    a, ia = _small(12, 8)
+    b, ib = _small(12, 4)
+    assert int(np.sum(ia.retried)) > 8                        # more retries than one batch holds
+    np.testing.assert_array_equal(a, b)
+    for f in ("retried", "retry_accepted", "retry_divergent", "retry_integration_steps"):
+        np.testing.assert_array_equal(np.asarray(getattr(ia, f)), np.asarray(getattr(ib, f)), err_msg=f)

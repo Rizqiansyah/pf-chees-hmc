@@ -66,7 +66,7 @@ chees_kwargs={"metric_updates": (0.25, 0.5, 0.75), "metric_estimator": "fisher_l
 - `"cov"` (the default): the covariance of the chains' positions, as above;
 - `"fisher"`: per coordinate `sqrt(Var[x] / Var[grad log p])`, from the chains' positions and their log-density
   gradients (the warmup state carries them, so no gradient is added). This is the diagonal metric that minimises the Fisher
-  divergence between the target and a Gaussian (Seyboldt, Carlson & Carpenter 2026). A dense Pathfinder metric gets it
+  divergence between the target and a Gaussian (Seyboldt, Carlson & Carpenter 2026, arXiv:2603.18845). A dense Pathfinder metric gets it
   as a diagonal matrix, so correlations are dropped;
 - `"fisher_lowrank"`: that diagonal plus up to `metric_max_rank` directions (default 10) where the positions and the
   gradients disagree with it, as BlackJAX's `fisher_score_low_rank` estimates them (nutpie's settings: directions whose
@@ -87,8 +87,8 @@ warmup, ESS per gradient of the slowest coordinate against `"cov"`:
 | 8 Schools | 10 | 128 | 1.2-1.5x | 1.4-1.6x |
 | GEV (3 parameters) | 3 | 128 | 0.9-1.0x | 0.8-1.1x |
 | logistic regression 1000 x 25 | 25 | 128 | 0.16-0.18x | 0.8x |
-| upper-bounded GEV regression, fixed-support moment | 15 | 1,024 | 0.01-0.1x | 0.3-0.8x |
-| upper-bounded GEV regression, simply-supported moment | 15 | 1,024 | 0.07-0.22x | 1.2-1.7x |
+| upper-bounded GEV regression, configuration A | 15 | 1,024 | 0.01-0.1x | 0.3-0.8x |
+| upper-bounded GEV regression, configuration B | 15 | 1,024 | 0.07-0.22x | 1.2-1.7x |
 
 (CPU, 300 draws, warmup 400, seeds 1 and 2 for the first four; GPU, float32, 1,000 draws, warmup 200, seeds 1-3 for the
 last two.) With fewer chains than coordinates the chains' covariance is rank-deficient and only the shrinkage keeps it
