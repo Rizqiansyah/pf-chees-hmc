@@ -705,7 +705,8 @@ def warmup_chunk(fn, names, values, carry, inverse_mass_matrix, key, start, n, *
                                acceptance_floor, trajectory_length)
     kernel = dynamic_hmc.build_kernel(
         next_random_arg_fn=_next_random_arg,
-        integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount))
+        integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount),
+        divergence_threshold=DIVERGENCE_THRESHOLD)
     imm = jnp.asarray(inverse_mass_matrix)
     # ChEES whitens its trajectory-length criterion by 1/sqrt(imm), so it needs the diagonal of the
     # inverse mass matrix (variances). The HMC kernel itself still gets the full dense metric.
@@ -764,8 +765,12 @@ DR_STREAM = 0x44520000
 # The retry decision of a rule with a retry probability below 1 ("probabilistic"): proposal k is made if
 # uniform(fold_in(key, DR_RETRY_STREAM + k)) < p_k, apart from the acceptance uniforms above.
 DR_RETRY_STREAM = DR_STREAM + 0x8000
-# Retry rules of `delayed_rejection_step`: when a later proposal is made after a rejection.
+# Retry rules of `delayed_rejection_step`: when a later proposal is made after a rejection (the sampler's option
+# check reads this list).
 DR_RETRY_RULES = ("divergent", "energy_above", "probabilistic")
+# |H(end) - H(start)| above which a transition is divergent: BlackJAX's default, passed explicitly to every kernel and
+# to `delayed_rejection_step`, whose exactness needs its retry rule and its ghosts to use the kernel's own threshold.
+DIVERGENCE_THRESHOLD = 1000.0
 
 
 def unrolled_integration(integrator, unroll):
@@ -796,7 +801,7 @@ def unrolled_hmc_proposal(unroll):
     if unroll == 1:
         return bj_hmc.hmc_proposal
 
-    def build(integrator, kinetic_energy, step_size, num_integration_steps=1, divergence_threshold=1000):
+    def build(integrator, kinetic_energy, step_size, num_integration_steps=1, divergence_threshold=DIVERGENCE_THRESHOLD):
         build_trajectory = unrolled_integration(integrator, unroll)
         hmc_energy_fn = bj_trajectory.hmc_energy(kinetic_energy)
 
@@ -837,6 +842,7 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
     kernel = dynamic_hmc.build_kernel(
         next_random_arg_fn=_next_random_arg,
         integration_steps_fn=partial(integration_steps, jitter_amount=jitter_amount),
+        divergence_threshold=DIVERGENCE_THRESHOLD,
         **({} if unroll == 1 else {"build_proposal": unrolled_hmc_proposal(unroll)}))
     imm = jnp.asarray(inverse_mass_matrix)
     num_chains = _num_chains(state.position)
@@ -849,6 +855,7 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
         retry = ()
         if dr_factor is not None:
             new_state, retry = delayed_rejection_step(ld, imm, step_size, dr_factor, keys, s, new_state, info,
+                                                      divergence_threshold=DIVERGENCE_THRESHOLD,
                                                       batch=dr_batch, stages=dr_stages, retry=dr_retry,
                                                       unroll=unroll, ghost_loop=dr_ghost_loop)
         # Projection: keep only what _to_inference_data reads (position + logdensity for the
@@ -861,11 +868,6 @@ def sampling_chunk(fn, names, values, state, inverse_mass_matrix, step_size, tra
                         info.num_integration_steps, info.energy, *retry))
 
     return _chunk_scan(step, state, start, n, chunk)
-
-
-def _log1m_accept(delta_h):
-    """log(1 - min(1, exp(-delta_h))), delta_h = H(end) - H(start): -inf where the move is always accepted."""
-    return jnp.where(delta_h > 0, jnp.log(-jnp.expm1(-jnp.where(delta_h > 0, delta_h, 1.0))), -jnp.inf)
 
 
 def _delta_h(energy, z0, z1):
@@ -881,7 +883,7 @@ def _log1m_exp(log_a):
 
 
 def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old, new, info,
-                           divergence_threshold=1000.0, batch=None, stages=2, retry="divergent", unroll=1,
+                           divergence_threshold=DIVERGENCE_THRESHOLD, batch=None, stages=2, retry="divergent", unroll=1,
                            ghost_loop=True):
     """Later proposals of k-stage delayed-rejection HMC, on the chains whose earlier proposals diverged.
 
@@ -1033,9 +1035,12 @@ def delayed_rejection_step(ld, inverse_mass_matrix, step_size, factor, keys, old
         return one
 
     def run_stage(k, need, s_x, state):
-        """Stage k for the chains in `need` (packed, `batch` at a time, gathered and scattered back)."""
+        """Stage k for the chains in `need` (packed, `batch` at a time, gathered and scattered back). The packed
+        index is padded to a whole number of batches with the out-of-range index `num`: a slot holding it reads
+        the last chain and its writes are dropped, so the last batch is never shifted back onto chains already
+        done, and fewer chains than `batch` work."""
         num = need.shape[0]
-        idx = jnp.nonzero(need, size=num, fill_value=num)[0]
+        idx = jnp.nonzero(need, size=-(-num // batch) * batch, fill_value=num)[0]
         count = jnp.sum(need)
         inputs = (keys, old.position, old.logdensity, old.logdensity_grad, info.momentum, s_x, n)
         zeros = jnp.zeros_like(need)

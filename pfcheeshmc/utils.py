@@ -104,6 +104,27 @@ def check_warmup_settings(acceptance_floor, trajectory_length, target_accept):
     return acceptance_floor, trajectory_length
 
 
+def check_metric_settings(metric_updates, metric_estimator, metric_max_rank, metric_shrinkage, stop_rule):
+    """A ValueError for metric-update settings the warmup would refuse (all but the dense-metric requirement of
+    "fisher_lowrank", which needs the metric). Used by `chees_warmup_with_progress` and, before any stage runs, by
+    `sample_pf_chees_hmc`."""
+    if metric_updates:
+        if stop_rule:
+            raise ValueError("metric_updates and a warmup stop rule cannot be combined")
+        for f in metric_updates:
+            if not 0.0 < float(f) < 1.0:
+                raise ValueError(f"metric_updates fractions must lie in (0, 1), got {f}")
+    if metric_estimator not in _compiled.METRIC_ESTIMATORS:
+        raise ValueError(f"metric_estimator must be one of {_compiled.METRIC_ESTIMATORS}, got {metric_estimator!r}")
+    if metric_estimator != "cov" and not metric_updates:
+        raise ValueError(f"metric_estimator={metric_estimator!r} needs metric_updates: the estimator is used only at "
+                         "a metric update")
+    if isinstance(metric_max_rank, bool) or not isinstance(metric_max_rank, (int, np.integer)) or metric_max_rank < 1:
+        raise ValueError(f"metric_max_rank must be an integer >= 1, got {metric_max_rank!r}")
+    if metric_shrinkage is not None and not 0.0 <= float(metric_shrinkage) <= 1.0:
+        raise ValueError(f"metric_shrinkage must lie in [0, 1], got {metric_shrinkage}")
+
+
 def chees_warmup_with_progress(
     ld_fn,                      # logdensity function, or a compiled.LogDensity (carries fn/names/values)
     rng_key,
@@ -195,6 +216,7 @@ def chees_warmup_with_progress(
         optim = 0.05                       # the Adam learning rate when none is given
     acceptance_floor, trajectory_length = check_warmup_settings(acceptance_floor, trajectory_length,
                                                                 target_acceptance_rate)
+    check_metric_settings(metric_updates, metric_estimator, metric_max_rank, metric_shrinkage, stop_rule)
     settings = dict(
         optim=optim if hasattr(optim, "init") else float(optim),
         target_accept=float(target_acceptance_rate), decay_rate=float(decay_rate),
@@ -209,25 +231,11 @@ def chees_warmup_with_progress(
     # Warmup steps after which the metric is re-estimated (empty: never, the previous behaviour).
     boundaries = []
     if metric_updates:
-        if stop_rule:
-            raise ValueError("metric_updates and a warmup stop rule cannot be combined")
-        for f in metric_updates:
-            if not 0.0 < float(f) < 1.0:
-                raise ValueError(f"metric_updates fractions must lie in (0, 1), got {f}")
         boundaries = sorted({int(round(float(f) * num_steps)) for f in metric_updates} - {0, num_steps})
-    if metric_estimator not in _compiled.METRIC_ESTIMATORS:
-        raise ValueError(f"metric_estimator must be one of {_compiled.METRIC_ESTIMATORS}, got {metric_estimator!r}")
-    if metric_estimator != "cov" and not metric_updates:
-        raise ValueError(f"metric_estimator={metric_estimator!r} needs metric_updates: the estimator is used only at "
-                         "a metric update")
     if metric_estimator == "fisher_lowrank" and imm_arr.ndim != 2:
         raise ValueError("metric_estimator='fisher_lowrank' needs a dense metric; this one is diagonal")
-    if isinstance(metric_max_rank, bool) or not isinstance(metric_max_rank, (int, np.integer)) or metric_max_rank < 1:
-        raise ValueError(f"metric_max_rank must be an integer >= 1, got {metric_max_rank!r}")
     if metric_shrinkage is None:
         metric_shrinkage = 5.0 / (_compiled._num_chains(positions) + 5.0)
-    if not 0.0 <= float(metric_shrinkage) <= 1.0:
-        raise ValueError(f"metric_shrinkage must lie in [0, 1], got {metric_shrinkage}")
     metric_log = []
 
     def chunk_call(size, stack):

@@ -87,8 +87,8 @@ warmup, ESS per gradient of the slowest coordinate against `"cov"`:
 | 8 Schools | 10 | 128 | 1.2-1.5x | 1.4-1.6x |
 | GEV (3 parameters) | 3 | 128 | 0.9-1.0x | 0.8-1.1x |
 | logistic regression 1000 x 25 | 25 | 128 | 0.16-0.18x | 0.8x |
-| upper-bounded GEV regression, fixed-support moment | 15 | 1,024 | 0.01-0.1x | 0.3-0.8x |
-| upper-bounded GEV regression, simply-supported moment | 15 | 1,024 | 0.07-0.22x | 1.2-1.7x |
+| upper-bounded GEV regression, configuration A | 15 | 1,024 | 0.01-0.1x | 0.3-0.8x |
+| upper-bounded GEV regression, configuration B | 15 | 1,024 | 0.07-0.22x | 1.2-1.7x |
 
 (CPU, 300 draws, warmup 400, seeds 1 and 2 for the first four; GPU, float32, 1,000 draws, warmup 200, seeds 1-3 for the
 last two.) With fewer chains than coordinates the chains' covariance is rank-deficient and only the shrinkage keeps it

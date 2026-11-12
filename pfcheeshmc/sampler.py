@@ -13,7 +13,7 @@ import arviz as az
 
 from tqdm.auto import tqdm
 from .utils import *
-from .utils import check_warmup_settings
+from .utils import check_metric_settings, check_warmup_settings
 from . import compiled
 from .compiled import LogDensity
 from .compilation_cache import ensure_default_compilation_cache
@@ -74,15 +74,61 @@ def _check_options(where, given, allowed):
             f"The options are: {', '.join(sorted(allowed))}")
 
 
-def _check_warmup_values(chees_kwargs):
-    """Raise a ValueError, before any stage runs, for an opt-in warmup setting the warmup would refuse (the same
-    check as the warmup's, `utils.check_warmup_settings`)."""
+def _resolve_delayed_rejection(dr):
+    """``dynamic_hmc_kwargs["delayed_rejection"]`` as the resolved dict ``{"factor", "stages"[, "retry"]}``, or None;
+    a ValueError for anything else. An integer a is {"factor": a, "stages": 2}; "retry" (default "divergent", not
+    recorded) is one of `compiled.DR_RETRY_RULES`: "probabilistic" or {"energy_above": c}."""
+    if dr is None:
+        return None
+    spec = dr if isinstance(dr, dict) else {"factor": dr}
+    if set(spec) - {"factor", "stages", "retry"}:
+        raise ValueError(f"delayed_rejection must be None, an integer >= 2 or a dict with 'factor', "
+                         f"'stages' and 'retry', got {dr!r}")
+    factor, stages = spec.get("factor"), spec.get("stages", 2)
+    for name, v in (("factor", factor), ("stages", stages)):
+        if isinstance(v, bool) or not isinstance(v, (int, np.integer)) or int(v) < 2:
+            raise ValueError(f"delayed_rejection {name} must be an integer >= 2, got {dr!r}")
+    dr_cfg = {"factor": int(factor), "stages": int(stages)}
+    rule = spec.get("retry", "divergent")
+    if isinstance(rule, dict) and set(rule) == {"energy_above"}:
+        c = rule["energy_above"]
+        if isinstance(c, bool) or not isinstance(c, (int, float, np.integer, np.floating)) or not c > 0:
+            raise ValueError(f"delayed_rejection retry energy_above must be a number > 0, got {rule!r}")
+        dr_cfg["retry"] = {"energy_above": float(c)}
+    elif rule == "probabilistic":
+        dr_cfg["retry"] = "probabilistic"
+    elif rule != "divergent":
+        raise ValueError(f"delayed_rejection retry must be one of {compiled.DR_RETRY_RULES} "
+                         f"('divergent', 'probabilistic' or {{'energy_above': c}}), got {rule!r}")
+    return dr_cfg
+
+
+def _resolve_leapfrog_unroll(unroll):
+    """``dynamic_hmc_kwargs["leapfrog_unroll"]`` as an int >= 1, or a ValueError."""
+    if isinstance(unroll, bool) or not isinstance(unroll, (int, np.integer)) or unroll < 1:
+        raise ValueError(f"leapfrog_unroll must be an integer >= 1, got {unroll!r}")
+    return int(unroll)
+
+
+def _check_option_values(chees_kwargs, dynamic_hmc_kwargs):
+    """Raise a ValueError, before any stage runs, for an option value its stage would refuse: the same checks as
+    the stages' (`utils.check_warmup_settings`, `utils.check_metric_settings`, `_resolve_delayed_rejection`,
+    `_resolve_leapfrog_unroll`), so a bad value is not found after Pathfinder and the warmup have run. The one
+    check left to its stage needs the metric: "fisher_lowrank" requires a dense one."""
     try:
         check_warmup_settings(chees_kwargs.get("acceptance_floor"), chees_kwargs.get("trajectory_length"),
                               chees_kwargs.get("target_accept",
                                                bj.adaptation.chees_adaptation.OPTIMAL_TARGET_ACCEPTANCE_RATE))
+        check_metric_settings(chees_kwargs.get("metric_updates"), chees_kwargs.get("metric_estimator", "cov"),
+                              chees_kwargs.get("metric_max_rank", 10), chees_kwargs.get("metric_shrinkage"),
+                              chees_kwargs.get("warmup_stop"))
     except ValueError as e:
         raise ValueError(f"chees_kwargs: {e}") from None
+    try:
+        _resolve_delayed_rejection(dynamic_hmc_kwargs.get("delayed_rejection"))
+        _resolve_leapfrog_unroll(dynamic_hmc_kwargs.get("leapfrog_unroll", 1))
+    except ValueError as e:
+        raise ValueError(f"dynamic_hmc_kwargs: {e}") from None
 
 
 def _warn_if_x64_contradicts_floatx():
@@ -246,7 +292,7 @@ def _finite_gradient_rows(draws, grads, max_rank):
         return draws, grads, record
     warnings.warn(
         f"imm_source='fisher_lowrank': {ok.shape[0] - int(ok.sum())} of {ok.shape[0]} Pathfinder draws have a "
-        "non-finite gradient (outside the support) and are left out of the metric", RuntimeWarning, stacklevel=3)
+        "non-finite gradient (outside the support) and are left out of the metric", RuntimeWarning, stacklevel=5)
     if ok.sum() < 2 * max_rank + 2:
         raise ValueError(
             f"imm_source='fisher_lowrank': only {int(ok.sum())} of {ok.shape[0]} Pathfinder draws have a finite "
@@ -834,7 +880,7 @@ class PfCheesHMC:
                 f"Pathfinder's L-BFGS used all {pf_maxiter} of its iterations (pathfinder_kwargs['pf_maxiter']): it "
                 "may have stopped before its tolerances were met, far from the mode, and the starts and the metric "
                 "come from where it stopped. Raise pf_maxiter (Troubleshooting, \"The sampler is not converging\").",
-                RuntimeWarning, stacklevel=3)
+                RuntimeWarning, stacklevel=4)
 
         # 4) Draw the start pool, bounded by `pf_pool_cap` rows (see default_pool_cap for why the
         # default is dimension-aware rather than a multiple of `chains`). pf_pool_cap=0 is the
@@ -1176,40 +1222,14 @@ class PfCheesHMC:
         # for, after the divergences have been diagnosed; not a substitute for a reparameterisation.
         # An integer a is {"factor": a, "stages": 2}; "stages" k >= 2 adds proposals at step / a^2, ... / a^(k-1).
         # "retry" (default "divergent"): when a later proposal is made, `compiled.delayed_rejection_step`.
-        dr = kwargs.get("delayed_rejection")
-        dr_cfg = None
-        if dr is not None:
-            spec = dr if isinstance(dr, dict) else {"factor": dr}
-            if not isinstance(spec, dict) or set(spec) - {"factor", "stages", "retry"}:
-                raise ValueError(f"delayed_rejection must be None, an integer >= 2 or a dict with 'factor', "
-                                 f"'stages' and 'retry', got {dr!r}")
-            factor, stages = spec.get("factor"), spec.get("stages", 2)
-            for name, v in (("factor", factor), ("stages", stages)):
-                if isinstance(v, bool) or not isinstance(v, (int, np.integer)) or int(v) < 2:
-                    raise ValueError(f"delayed_rejection {name} must be an integer >= 2, got {dr!r}")
-            dr_cfg = {"factor": int(factor), "stages": int(stages)}
-            rule = spec.get("retry", "divergent")
-            if isinstance(rule, dict) and set(rule) == {"energy_above"}:
-                c = rule["energy_above"]
-                if isinstance(c, bool) or not isinstance(c, (int, float, np.integer, np.floating)) or not c > 0:
-                    raise ValueError(f"delayed_rejection retry energy_above must be a number > 0, got {rule!r}")
-                dr_cfg["retry"] = {"energy_above": float(c)}
-            elif rule == "probabilistic":
-                dr_cfg["retry"] = "probabilistic"
-            elif rule != "divergent":
-                raise ValueError(f"delayed_rejection retry must be 'divergent', 'probabilistic' or "
-                                 f"{{'energy_above': c}}, got {rule!r}")
-        dr = dr_cfg
+        dr = _resolve_delayed_rejection(kwargs.get("delayed_rejection"))
         # the static form of the rule for the chunk program; "divergent" is not recorded (the config of a run with
         # the default rule is unchanged)
         dr_retry = "divergent"
         if dr is not None and "retry" in dr:
             dr_retry = dr["retry"] if dr["retry"] == "probabilistic" else ("energy_above", dr["retry"]["energy_above"])
         # Leapfrog steps per loop pass (opt-in; `compiled.unrolled_integration`): the same draws, fewer loop tests.
-        unroll = kwargs.get("leapfrog_unroll", 1)
-        if isinstance(unroll, bool) or not isinstance(unroll, (int, np.integer)) or unroll < 1:
-            raise ValueError(f"leapfrog_unroll must be an integer >= 1, got {unroll!r}")
-        unroll = int(unroll)
+        unroll = _resolve_leapfrog_unroll(kwargs.get("leapfrog_unroll", 1))
         self._resolved["sampling"] = {"seed": int(kwargs["seed"]), "chains": int(num_chains),
                                       "num_draws": int(num_draws), "delayed_rejection": dr}
         if unroll != 1:       # recorded only when set, so a default run's config is unchanged
@@ -1270,7 +1290,7 @@ class PfCheesHMC:
                 f"{failed} of {n_div} divergent transitions ended at a NaN (or -inf) energy: the log density or its "
                 "gradient failed to evaluate there (an overflow, a function outside the range where it keeps its "
                 "digits, float32 rounding): often the model's arithmetic rather than the step size. Counts by energy are in "
-                "idata.attrs[\"diagnostics\"] (Troubleshooting, \"Divergences\").", RuntimeWarning, stacklevel=3)
+                "idata.attrs[\"diagnostics\"] (Troubleshooting, \"Divergences\").", RuntimeWarning, stacklevel=4)
         if dr is not None and dr_retry == "divergent":
             # (the other rules retry ordinary rejections by design)
             rate = float(np.mean(infos_hist.retried))
@@ -1278,7 +1298,7 @@ class PfCheesHMC:
                 warnings.warn(
                     f"delayed rejection retried {rate:.2%} of transitions (warning above {DR_RETRY_WARN:.2%}): the "
                     "first-stage step diverges in the bulk, not in a rare region. Diagnose the divergences "
-                    "(reparameterise or fix the model) rather than rely on retries.", RuntimeWarning, stacklevel=3)
+                    "(reparameterise or fix the model) rather than rely on retries.", RuntimeWarning, stacklevel=4)
         return dhmc_state, states_hist, infos_hist
 
 
@@ -1519,7 +1539,7 @@ class PfCheesHMC:
                 ("chees_kwargs", chees_kwargs, _CHEES_OPTIONS),
                 ("dynamic_hmc_kwargs", dynamic_hmc_kwargs, _DYNAMIC_HMC_OPTIONS)):
             _check_options(where, given, allowed)
-        _check_warmup_values(chees_kwargs)
+        _check_option_values(chees_kwargs, dynamic_hmc_kwargs)
         #Override chains in all kwargs
         kwargs.setdefault("chains", 32)
         if "chains" in kwargs:

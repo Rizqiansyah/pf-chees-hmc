@@ -3,7 +3,8 @@
 Every option `sample_pf_chees_hmc` takes, with its default. **Status**: *default* is what runs when you pass nothing;
 *opt-in* is off until you set it and changes the run when you do; *experimental* is opt-in with measurements on few
 models; *instrumentation* is kept for measurement, not for use. A key a stage does not read raises a `TypeError` that
-names it, before the first stage runs. What a run resolved is recorded in `idata.attrs["config"]` (opt-in keys only when
+names it, and a value its stage would refuse raises a `ValueError`, both before the first stage runs (one check waits for
+the warmup: `metric_estimator="fisher_lowrank"` needs a dense metric). What a run resolved is recorded in `idata.attrs["config"]` (opt-in keys only when
 set, so a default run's record is unchanged).
 
 ## Arguments
